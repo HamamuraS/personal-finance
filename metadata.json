@@ -1,0 +1,6 @@
+{
+  "name": "Fondo Compartido",
+  "description": "Administrador de fondo de ahorro compartido minimalista y moderno persistido en Google Sheets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
