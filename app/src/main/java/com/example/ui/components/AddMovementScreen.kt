@@ -149,7 +149,7 @@ fun AddMovementScreen(
             verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
             // Monto (Tipo Cajero)
-            val isDark = androidx.compose.foundation.isSystemInDarkTheme()
+            val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
             val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
             val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
 
@@ -231,7 +231,7 @@ fun AddMovementScreen(
                         Button(
                             onClick = { tipo = item },
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
+                                containerColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
                                 contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
                             ),
                             elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp),
@@ -267,7 +267,7 @@ fun AddMovementScreen(
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = if (isSelected) {
                                     if (item == currentUserProfile) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary
-                                } else MaterialTheme.colorScheme.surface,
+                                } else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
                                 contentColor = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface
                             ),
                             elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp),
@@ -300,7 +300,7 @@ fun AddMovementScreen(
                         Button(
                             onClick = { esComun = true },
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = if (esComun) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surface,
+                                containerColor = if (esComun) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
                                 contentColor = if (esComun) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                             ),
                             shape = RoundedCornerShape(12.dp),
@@ -319,7 +319,7 @@ fun AddMovementScreen(
                         Button(
                             onClick = { esComun = false },
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = if (!esComun) MaterialTheme.colorScheme.secondary.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surface,
+                                containerColor = if (!esComun) MaterialTheme.colorScheme.secondary.copy(alpha = 0.15f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
                                 contentColor = if (!esComun) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface
                             ),
                             shape = RoundedCornerShape(12.dp),
@@ -404,7 +404,7 @@ fun AddMovementScreen(
                     Button(
                         onClick = { fecha = hoyString },
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = if (fecha == hoyString) MaterialTheme.colorScheme.primary.copy(alpha = 0.1f) else MaterialTheme.colorScheme.surface,
+                            containerColor = if (fecha == hoyString) MaterialTheme.colorScheme.primary.copy(alpha = 0.1f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
                             contentColor = if (fecha == hoyString) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                         ),
                         shape = RoundedCornerShape(10.dp),
@@ -419,7 +419,7 @@ fun AddMovementScreen(
                     Button(
                         onClick = { fecha = ayerString },
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = if (fecha == ayerString) MaterialTheme.colorScheme.primary.copy(alpha = 0.1f) else MaterialTheme.colorScheme.surface,
+                            containerColor = if (fecha == ayerString) MaterialTheme.colorScheme.primary.copy(alpha = 0.1f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
                             contentColor = if (fecha == ayerString) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                         ),
                         shape = RoundedCornerShape(10.dp),

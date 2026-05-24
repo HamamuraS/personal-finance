@@ -267,7 +267,7 @@ fun DashboardScreen(
 
 @Composable
 fun PozoComunCard(userProfile: String, balance: BalanceBreakdown, formatMoney: NumberFormat) {
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
+    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
     val cardBg = if (isDark) Color(0xFF2E332F) else Color(0xFFE8F3E9)
     val cardBorder = if (isDark) Color(0xFF414941) else Color(0xFFDCE5DB)
     val labelColor = if (isDark) Color(0xFFCDD3CD) else Color(0xFF414941)
@@ -386,7 +386,7 @@ fun DesgloseSocioCard(
     formatMoney: NumberFormat,
     avatarColor: Color
 ) {
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
+    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
     val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
     val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
     val textMainColor = if (isDark) Color.White else Color(0xFF191C19)
@@ -581,7 +581,7 @@ fun MovementItem(
         )
     }
 
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
+    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
     val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
     val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFF1F5F9)
 

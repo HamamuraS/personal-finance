@@ -143,7 +143,7 @@ fun ReportsScreen(
 
 @Composable
 fun ReportAportesCard(userProfile: String, balance: BalanceBreakdown, formatMoney: NumberFormat) {
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
+    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
     val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
     val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
 
@@ -258,7 +258,7 @@ fun ReportAportesCard(userProfile: String, balance: BalanceBreakdown, formatMone
 
 @Composable
 fun ReportCategoriasCard(movements: List<Movement>, formatMoney: NumberFormat) {
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
+    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
     val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
     val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
 
@@ -358,7 +358,7 @@ fun ReportCategoriasCard(movements: List<Movement>, formatMoney: NumberFormat) {
 
 @Composable
 fun ReportHistoricoMensualCard(movements: List<Movement>, formatMoney: NumberFormat) {
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
+    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
     val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
     val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
 
