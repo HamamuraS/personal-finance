@@ -22,6 +22,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import com.example.data.Movement
 import com.example.ui.BalanceBreakdown
 import java.text.NumberFormat
@@ -114,151 +116,158 @@ fun DashboardScreen(
             )
         }
     ) { innerPadding ->
-        LazyColumn(
+        PullToRefreshBox(
+            isRefreshing = isLoading,
+            onRefresh = onRefresh,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .background(MaterialTheme.colorScheme.background),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Tarjeta de Pozo Común
-            item {
-                PozoComunCard(userProfile = userProfile, balance = balance, formatMoney = formatMoney)
-            }
-
-            // Desglose de Saldos Individuales
-            item {
-                Text(
-                    text = "Saldos Individuales",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-            }
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    val isUserRocio = userProfile == "Rocío"
-                    
-                    DesgloseSocioCard(
-                        modifier = Modifier.weight(1f),
-                        nombre = if (isUserRocio) "Rocío" else "Santiago",
-                        saldo = if (isUserRocio) balance.rocioSaldoFinal else balance.santiagoSaldoFinal,
-                        aportes = if (isUserRocio) balance.rocioAportes else balance.santiagoAportes,
-                        personales = if (isUserRocio) balance.rocioGastosPersonales else balance.santiagoGastosPersonales,
-                        comunes = if (isUserRocio) balance.rocioGastosComunes else balance.santiagoGastosComunes,
-                        formatMoney = formatMoney,
-                        avatarColor = MaterialTheme.colorScheme.primary
-                    )
-                    DesgloseSocioCard(
-                        modifier = Modifier.weight(1f),
-                        nombre = if (isUserRocio) "Santiago" else "Rocío",
-                        saldo = if (isUserRocio) balance.santiagoSaldoFinal else balance.rocioSaldoFinal,
-                        aportes = if (isUserRocio) balance.santiagoAportes else balance.rocioAportes,
-                        personales = if (isUserRocio) balance.santiagoGastosPersonales else balance.rocioGastosPersonales,
-                        comunes = if (isUserRocio) balance.santiagoGastosComunes else balance.rocioGastosComunes,
-                        formatMoney = formatMoney,
-                        avatarColor = MaterialTheme.colorScheme.tertiary
-                    )
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                // Tarjeta de Pozo Común
+                item {
+                    PozoComunCard(userProfile = userProfile, balance = balance, formatMoney = formatMoney)
                 }
-            }
 
-            // Historial Reciente de Movimientos
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+                // Desglose de Saldos Individuales
+                item {
                     Text(
-                        text = "Movimientos Recientes",
+                        text = "Saldos Individuales",
                         fontWeight = FontWeight.Bold,
                         fontSize = 16.sp,
                         color = MaterialTheme.colorScheme.onBackground
                     )
-                    
-                    if (useLocalDemo) {
-                        Text(
-                            text = "Mantén presionado para borrar",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
-                        )
-                    }
                 }
-            }
-
-            // Chips Filtros de Movimientos
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    listOf("Todos", "Aportes", "Gastos", "Transfer.").forEach { filter ->
-                        FilterChip(
-                            selected = selectedFilter == filter,
-                            onClick = { selectedFilter = filter },
-                            label = { Text(filter, fontSize = 11.sp) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                selectedLabelColor = MaterialTheme.colorScheme.onPrimary
-                            ),
-                            border = FilterChipDefaults.filterChipBorder(
-                                enabled = true,
-                                selected = selectedFilter == filter,
-                                borderColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.15f)
-                            )
-                        )
-                    }
-                }
-            }
-
-            // Lista de movimientos filtrada
-            val filteredMovements = movements.filter {
-                when (selectedFilter) {
-                    "Aportes" -> it.tipo.lowercase() == "aporte"
-                    "Gastos" -> it.tipo.lowercase() == "gasto"
-                    "Transfer." -> it.tipo.lowercase() == "transferencia"
-                    else -> true
-                }
-            }
-
-            if (filteredMovements.isEmpty()) {
                 item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 32.dp),
-                        contentAlignment = Alignment.Center
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(
-                                imageVector = Icons.Default.Info,
-                                contentDescription = null,
-                                modifier = Modifier.size(40.dp),
-                                tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.2f)
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
+                        val isUserRocio = userProfile == "Rocío"
+                        
+                        DesgloseSocioCard(
+                            modifier = Modifier.weight(1f),
+                            nombre = if (isUserRocio) "Rocío" else "Santiago",
+                            saldo = if (isUserRocio) balance.rocioSaldoFinal else balance.santiagoSaldoFinal,
+                            aportes = if (isUserRocio) balance.rocioAportes else balance.santiagoAportes,
+                            personales = if (isUserRocio) balance.rocioGastosPersonales else balance.santiagoGastosPersonales,
+                            comunes = if (isUserRocio) balance.rocioGastosComunes else balance.santiagoGastosComunes,
+                            formatMoney = formatMoney,
+                            avatarColor = MaterialTheme.colorScheme.primary
+                        )
+                        DesgloseSocioCard(
+                            modifier = Modifier.weight(1f),
+                            nombre = if (isUserRocio) "Santiago" else "Rocío",
+                            saldo = if (isUserRocio) balance.santiagoSaldoFinal else balance.rocioSaldoFinal,
+                            aportes = if (isUserRocio) balance.santiagoAportes else balance.rocioAportes,
+                            personales = if (isUserRocio) balance.santiagoGastosPersonales else balance.rocioGastosPersonales,
+                            comunes = if (isUserRocio) balance.santiagoGastosComunes else balance.rocioGastosComunes,
+                            formatMoney = formatMoney,
+                            avatarColor = MaterialTheme.colorScheme.tertiary
+                        )
+                    }
+                }
+
+                // Historial Reciente de Movimientos
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Movimientos Recientes",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                        
+                        if (useLocalDemo) {
                             Text(
-                                text = "Sin movimientos registrados para el filtro",
-                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
-                                fontSize = 13.sp
+                                text = "Mantén presionado para borrar",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
                             )
                         }
                     }
                 }
-            } else {
-                items(filteredMovements, key = { it.id }) { mov ->
-                    MovementItem(
-                        movement = mov,
-                        formatMoney = formatMoney,
-                        useLocalDemo = useLocalDemo,
-                        isCurrentMonth = isCurrentMonth,
-                        currentUserProfile = userProfile,
-                        onDelete = { onDeleteMovement(mov) }
-                    )
+
+                // Chips Filtros de Movimientos
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf("Todos", "Aportes", "Gastos", "Transfer.").forEach { filter ->
+                            FilterChip(
+                                selected = selectedFilter == filter,
+                                onClick = { selectedFilter = filter },
+                                label = { Text(filter, fontSize = 11.sp) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                                ),
+                                border = FilterChipDefaults.filterChipBorder(
+                                    enabled = true,
+                                    selected = selectedFilter == filter,
+                                    borderColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.15f)
+                                )
+                            )
+                        }
+                    }
+                }
+
+                // Lista de movimientos filtrada
+                val filteredMovements = movements.filter {
+                    when (selectedFilter) {
+                        "Aportes" -> it.tipo.lowercase() == "aporte"
+                        "Gastos" -> it.tipo.lowercase() == "gasto"
+                        "Transfer." -> it.tipo.lowercase() == "transferencia"
+                        else -> true
+                    }
+                }
+
+                if (filteredMovements.isEmpty()) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 32.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    imageVector = Icons.Default.Info,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(40.dp),
+                                    tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.2f)
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = "Sin movimientos registrados para el filtro",
+                                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+                                    fontSize = 13.sp
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    items(filteredMovements, key = { it.id }) { mov ->
+                        MovementItem(
+                            movement = mov,
+                            formatMoney = formatMoney,
+                            useLocalDemo = useLocalDemo,
+                            isCurrentMonth = isCurrentMonth,
+                            currentUserProfile = userProfile,
+                            onDelete = { onDeleteMovement(mov) }
+                        )
+                    }
                 }
             }
         }

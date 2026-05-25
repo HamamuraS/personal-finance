@@ -28,6 +28,9 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.input.ImeAction
 import com.example.ui.AhorroViewModel
 import java.text.SimpleDateFormat
 import java.util.*
@@ -92,6 +95,7 @@ fun AddMovementScreen(
     onSuccess: () -> Unit
 ) {
     val context = LocalContext.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val scrollState = rememberScrollState()
 
     val currentUserProfile by viewModel.currentUserProfile.collectAsState()
@@ -205,7 +209,13 @@ fun AddMovementScreen(
                             focusedIndicatorColor = Color.Transparent,
                             unfocusedIndicatorColor = Color.Transparent
                         ),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Number,
+                            imeAction = ImeAction.Done
+                        ),
+                        keyboardActions = KeyboardActions(
+                            onDone = { keyboardController?.hide() }
+                        ),
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -480,6 +490,12 @@ fun AddMovementScreen(
                         focusedBorderColor = MaterialTheme.colorScheme.primary,
                         unfocusedBorderColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.15f)
                     ),
+                    keyboardOptions = KeyboardOptions(
+                        imeAction = ImeAction.Done
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onDone = { keyboardController?.hide() }
+                    ),
                     modifier = Modifier.fillMaxWidth()
                 )
             }
@@ -487,6 +503,7 @@ fun AddMovementScreen(
             Spacer(modifier = Modifier.height(8.dp))
 
             // Botón de Registro de un solo tap
+            val useLocalDemo by viewModel.useLocalDemo.collectAsState()
             Button(
                 onClick = {
                     if (isLoading) return@Button
@@ -528,7 +545,7 @@ fun AddMovementScreen(
                 } else {
                     Icon(Icons.Default.Check, contentDescription = null)
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Registrar en " + if (viewModel.useLocalDemo.value) "Base Local" else "Nube", fontWeight = FontWeight.ExtraBold, fontSize = 15.sp)
+                    Text("Registrar en " + if (useLocalDemo) "Base Local" else "Nube", fontWeight = FontWeight.ExtraBold, fontSize = 15.sp)
                 }
             }
         }

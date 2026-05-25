@@ -170,6 +170,12 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
             }
                 
             updateFilteredData()
+            
+            // Si el mes seleccionado es el actual, verificar arrastre de saldo
+            if (_isCurrentMonth.value) {
+                checkAndInjectInitialBalances(currentRealMonth)
+            }
+            
             true
         } catch (e: Exception) {
             _errorMessage.value = "Error al recargar datos: ${e.localizedMessage}"
@@ -255,6 +261,73 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     fun setIsDarkMode(isDark: Boolean) {
         prefsHelper.isDarkMode = isDark
         _isDarkMode.value = isDark
+    }
+
+    /**
+     * Verifica si el mes actual ya tiene los saldos iniciales (Aportes con categoría "Saldo inicial")
+     * Si no los tiene, busca el mes anterior, calcula sus saldos finales e inyecta los nuevos movimientos.
+     */
+    private fun checkAndInjectInitialBalances(currentMonth: String) {
+        viewModelScope.launch {
+            // Buscamos si ya existen movimientos de "Saldo inicial" en el mes actual
+            val hasInitialBalance = _movements.value.any { 
+                it.tipo.lowercase() == "aporte" && it.categoria == "Saldo inicial" 
+            }
+            
+            if (hasInitialBalance) return@launch
+            
+            // Determinar mes anterior (yyyy-MM)
+            val sdf = java.text.SimpleDateFormat("yyyy-MM", java.util.Locale.US)
+            val cal = java.util.Calendar.getInstance()
+            cal.time = sdf.parse(currentMonth) ?: return@launch
+            cal.add(java.util.Calendar.MONTH, -1)
+            val prevMonth = sdf.format(cal.time)
+            
+            // Si no hay datos previos o el mes anterior no está en availableMonths, no podemos arrastrar nada fiable
+            if (!_availableMonths.value.contains(prevMonth)) return@launch
+            
+            // Calcular balances del mes anterior
+            val prevMonthMovements = _cachedAllMovements.filter {
+                it.fecha.startsWith(prevMonth)
+            }
+            if (prevMonthMovements.isEmpty()) return@launch
+            
+            val prevBalance = calculateBalances(prevMonthMovements)
+            
+            // Inyectar aportes de saldo inicial para Santiago y Rocío
+            val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+            
+            var success = true
+            if (prevBalance.santiagoSaldoFinal != 0.0) {
+                val movS = Movement(
+                    fecha = today,
+                    monto = prevBalance.santiagoSaldoFinal,
+                    tipo = "Aporte",
+                    categoria = "Saldo inicial",
+                    responsable = "Santiago",
+                    esComun = false,
+                    descripcion = "Arrastre de mes anterior ($prevMonth)"
+                )
+                success = success && repository.saveMovement(_spreadsheetId.value, movS)
+            }
+            
+            if (prevBalance.rocioSaldoFinal != 0.0) {
+                val movR = Movement(
+                    fecha = today,
+                    monto = prevBalance.rocioSaldoFinal,
+                    tipo = "Aporte",
+                    categoria = "Saldo inicial",
+                    responsable = "Rocío",
+                    esComun = false,
+                    descripcion = "Arrastre de mes anterior ($prevMonth)"
+                )
+                success = success && repository.saveMovement(_spreadsheetId.value, movR)
+            }
+            
+            if (success) {
+                doRefreshData()
+            }
+        }
     }
 
     /**
