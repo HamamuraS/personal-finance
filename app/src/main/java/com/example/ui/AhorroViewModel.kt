@@ -5,10 +5,12 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.AhorroRepository
+import com.example.data.DriveService
 import com.example.data.Movement
 import com.example.data.PreferencesHelper
 import com.google.android.gms.auth.GoogleAuthUtil
 import com.google.android.gms.auth.api.signin.GoogleSignIn
+import androidx.exifinterface.media.ExifInterface
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -200,25 +202,66 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
         esComun: Boolean,
         descripcion: String,
         metodoPago: String,
+        ticketUri: android.net.Uri? = null,
         onSuccess: () -> Unit
     ) {
         viewModelScope.launch {
             _isLoading.value = true
             _errorMessage.value = null
             
+            var imageInfo: com.example.data.ImageInfo? = null
+            
+            if (ticketUri != null) {
+                try {
+                    Log.d("AhorroViewModel", "Comprimiendo imagen de URI: $ticketUri")
+                    val inputStream = getApplication<Application>().contentResolver.openInputStream(ticketUri)
+                    val bitmap = android.graphics.BitmapFactory.decodeStream(inputStream)
+                    
+                    if (bitmap != null) {
+                        // Corregir orientación basada en EXIF
+                        val rotatedBitmap = try {
+                            val exifInputStream = getApplication<Application>().contentResolver.openInputStream(ticketUri)
+                            if (exifInputStream != null) {
+                                val exif = ExifInterface(exifInputStream)
+                                val orientation = exif.getAttributeInt(
+                                    ExifInterface.TAG_ORIENTATION,
+                                    ExifInterface.ORIENTATION_NORMAL
+                                )
+                                rotateBitmapIfRequired(bitmap, orientation)
+                            } else bitmap
+                        } catch (e: Exception) {
+                            Log.e("AhorroViewModel", "Error leyendo EXIF", e)
+                            bitmap
+                        }
+
+                        val outputStream = java.io.ByteArrayOutputStream()
+                        // Comprimir a JPEG con 70% de calidad
+                        rotatedBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 70, outputStream)
+                        val bytes = outputStream.toByteArray()
+                        
+                        Log.d("AhorroViewModel", "Imagen comprimida. Tamaño final: ${bytes.size} bytes")
+                        val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                        imageInfo = com.example.data.ImageInfo(base64 = base64)
+                    }
+                } catch (e: Exception) {
+                    Log.e("AhorroViewModel", "Error comprimiendo imagen", e)
+                }
+            }
+
             val newMovement = Movement(
                 fecha = fecha,
                 monto = monto,
                 tipo = tipo,
                 categoria = categoria,
                 responsable = responsable,
-                esComun = esComun,
+                esComun = if (tipo == "Gasto") esComun else false,
                 descripcion = descripcion,
-                metodoPago = metodoPago
+                metodoPago = metodoPago,
+                ticketUrl = "" // El script lo llenará si hay imagen
             )
 
             try {
-                val success = repository.saveMovement(_spreadsheetId.value, newMovement)
+                val success = repository.saveMovement(_spreadsheetId.value, newMovement, imageInfo)
                 if (success) {
                     doRefreshData()
                     onSuccess()
@@ -267,6 +310,20 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     fun setIsDarkMode(isDark: Boolean) {
         prefsHelper.isDarkMode = isDark
         _isDarkMode.value = isDark
+    }
+
+    /**
+     * Rota un bitmap según la orientación EXIF.
+     */
+    private fun rotateBitmapIfRequired(img: android.graphics.Bitmap, orientation: Int): android.graphics.Bitmap {
+        val matrix = android.graphics.Matrix()
+        when (orientation) {
+            ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+            ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+            ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+            else -> return img
+        }
+        return android.graphics.Bitmap.createBitmap(img, 0, 0, img.width, img.height, matrix, true)
     }
 
     /**

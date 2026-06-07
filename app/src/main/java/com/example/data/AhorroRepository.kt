@@ -70,7 +70,11 @@ class AhorroRepository(private val prefsHelper: PreferencesHelper) {
     /**
      * Agrega un nuevo movimiento al Web App.
      */
-    suspend fun saveMovement(webAppUrl: String, movement: Movement): Boolean {
+    suspend fun saveMovement(
+        webAppUrl: String, 
+        movement: Movement, 
+        imageInfo: ImageInfo? = null
+    ): Boolean {
         if (prefsHelper.useLocalDemo) {
             val current = prefsHelper.getLocalMovements().toMutableList()
             current.add(0, movement)
@@ -82,13 +86,20 @@ class AhorroRepository(private val prefsHelper: PreferencesHelper) {
             return false
         }
 
+        Log.d("AHORRO_DEBUG", "--------------------------------------------------")
+        Log.d("AHORRO_DEBUG", "ENVIANDO A: $webAppUrl")
         return try {
             val req = WebAppRequest(
                 action = "POST",
-                body = movement
+                body = movement,
+                imageInfo = imageInfo
             )
             
             val response = sheetsService.addMovement(webAppUrl, req)
+            Log.d("AHORRO_DEBUG", "CODIGO RESPUESTA: ${response.code()}")
+            Log.d("AHORRO_DEBUG", "CUERPO: ${response.body()}")
+            Log.d("AHORRO_DEBUG", "--------------------------------------------------")
+            
             if (response.isSuccessful && response.body()?.status == "SUCCESS") {
                 val cached = prefsHelper.getSheetsCache().toMutableList()
                 cached.add(movement)

@@ -11,7 +11,13 @@ data class WebAppRequest(
     val action: String,
     val method: String? = null,
     val parameters: Map<String, Any>? = null,
-    val body: Movement? = null
+    val body: Movement? = null,
+    val imageInfo: ImageInfo? = null
+)
+
+data class ImageInfo(
+    val base64: String,
+    val contentType: String = "image/jpeg"
 )
 
 data class WebAppResponse(

@@ -1,5 +1,7 @@
 package com.example.ui.components
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.animation.*
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -12,6 +14,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -740,6 +743,27 @@ fun MovementItem(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1.5f)
                     )
+
+                    // Icono de Ticket
+                    if (movement.ticketUrl.isNotEmpty()) {
+                        val context = androidx.compose.ui.platform.LocalContext.current
+                        Icon(
+                            imageVector = Icons.Default.Receipt,
+                            contentDescription = "Ver Ticket",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .size(20.dp)
+                                .clickable {
+                                    try {
+                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(movement.ticketUrl))
+                                        context.startActivity(intent)
+                                    } catch (e: Exception) {
+                                        // Fallback or error
+                                    }
+                                }
+                                .padding(horizontal = 2.dp)
+                        )
+                    }
 
                     // Tag Compartido vs Personal
                     if (isGasto) {

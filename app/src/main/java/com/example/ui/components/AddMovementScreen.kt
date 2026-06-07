@@ -31,7 +31,20 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.filled.AddAPhoto
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Collections
+import androidx.core.content.FileProvider
+import coil.compose.AsyncImage
 import com.example.ui.AhorroViewModel
+import com.google.accompanist.permissions.ExperimentalPermissionsApi
+import com.google.accompanist.permissions.isGranted
+import com.google.accompanist.permissions.rememberPermissionState
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -88,7 +101,7 @@ class NumberCommaVisualTransformation : VisualTransformation {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalPermissionsApi::class)
 @Composable
 fun AddMovementScreen(
     viewModel: AhorroViewModel,
@@ -108,6 +121,8 @@ fun AddMovementScreen(
     var responsable by remember { mutableStateOf(currentUserProfile) } // "Santiago", "Rocío"
     var metodoPago by remember { mutableStateOf("Billetera Virtual") } // "Efectivo", "Billetera Virtual"
     var descripcion by remember { mutableStateOf("") }
+    var ticketUri by remember { mutableStateOf<Uri?>(null) }
+    var tempPhotoUri by remember { mutableStateOf<Uri?>(null) }
 
     // Fecha por defecto: hoy en formato YYYY-MM-DD HH:mm
     val currentCalendar = remember { Calendar.getInstance() }
@@ -122,6 +137,27 @@ fun AddMovementScreen(
     val listTransferencias = listOf("Ajuste", "Reembolso", "Otros")
 
     var categoria by remember { mutableStateOf("") }
+
+    val cameraPermissionState = rememberPermissionState(
+        android.Manifest.permission.CAMERA
+    )
+
+    // Launchers para Cámara y Galería
+    val cameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { success ->
+        if (success) {
+            ticketUri = tempPhotoUri
+        }
+    }
+
+    val galleryLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            ticketUri = uri
+        }
+    }
 
     // Resetear categoría cuando cambia tipo o esComun
     LaunchedEffect(tipo, esComun, currentUserProfile) {
@@ -532,6 +568,91 @@ fun AddMovementScreen(
                 )
             }
 
+            // Adjuntar Ticket
+            Column {
+                Text(
+                    text = "Adjuntar Ticket (Opcional)",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Botón Cámara
+                    OutlinedButton(
+                        onClick = {
+                            if (cameraPermissionState.status.isGranted) {
+                                val imagesDir = File(context.cacheDir, "images")
+                                if (!imagesDir.exists()) imagesDir.mkdirs()
+                                val tempFile = File(imagesDir, "temp_ticket_${System.currentTimeMillis()}.jpg")
+                                val uri = FileProvider.getUriForFile(
+                                    context,
+                                    "${context.packageName}.fileprovider",
+                                    tempFile
+                                )
+                                tempPhotoUri = uri
+                                cameraLauncher.launch(uri)
+                            } else {
+                                cameraPermissionState.launchPermissionRequest()
+                            }
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(1f).height(48.dp),
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Icon(Icons.Default.AddAPhoto, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Cámara", fontSize = 12.sp)
+                    }
+
+                    // Botón Galería
+                    OutlinedButton(
+                        onClick = { galleryLauncher.launch("image/*") },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(1f).height(48.dp),
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Icon(Icons.Default.Collections, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Galería", fontSize = 12.sp)
+                    }
+                }
+
+                if (ticketUri != null) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(120.dp)
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        AsyncImage(
+                            model = ticketUri,
+                            contentDescription = "Ticket seleccionado",
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                        )
+                        IconButton(
+                            onClick = { ticketUri = null },
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(4.dp)
+                                .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                                .size(24.dp)
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = "Eliminar", tint = Color.White, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                }
+            }
+
             Spacer(modifier = Modifier.height(8.dp))
 
             // Botón de Registro de un solo tap
@@ -553,9 +674,11 @@ fun AddMovementScreen(
                         esComun = if (tipo == "Gasto") esComun else false,
                         descripcion = descripcion,
                         metodoPago = metodoPago,
+                        ticketUri = ticketUri,
                         onSuccess = {
                             monto = ""
                             descripcion = ""
+                            ticketUri = null
                             onSuccess()
                         }
                     )
