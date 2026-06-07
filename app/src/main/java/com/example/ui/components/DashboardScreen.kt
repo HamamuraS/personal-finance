@@ -352,32 +352,66 @@ fun PozoComunCard(userProfile: String, balance: BalanceBreakdown, formatMoney: N
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
+                // Columna 1 (Socio Principal)
                 Column {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary))
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(if (isUserRocio) "Rocío" else "Santiago", fontSize = 12.sp, color = labelColor, fontWeight = FontWeight.SemiBold)
                     }
+                    val saldo = if (isUserRocio) balance.rocioSaldoFinal else balance.santiagoSaldoFinal
+                    val efec = if (isUserRocio) balance.rocioEfectivo else balance.santiagoEfectivo
+                    val virt = if (isUserRocio) balance.rocioVirtual else balance.santiagoVirtual
+                    
                     Text(
-                        text = "${formatMoney.format(if (isUserRocio) balance.rocioSaldoFinal else balance.santiagoSaldoFinal)} (${(mainRatio * 100).toInt()}%)",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp,
+                        text = formatMoney.format(saldo),
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 16.sp,
                         color = textMainColor
                     )
+                    
+                    // Desglose
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+                        Text("💵", fontSize = 10.sp)
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(formatMoney.format(efec), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = textMainColor.copy(alpha = 0.7f))
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("💳", fontSize = 10.sp)
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(formatMoney.format(virt), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = textMainColor.copy(alpha = 0.7f))
+                    }
                 }
 
+                // Columna 2 (Socio Secundario)
                 Column(horizontalAlignment = Alignment.End) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(if (isUserRocio) "Santiago" else "Rocío", fontSize = 12.sp, color = labelColor, fontWeight = FontWeight.SemiBold)
                         Spacer(modifier = Modifier.width(6.dp))
                         Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(MaterialTheme.colorScheme.tertiary))
                     }
+                    val saldo2 = if (isUserRocio) balance.santiagoSaldoFinal else balance.rocioSaldoFinal
+                    val efec2 = if (isUserRocio) balance.santiagoEfectivo else balance.rocioEfectivo
+                    val virt2 = if (isUserRocio) balance.santiagoVirtual else balance.rocioVirtual
+
                     Text(
-                        text = "${formatMoney.format(if (isUserRocio) balance.santiagoSaldoFinal else balance.rocioSaldoFinal)} (${(secondaryRatio * 100).toInt()}%)",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp,
+                        text = formatMoney.format(saldo2),
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 16.sp,
                         color = textMainColor
                     )
+
+                    // Desglose
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+                        Text(formatMoney.format(efec2), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = textMainColor.copy(alpha = 0.7f))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("💵", fontSize = 10.sp)
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(formatMoney.format(virt2), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = textMainColor.copy(alpha = 0.7f))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("💳", fontSize = 10.sp)
+                    }
                 }
             }
         }
@@ -692,10 +726,11 @@ fun MovementItem(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     val responsableTag = movement.responsable
+                    val metodoTag = if (movement.metodoPago.contains("Efectivo", ignoreCase = true)) "💵" else "💳"
                     val subtitulo = if (movement.descripcion.isNotEmpty()) {
-                        "$responsableTag • ${movement.descripcion}"
+                        "$metodoTag $responsableTag • ${movement.descripcion}"
                     } else {
-                        responsableTag
+                        "$metodoTag $responsableTag"
                     }
                     Text(
                         text = subtitulo,

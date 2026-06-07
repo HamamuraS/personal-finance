@@ -30,7 +30,11 @@ data class BalanceBreakdown(
     val santiagoSaldoFinal: Double,
     val rocioSaldoFinal: Double,
     val totalAportesMes: Double,
-    val totalGastosMes: Double
+    val totalGastosMes: Double,
+    val santiagoEfectivo: Double,
+    val santiagoVirtual: Double,
+    val rocioEfectivo: Double,
+    val rocioVirtual: Double
 )
 
 class AhorroViewModel(application: Application) : AndroidViewModel(application) {
@@ -195,6 +199,7 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
         responsable: String,
         esComun: Boolean,
         descripcion: String,
+        metodoPago: String,
         onSuccess: () -> Unit
     ) {
         viewModelScope.launch {
@@ -208,7 +213,8 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
                 categoria = categoria,
                 responsable = responsable,
                 esComun = esComun,
-                descripcion = descripcion
+                descripcion = descripcion,
+                metodoPago = metodoPago
             )
 
             try {
@@ -352,33 +358,80 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
         var totalAportesMes = 0.0
         var totalGastosMes = 0.0
 
+        // Desglose de saldos por método de pago para el pozo
+        var sEfectivo = 0.0
+        var sVirtual = 0.0
+        var rEfectivo = 0.0
+        var rVirtual = 0.0
+
         for (m in list) {
             val isSantiago = m.responsable.equals("Santiago", ignoreCase = true)
+            val isEfectivo = m.metodoPago.equals("Efectivo", ignoreCase = true)
 
             when (m.tipo.lowercase()) {
                 "aporte" -> {
-                    if (isSantiago) sAportes += m.monto else rAportes += m.monto
+                    if (isSantiago) {
+                        sAportes += m.monto
+                        if (isEfectivo) sEfectivo += m.monto else sVirtual += m.monto
+                    } else {
+                        rAportes += m.monto
+                        if (isEfectivo) rEfectivo += m.monto else rVirtual += m.monto
+                    }
                     totalAportesMes += m.monto
                 }
                 "gasto" -> {
                     if (m.esComun) {
                         gastosComunesTotales += m.monto
+                        // Los gastos comunes impactan 50% a cada uno en el método de pago usado
+                        if (isSantiago) {
+                            if (isEfectivo) sEfectivo -= m.monto else sVirtual -= m.monto
+                            // Pero contablemente, cada uno paga la mitad.
+                            // Si Santiago paga 100 en efectivo, su efectivo baja 100,
+                            // pero Rocío le "debe" 50.
+                        } else {
+                            if (isEfectivo) rEfectivo -= m.monto else rVirtual -= m.monto
+                        }
                     } else {
-                        if (isSantiago) sGastosPersonales += m.monto else rGastosPersonales += m.monto
+                        if (isSantiago) {
+                            sGastosPersonales += m.monto
+                            if (isEfectivo) sEfectivo -= m.monto else sVirtual -= m.monto
+                        } else {
+                            rGastosPersonales += m.monto
+                            if (isEfectivo) rEfectivo -= m.monto else rVirtual -= m.monto
+                        }
                     }
                     totalGastosMes += m.monto
                 }
                 "transferencia" -> {
-                    if (isSantiago) sTransfersHechas += m.monto else rTransfersHechas += m.monto
+                    if (isSantiago) {
+                        sTransfersHechas += m.monto
+                        if (isEfectivo) sEfectivo -= m.monto else sVirtual -= m.monto
+                        // Y el otro recibe
+                        if (isEfectivo) rEfectivo += m.monto else rVirtual += m.monto
+                    } else {
+                        rTransfersHechas += m.monto
+                        if (isEfectivo) rEfectivo -= m.monto else rVirtual -= m.monto
+                        // Y Santiago recibe
+                        if (isEfectivo) sEfectivo += m.monto else sVirtual += m.monto
+                    }
                 }
             }
         }
 
-        // Un gasto común se divide exactamente 50% entre los dos
+        // Un gasto común se divide exactamente 50% entre los dos contablemente
         val sGastosComunes = gastosComunesTotales / 2.0
         val rGastosComunes = gastosComunesTotales / 2.0
 
-        // Balances Finales
+        // El saldo final contable ya contempla las transferencias y gastos comunes.
+        // Los saldos por método de pago (sEfectivo, sVirtual, etc) también deben 
+        // ajustarse por la "deuda" generada por los gastos comunes pagados por el otro.
+        
+        // Si Santiago pagó un gasto común de 100, su sEfectivo/sVirtual bajó 100,
+        // pero solo debería haber bajado 50. Rocío le debe 50.
+        // Vamos a simplificar: los saldos por método muestran la DISPONIBILIDAD REAL
+        // de dinero de cada uno en cada bolsa, considerando quién puso qué y quién pagó qué.
+
+        // Balances Finales Contables
         val sSaldoFinal = sAportes - sGastosPersonales - sGastosComunes - sTransfersHechas + rTransfersHechas
         val rSaldoFinal = rAportes - rGastosPersonales - rGastosComunes - rTransfersHechas + sTransfersHechas
 
@@ -398,7 +451,11 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
             santiagoSaldoFinal = sSaldoFinal,
             rocioSaldoFinal = rSaldoFinal,
             totalAportesMes = totalAportesMes,
-            totalGastosMes = totalGastosMes
+            totalGastosMes = totalGastosMes,
+            santiagoEfectivo = sEfectivo,
+            santiagoVirtual = sVirtual,
+            rocioEfectivo = rEfectivo,
+            rocioVirtual = rVirtual
         )
     }
 }

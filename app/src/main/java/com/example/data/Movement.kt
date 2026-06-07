@@ -10,7 +10,8 @@ data class Movement(
     val categoria: String,
     val responsable: String, // "Santiago", "Rocío"
     val esComun: Boolean, // Si es compartido o personal (para gastos)
-    val descripcion: String = ""
+    val descripcion: String = "",
+    val metodoPago: String = "Billetera Virtual" // "Efectivo", "Billetera Virtual"
 ) {
     // Convierte el movimiento en una fila para Google Sheets
     fun toRowValues(): List<String> {
@@ -22,7 +23,8 @@ data class Movement(
             categoria,
             responsable,
             esComun.toString(),
-            descripcion
+            descripcion,
+            metodoPago
         )
     }
 
@@ -39,7 +41,8 @@ data class Movement(
                     categoria = row.getOrNull(4) ?: "Otros",
                     responsable = row.getOrNull(5) ?: "Santiago",
                     esComun = row.getOrNull(6)?.toBooleanStrictOrNull() ?: true,
-                    descripcion = row.getOrNull(7) ?: ""
+                    descripcion = row.getOrNull(7) ?: "",
+                    metodoPago = row.getOrNull(8) ?: "Billetera Virtual"
                 )
             } catch (e: Exception) {
                 null

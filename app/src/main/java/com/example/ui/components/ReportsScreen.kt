@@ -230,27 +230,6 @@ fun ReportAportesCard(userProfile: String, balance: BalanceBreakdown, formatMone
                     Text("Total Aportado", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
                     Text(formatMoney.format(totalAportes), fontSize = 16.sp, fontWeight = FontWeight.Black)
                 }
-
-                Column(horizontalAlignment = Alignment.End, modifier = Modifier.weight(1.5f)) {
-                    Text("Diferencia de Aportes", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
-                    val diff = balance.santiagoAportes - balance.rocioAportes
-                    val diffAbs = kotlin.math.abs(diff)
-                    val pagador = if (diff > 0) "Santiago aportó más" else if (diff < 0) "Rocío aportó más" else ""
-                    val isUserRocio = userProfile == "Rocío"
-                    val diffColor = if (diff > 0) {
-                        if (isUserRocio) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary
-                    } else if (diff < 0) {
-                        if (isUserRocio) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary
-                    } else MaterialTheme.colorScheme.onSurface
-
-                    Text(
-                        text = if (diff == 0.0) "Equitativo" else "$pagador\n(${formatMoney.format(diffAbs)})",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = diffColor,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.End
-                    )
-                }
             }
         }
     }

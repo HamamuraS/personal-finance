@@ -104,19 +104,21 @@ fun AddMovementScreen(
     // Estados locales del formulario
     var monto by remember { mutableStateOf("") }
     var tipo by remember { mutableStateOf("Gasto") } // "Gasto", "Aporte", "Transferencia"
-    var esComun by remember { mutableStateOf(true) } // si esGasto -> compartido por defecto
+    var esComun by remember { mutableStateOf(false) } // personal por defecto
     var responsable by remember { mutableStateOf(currentUserProfile) } // "Santiago", "Rocío"
+    var metodoPago by remember { mutableStateOf("Billetera Virtual") } // "Efectivo", "Billetera Virtual"
     var descripcion by remember { mutableStateOf("") }
 
-    // Fecha por defecto: hoy en formato YYYY-MM-DD
+    // Fecha por defecto: hoy en formato YYYY-MM-DD HH:mm
     val currentCalendar = remember { Calendar.getInstance() }
     val dateFormatter = remember { SimpleDateFormat("yyyy-MM-dd", Locale.US) }
+    val timeFormatter = remember { SimpleDateFormat("HH:mm", Locale.US) }
     var fecha by remember { mutableStateOf(dateFormatter.format(currentCalendar.time)) }
+    var hora by remember { mutableStateOf(timeFormatter.format(currentCalendar.time)) }
 
     // Categorías basadas en Tipo y Comunalidad
     val listAportes = listOf("Sueldo Santiago", "Sueldo Rocío", "Transferencias extraordinarias", "Otros")
-    val listGastosComunes = listOf("Alquiler", "Supermercado", "Vacaciones", "Internet", "Otros comunes")
-    val listGastosPersonales = listOf("Ropa", "Hobbies", "Regalos", "Salidas individuales", "Otros personales")
+    val listGastos = listOf("Transporte publico", "Servicios", "Animales", "Salidas", "Otros")
     val listTransferencias = listOf("Ajuste", "Reembolso", "Otros")
 
     var categoria by remember { mutableStateOf("") }
@@ -126,9 +128,7 @@ fun AddMovementScreen(
         categoria = when (tipo) {
             "Aporte" -> if (currentUserProfile == "Rocío") "Sueldo Rocío" else "Sueldo Santiago"
             "Transferencia" -> listTransferencias.first()
-            "Gasto" -> {
-                if (esComun) listGastosComunes.first() else listGastosPersonales.first()
-            }
+            "Gasto" -> listGastos.first()
             else -> "Otros"
         }
     }
@@ -292,6 +292,40 @@ fun AddMovementScreen(
                 }
             }
 
+            // Método de Pago (Efectivo o Billetera Virtual)
+            Column {
+                Text(
+                    text = "Método de Pago",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+                
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    listOf("Billetera Virtual", "Efectivo").forEach { item ->
+                        val isSelected = metodoPago == item
+                        Button(
+                            onClick = { metodoPago = item },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
+                                contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+                            ),
+                            elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(44.dp)
+                        ) {
+                            Text(item, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+
             // Si es Gasto -> Compartido vs Personal
             if (tipo == "Gasto") {
                 Column {
@@ -361,9 +395,7 @@ fun AddMovementScreen(
                 val items = when (tipo) {
                     "Aporte" -> listAportes
                     "Transferencia" -> listTransferencias
-                    else -> {
-                        if (esComun) listGastosComunes else listGastosPersonales
-                    }
+                    else -> listGastos
                 }
 
                 FlowRow(
@@ -513,13 +545,14 @@ fun AddMovementScreen(
                     }
 
                     viewModel.addMovement(
-                        fecha = fecha,
+                        fecha = "$fecha $hora",
                         monto = doubleMonto,
                         tipo = tipo,
                         categoria = categoria,
                         responsable = responsable,
                         esComun = if (tipo == "Gasto") esComun else false,
                         descripcion = descripcion,
+                        metodoPago = metodoPago,
                         onSuccess = {
                             monto = ""
                             descripcion = ""
