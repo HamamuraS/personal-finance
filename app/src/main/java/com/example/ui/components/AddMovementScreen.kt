@@ -118,7 +118,7 @@ fun AddMovementScreen(
     var monto by remember { mutableStateOf("") }
     var tipo by remember { mutableStateOf("Gasto") } // "Gasto", "Aporte", "Transferencia"
     var esComun by remember { mutableStateOf(false) } // personal por defecto
-    var responsable by remember { mutableStateOf(currentUserProfile) } // "Santiago", "Rocío"
+    val responsable = currentUserProfile // Siempre el usuario actual
     var metodoPago by remember { mutableStateOf("Billetera Virtual") } // "Efectivo", "Billetera Virtual"
     var descripcion by remember { mutableStateOf("") }
     var ticketUri by remember { mutableStateOf<Uri?>(null) }
@@ -266,7 +266,7 @@ fun AddMovementScreen(
                     color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
                     modifier = Modifier.padding(bottom = 8.dp)
                 )
-                
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -287,42 +287,6 @@ fun AddMovementScreen(
                                 .height(44.dp)
                         ) {
                             Text(label, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                        }
-                    }
-                }
-            }
-
-            // Responsable (Santiago o Rocío)
-            Column {
-                Text(
-                    text = "Quién lo realiza",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
-                    modifier = Modifier.padding(bottom = 8.dp)
-                )
-                
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    listOf("Santiago", "Rocío").forEach { item ->
-                        val isSelected = responsable == item
-                        Button(
-                            onClick = { responsable = item },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isSelected) {
-                                    if (item == currentUserProfile) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary
-                                } else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
-                                contentColor = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface
-                            ),
-                            elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp),
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(44.dp)
-                        ) {
-                            Text(item, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -399,8 +363,14 @@ fun AddMovementScreen(
                         Button(
                             onClick = { esComun = false },
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = if (!esComun) MaterialTheme.colorScheme.secondary.copy(alpha = 0.15f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
-                                contentColor = if (!esComun) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurface
+                                containerColor = if (!esComun) {
+                                    if (currentUserProfile == "Rocío") MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f)
+                                    else MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                                } else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
+                                contentColor = if (!esComun) {
+                                    if (currentUserProfile == "Rocío") MaterialTheme.colorScheme.tertiary
+                                    else MaterialTheme.colorScheme.primary
+                                } else MaterialTheme.colorScheme.onSurface
                             ),
                             shape = RoundedCornerShape(12.dp),
                             elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp),

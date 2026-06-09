@@ -36,7 +36,7 @@ class AhorroRepository(private val prefsHelper: PreferencesHelper) {
      */
     suspend fun fetchMovements(webAppUrl: String): List<Movement> {
         if (prefsHelper.useLocalDemo) {
-            return prefsHelper.getLocalMovements()
+            return prefsHelper.getLocalMovements().filter { !it.eliminado }
         }
 
         if (webAppUrl.isEmpty()) {
@@ -73,7 +73,8 @@ class AhorroRepository(private val prefsHelper: PreferencesHelper) {
     suspend fun saveMovement(
         webAppUrl: String, 
         movement: Movement, 
-        imageInfo: ImageInfo? = null
+        imageInfo: ImageInfo? = null,
+        folderId: String? = null
     ): Boolean {
         if (prefsHelper.useLocalDemo) {
             val current = prefsHelper.getLocalMovements().toMutableList()
@@ -92,7 +93,8 @@ class AhorroRepository(private val prefsHelper: PreferencesHelper) {
             val req = WebAppRequest(
                 action = "POST",
                 body = movement,
-                imageInfo = imageInfo
+                imageInfo = imageInfo,
+                folderId = folderId
             )
             
             val response = sheetsService.addMovement(webAppUrl, req)
@@ -115,11 +117,46 @@ class AhorroRepository(private val prefsHelper: PreferencesHelper) {
         }
     }
 
-    fun deleteLocalMovement(movement: Movement) {
+    suspend fun deleteMovement(webAppUrl: String, movement: Movement): Boolean {
         if (prefsHelper.useLocalDemo) {
             val current = prefsHelper.getLocalMovements().toMutableList()
-            current.removeAll { it.id == movement.id }
-            prefsHelper.saveLocalMovements(current)
+            // Baja lógica local
+            val index = current.indexOfFirst { it.id == movement.id }
+            if (index != -1) {
+                current[index] = current[index].copy(eliminado = true)
+                prefsHelper.saveLocalMovements(current)
+            }
+            return true
         }
+
+        if (webAppUrl.isEmpty()) return false
+
+        return try {
+            val req = WebAppRequest(
+                action = "DELETE",
+                id = movement.id
+            )
+            val response = sheetsService.addMovement(webAppUrl, req)
+            if (response.isSuccessful && response.body()?.status == "SUCCESS") {
+                val cached = prefsHelper.getSheetsCache().toMutableList()
+                val idx = cached.indexOfFirst { it.id == movement.id }
+                if (idx != -1) {
+                    cached[idx] = cached[idx].copy(eliminado = true)
+                    prefsHelper.saveSheetsCache(cached)
+                }
+                true
+            } else {
+                false
+            }
+        } catch (e: Exception) {
+            Log.e("AhorroRepository", "Exception deleteMovement: ${e.message}", e)
+            false
+        }
+    }
+
+    fun deleteLocalMovement(movement: Movement) {
+        val current = prefsHelper.getLocalMovements().toMutableList()
+        current.removeAll { it.id == movement.id }
+        prefsHelper.saveLocalMovements(current)
     }
 }

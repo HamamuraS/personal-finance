@@ -104,6 +104,7 @@ class MainActivity : ComponentActivity() {
                                     useLocalDemo = useLocalDemo,
                                     onRefresh = { viewModel.refreshData() },
                                     onDeleteMovement = { viewModel.deleteMovement(it) },
+                                    onDuplicateMovement = { viewModel.duplicateMovement(it) {} },
                                     availableMonths = viewModel.availableMonths.collectAsState().value,
                                     selectedMonth = viewModel.selectedMonth.collectAsState().value,
                                     isCurrentMonth = isCurrentMonth,

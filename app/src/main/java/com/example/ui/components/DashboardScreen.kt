@@ -42,6 +42,7 @@ fun DashboardScreen(
     useLocalDemo: Boolean,
     onRefresh: () -> Unit,
     onDeleteMovement: (Movement) -> Unit,
+    onDuplicateMovement: (Movement) -> Unit,
     availableMonths: List<String>,
     selectedMonth: String,
     isCurrentMonth: Boolean,
@@ -152,25 +153,23 @@ fun DashboardScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        val isUserRocio = userProfile == "Rocío"
-                        
                         DesgloseSocioCard(
                             modifier = Modifier.weight(1f),
-                            nombre = if (isUserRocio) "Rocío" else "Santiago",
-                            saldo = if (isUserRocio) balance.rocioSaldoFinal else balance.santiagoSaldoFinal,
-                            aportes = if (isUserRocio) balance.rocioAportes else balance.santiagoAportes,
-                            personales = if (isUserRocio) balance.rocioGastosPersonales else balance.santiagoGastosPersonales,
-                            comunes = if (isUserRocio) balance.rocioGastosComunes else balance.santiagoGastosComunes,
+                            nombre = "Santiago",
+                            saldo = balance.santiagoSaldoFinal,
+                            aportes = balance.santiagoAportes,
+                            personales = balance.santiagoGastosPersonales,
+                            comunes = balance.santiagoGastosComunes,
                             formatMoney = formatMoney,
                             avatarColor = MaterialTheme.colorScheme.primary
                         )
                         DesgloseSocioCard(
                             modifier = Modifier.weight(1f),
-                            nombre = if (isUserRocio) "Santiago" else "Rocío",
-                            saldo = if (isUserRocio) balance.santiagoSaldoFinal else balance.rocioSaldoFinal,
-                            aportes = if (isUserRocio) balance.santiagoAportes else balance.rocioAportes,
-                            personales = if (isUserRocio) balance.santiagoGastosPersonales else balance.rocioGastosPersonales,
-                            comunes = if (isUserRocio) balance.santiagoGastosComunes else balance.rocioGastosComunes,
+                            nombre = "Rocío",
+                            saldo = balance.rocioSaldoFinal,
+                            aportes = balance.rocioAportes,
+                            personales = balance.rocioGastosPersonales,
+                            comunes = balance.rocioGastosComunes,
                             formatMoney = formatMoney,
                             avatarColor = MaterialTheme.colorScheme.tertiary
                         )
@@ -262,16 +261,361 @@ fun DashboardScreen(
                     }
                 } else {
                     items(filteredMovements, key = { it.id }) { mov ->
-                        MovementItem(
+                        SwipeableMovementItem(
                             movement = mov,
                             formatMoney = formatMoney,
                             useLocalDemo = useLocalDemo,
                             isCurrentMonth = isCurrentMonth,
                             currentUserProfile = userProfile,
-                            onDelete = { onDeleteMovement(mov) }
+                            onDelete = { onDeleteMovement(mov) },
+                            onDuplicate = { onDuplicateMovement(mov) }
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SwipeableMovementItem(
+    movement: Movement,
+    formatMoney: NumberFormat,
+    useLocalDemo: Boolean,
+    isCurrentMonth: Boolean,
+    currentUserProfile: String,
+    onDelete: () -> Unit,
+    onDuplicate: () -> Unit
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var showDeleteDialog by remember { mutableStateOf(false) }
+    var hasVibrated by remember { mutableStateOf(false) }
+    
+    val isOwnMovement = movement.responsable.equals(currentUserProfile, ignoreCase = true)
+    
+    // Usamos un solo estado y una técnica para romper la referencia circular
+    val dismissState = rememberSwipeToDismissBoxState(
+        confirmValueChange = {
+            false 
+        },
+        positionalThreshold = { distance -> distance * 0.6f }
+    )
+
+    // Lógica de activación: Solo si es propio y el progreso REAL cruza el 60%
+    LaunchedEffect(dismissState.progress) {
+        if (!isOwnMovement) return@LaunchedEffect
+
+        val isFarEnough = dismissState.progress >= 0.6f
+        val isGoingToDismiss = dismissState.targetValue == SwipeToDismissBoxValue.EndToStart
+        
+        if (isGoingToDismiss && isFarEnough) {
+            if (!hasVibrated) {
+                val vibrator = context.getSystemService(android.content.Context.VIBRATOR_SERVICE) as? android.os.Vibrator
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    vibrator?.vibrate(android.os.VibrationEffect.createOneShot(40, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
+                } else {
+                    vibrator?.vibrate(40)
+                }
+                hasVibrated = true
+            }
+            
+            if (dismissState.currentValue == SwipeToDismissBoxValue.Settled) {
+                 showDeleteDialog = true
+            }
+        } else {
+            if (dismissState.progress < 0.1f) {
+                hasVibrated = false
+            }
+        }
+    }
+
+    if (showDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = false },
+            title = { Text("¿Eliminar Movimiento?") },
+            text = { Text("Tranqui, puede recuperarse si se elimina.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDelete()
+                    showDeleteDialog = false
+                }) {
+                    Text("Eliminar", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteDialog = false }) {
+                    Text("Cancelar")
+                }
+            }
+        )
+    }
+
+    SwipeToDismissBox(
+        state = dismissState,
+        enableDismissFromStartToEnd = false,
+        enableDismissFromEndToStart = isOwnMovement, // Solo permite deslizar si es propio
+        backgroundContent = {
+            if (isOwnMovement) {
+                val color = MaterialTheme.colorScheme.error.copy(alpha = 0.8f)
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(color)
+                        .padding(horizontal = 20.dp),
+                    contentAlignment = Alignment.CenterEnd
+                ) {
+                    Icon(
+                        Icons.Default.Delete,
+                        contentDescription = "Eliminar",
+                        tint = Color.White
+                    )
+                }
+            }
+        }
+    ) {
+        MovementItem(
+            movement = movement,
+            formatMoney = formatMoney,
+            useLocalDemo = useLocalDemo,
+            isCurrentMonth = isCurrentMonth,
+            currentUserProfile = currentUserProfile,
+            onDelete = onDelete,
+            onDuplicate = onDuplicate
+        )
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun MovementItem(
+    movement: Movement,
+    formatMoney: NumberFormat,
+    useLocalDemo: Boolean,
+    isCurrentMonth: Boolean,
+    currentUserProfile: String,
+    onDelete: () -> Unit,
+    onDuplicate: () -> Unit
+) {
+    var showDuplicateDialog by remember { mutableStateOf(false) }
+
+    if (showDuplicateDialog) {
+        AlertDialog(
+            onDismissRequest = { showDuplicateDialog = false },
+            title = { Text("¿Duplicar Movimiento?") },
+            text = { Text("Se creará una copia de este gasto con la fecha de hoy.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDuplicate()
+                    showDuplicateDialog = false
+                }) {
+                    Text("Duplicar")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDuplicateDialog = false }) {
+                    Text("Cancelar")
+                }
+            }
+        )
+    }
+
+    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
+    val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
+    val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFF1F5F9)
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = cardBg
+        ),
+        border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            // Icono contextual
+            val isGasto = movement.tipo.lowercase() == "gasto"
+            val isAporte = movement.tipo.lowercase() == "aporte"
+            val isSantiagoAporte = isAporte && movement.responsable.equals("Santiago", ignoreCase = true)
+            val isRocioAporte = isAporte && movement.responsable.equals("Rocío", ignoreCase = true)
+            
+            val aporteColor = when {
+                isSantiagoAporte -> MaterialTheme.colorScheme.primary // Santiago siempre verde
+                isRocioAporte -> MaterialTheme.colorScheme.tertiary // Rocío siempre azul
+                else -> MaterialTheme.colorScheme.tertiary // Fallback para transferencias u otros
+            }
+            
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(
+                        when {
+                            isAporte -> aporteColor.copy(alpha = 0.1f)
+                            isGasto && movement.esComun -> MaterialTheme.colorScheme.error.copy(alpha = 0.1f)
+                            isGasto -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f)
+                            else -> MaterialTheme.colorScheme.tertiary.copy(alpha = 0.1f) // Transferencia
+                        }
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = when {
+                        isAporte -> Icons.Default.KeyboardArrowUp
+                        isGasto -> Icons.Default.KeyboardArrowDown
+                        else -> Icons.Default.Refresh
+                    },
+                    contentDescription = null,
+                    tint = when {
+                        isAporte -> aporteColor
+                        isGasto && movement.esComun -> MaterialTheme.colorScheme.error
+                        isGasto -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        else -> MaterialTheme.colorScheme.tertiary
+                    }
+                )
+            }
+
+            // Detalles del movimiento
+            Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = movement.categoria,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    
+                    Text(
+                        text = if (isAporte) "+${formatMoney.format(movement.monto)}" else "-${formatMoney.format(movement.monto)}",
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 15.sp,
+                        color = when {
+                            isAporte -> aporteColor
+                            isGasto && movement.esComun -> MaterialTheme.colorScheme.error
+                            isGasto -> MaterialTheme.colorScheme.onSurface
+                            else -> MaterialTheme.colorScheme.tertiary
+                        }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(3.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val responsableTag = movement.responsable
+                    val metodoTag = if (movement.metodoPago.contains("Efectivo", ignoreCase = true)) "💵" else "💳"
+                    val subtitulo = if (movement.descripcion.isNotEmpty()) {
+                        "$metodoTag $responsableTag • ${movement.descripcion}"
+                    } else {
+                        "$metodoTag $responsableTag"
+                    }
+                    Text(
+                        text = subtitulo,
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1.5f)
+                    )
+
+                    // Icono de Ticket
+                    if (movement.ticketUrl.isNotEmpty()) {
+                        val context = androidx.compose.ui.platform.LocalContext.current
+                        Icon(
+                            imageVector = Icons.Default.Receipt,
+                            contentDescription = "Ver Ticket",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .size(20.dp)
+                                .clickable {
+                                    try {
+                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(movement.ticketUrl))
+                                        context.startActivity(intent)
+                                    } catch (e: Exception) {
+                                        // Fallback or error
+                                    }
+                                }
+                                .padding(horizontal = 2.dp)
+                        )
+                    }
+
+                    // Tag Compartido vs Personal
+                    if (isGasto) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            // Botón Duplicar si es Transporte Público
+                            if (movement.categoria.contains("Transporte", ignoreCase = true)) {
+                                IconButton(
+                                    onClick = { showDuplicateDialog = true },
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.ContentCopy,
+                                        contentDescription = "Duplicar",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(
+                                        if (movement.esComun) MaterialTheme.colorScheme.error.copy(alpha = 0.08f)
+                                        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f)
+                                    )
+                                    .padding(horizontal = 4.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = if (movement.esComun) "Común" else "Pers.",
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (movement.esComun) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                                )
+                            }
+                        }
+                    } else if (movement.tipo.lowercase() == "transferencia") {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.08f))
+                                .padding(horizontal = 4.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = "Transf.",
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.tertiary
+                            )
+                        }
+                    }
+                }
+
+                // Mostrar fecha muy minimal abajo
+                Text(
+                    text = formatDateMinimal(movement.fecha).replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() },
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
+                    modifier = Modifier.padding(top = 2.dp)
+                )
             }
         }
     }
@@ -319,12 +663,11 @@ fun PozoComunCard(userProfile: String, balance: BalanceBreakdown, formatMoney: N
             Spacer(modifier = Modifier.height(16.dp))
 
             // Split Bar (Si se dividiera hoy)
-            val isUserRocio = userProfile == "Rocío"
             val santiagoRatioUnsafe = if (balance.totalPozo > 0) (balance.santiagoSaldoFinal / balance.totalPozo).coerceIn(0.0, 1.0) else 0.5
             
-            // Si Rocío es principal (iziq), el azul está a la izq y santiago a la derecha
-            val mainRatio = if (isUserRocio) (1.0 - santiagoRatioUnsafe) else santiagoRatioUnsafe
-            val secondaryRatio = 1.0 - mainRatio
+            // Santiago siempre a la izquierda (primary/verde), Rocío a la derecha (tertiary/azul)
+            val santiagoRatio = santiagoRatioUnsafe
+            val rocioRatio = 1.0 - santiagoRatio
 
             Row(
                 modifier = Modifier
@@ -333,18 +676,18 @@ fun PozoComunCard(userProfile: String, balance: BalanceBreakdown, formatMoney: N
                     .clip(CircleShape)
                     .background(if (isDark) Color(0xFF5D625C) else Color(0xFFC2CDC1))
             ) {
-                // Barra principal (Loggeado)
+                // Barra Santiago (Verde)
                 Box(
                     modifier = Modifier
                         .fillMaxHeight()
-                        .weight(if (mainRatio > 0) mainRatio.toFloat() else 0.001f)
+                        .weight(if (santiagoRatio > 0) santiagoRatio.toFloat() else 0.001f)
                         .background(MaterialTheme.colorScheme.primary)
                 )
-                // Barra secundaria (Otro)
+                // Barra Rocío (Azul)
                 Box(
                     modifier = Modifier
                         .fillMaxHeight()
-                        .weight(if (secondaryRatio > 0) secondaryRatio.toFloat() else 0.001f)
+                        .weight(if (rocioRatio > 0) rocioRatio.toFloat() else 0.001f)
                         .background(MaterialTheme.colorScheme.tertiary)
                 )
             }
@@ -355,19 +698,19 @@ fun PozoComunCard(userProfile: String, balance: BalanceBreakdown, formatMoney: N
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // Columna 1 (Socio Principal)
+                // Columna 1 (Santiago - Verde)
                 Column {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text(if (isUserRocio) "Rocío" else "Santiago", fontSize = 12.sp, color = labelColor, fontWeight = FontWeight.SemiBold)
+                        Text("Santiago", fontSize = 12.sp, color = labelColor, fontWeight = FontWeight.SemiBold)
                     }
-                    val saldo = if (isUserRocio) balance.rocioSaldoFinal else balance.santiagoSaldoFinal
-                    val efec = if (isUserRocio) balance.rocioEfectivo else balance.santiagoEfectivo
-                    val virt = if (isUserRocio) balance.rocioVirtual else balance.santiagoVirtual
+                    val saldoS = balance.santiagoSaldoFinal
+                    val efecS = balance.santiagoEfectivo
+                    val virtS = balance.santiagoVirtual
                     
                     Text(
-                        text = formatMoney.format(saldo),
+                        text = formatMoney.format(saldoS),
                         fontWeight = FontWeight.ExtraBold,
                         fontSize = 16.sp,
                         color = textMainColor
@@ -377,28 +720,28 @@ fun PozoComunCard(userProfile: String, balance: BalanceBreakdown, formatMoney: N
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
                         Text("💵", fontSize = 10.sp)
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text(formatMoney.format(efec), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = textMainColor.copy(alpha = 0.7f))
+                        Text(formatMoney.format(efecS), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = textMainColor.copy(alpha = 0.7f))
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("💳", fontSize = 10.sp)
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text(formatMoney.format(virt), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = textMainColor.copy(alpha = 0.7f))
+                        Text(formatMoney.format(virtS), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = textMainColor.copy(alpha = 0.7f))
                     }
                 }
 
-                // Columna 2 (Socio Secundario)
+                // Columna 2 (Rocío - Azul)
                 Column(horizontalAlignment = Alignment.End) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(if (isUserRocio) "Santiago" else "Rocío", fontSize = 12.sp, color = labelColor, fontWeight = FontWeight.SemiBold)
+                        Text("Rocío", fontSize = 12.sp, color = labelColor, fontWeight = FontWeight.SemiBold)
                         Spacer(modifier = Modifier.width(6.dp))
                         Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(MaterialTheme.colorScheme.tertiary))
                     }
-                    val saldo2 = if (isUserRocio) balance.santiagoSaldoFinal else balance.rocioSaldoFinal
-                    val efec2 = if (isUserRocio) balance.santiagoEfectivo else balance.rocioEfectivo
-                    val virt2 = if (isUserRocio) balance.santiagoVirtual else balance.rocioVirtual
+                    val saldoR = balance.rocioSaldoFinal
+                    val efecR = balance.rocioEfectivo
+                    val virtR = balance.rocioVirtual
 
                     Text(
-                        text = formatMoney.format(saldo2),
+                        text = formatMoney.format(saldoR),
                         fontWeight = FontWeight.ExtraBold,
                         fontSize = 16.sp,
                         color = textMainColor
@@ -406,12 +749,12 @@ fun PozoComunCard(userProfile: String, balance: BalanceBreakdown, formatMoney: N
 
                     // Desglose
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
-                        Text(formatMoney.format(efec2), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = textMainColor.copy(alpha = 0.7f))
+                        Text(formatMoney.format(efecR), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = textMainColor.copy(alpha = 0.7f))
                         Spacer(modifier = Modifier.width(4.dp))
                         Text("💵", fontSize = 10.sp)
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(formatMoney.format(virt2), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = textMainColor.copy(alpha = 0.7f))
+                        Text(formatMoney.format(virtR), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = textMainColor.copy(alpha = 0.7f))
                         Spacer(modifier = Modifier.width(4.dp))
                         Text("💳", fontSize = 10.sp)
                     }
@@ -592,222 +935,4 @@ fun formatDateMinimal(input: String): String {
         }
     } catch (e: Exception) {}
     return input
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-fun MovementItem(
-    movement: Movement,
-    formatMoney: NumberFormat,
-    useLocalDemo: Boolean,
-    isCurrentMonth: Boolean,
-    currentUserProfile: String,
-    onDelete: () -> Unit
-) {
-    var showDialog by remember { mutableStateOf(false) }
-
-    if (showDialog) {
-        AlertDialog(
-            onDismissRequest = { showDialog = false },
-            title = { Text("¿Eliminar Movimiento?") },
-            text = { Text("¿Desea borrar permanentemente este movimiento de la base local?") },
-            confirmButton = {
-                TextButton(onClick = {
-                    onDelete()
-                    showDialog = false
-                }) {
-                    Text("Eliminar", color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDialog = false }) {
-                    Text("Cancelar")
-                }
-            }
-        )
-    }
-
-    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
-    val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
-    val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFF1F5F9)
-
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .combinedClickable(
-                onLongClick = {
-                    if (useLocalDemo && isCurrentMonth) {
-                        showDialog = true
-                    }
-                },
-                onClick = {}
-            ),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = cardBg
-        ),
-        border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            // Icono contextual
-            val isGasto = movement.tipo.lowercase() == "gasto"
-            val isAporte = movement.tipo.lowercase() == "aporte"
-            val isOwnAporte = isAporte && movement.responsable.equals(currentUserProfile, ignoreCase = true)
-            val aporteColor = if (isOwnAporte) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary
-            
-            Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(CircleShape)
-                    .background(
-                        when {
-                            isAporte -> aporteColor.copy(alpha = 0.1f)
-                            isGasto && movement.esComun -> MaterialTheme.colorScheme.error.copy(alpha = 0.1f)
-                            isGasto -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f)
-                            else -> MaterialTheme.colorScheme.tertiary.copy(alpha = 0.1f) // Transferencia
-                        }
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = when {
-                        isAporte -> Icons.Default.KeyboardArrowUp
-                        isGasto -> Icons.Default.KeyboardArrowDown
-                        else -> Icons.Default.Refresh
-                    },
-                    contentDescription = null,
-                    tint = when {
-                        isAporte -> aporteColor
-                        isGasto && movement.esComun -> MaterialTheme.colorScheme.error
-                        isGasto -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                        else -> MaterialTheme.colorScheme.tertiary
-                    }
-                )
-            }
-
-            // Detalles del movimiento
-            Column(modifier = Modifier.weight(1f)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = movement.categoria,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
-                    )
-                    
-                    Text(
-                        text = if (isAporte) "+${formatMoney.format(movement.monto)}" else "-${formatMoney.format(movement.monto)}",
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 15.sp,
-                        color = when {
-                            isAporte -> aporteColor
-                            isGasto && movement.esComun -> MaterialTheme.colorScheme.error
-                            isGasto -> MaterialTheme.colorScheme.onSurface
-                            else -> MaterialTheme.colorScheme.tertiary
-                        }
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(3.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    val responsableTag = movement.responsable
-                    val metodoTag = if (movement.metodoPago.contains("Efectivo", ignoreCase = true)) "💵" else "💳"
-                    val subtitulo = if (movement.descripcion.isNotEmpty()) {
-                        "$metodoTag $responsableTag • ${movement.descripcion}"
-                    } else {
-                        "$metodoTag $responsableTag"
-                    }
-                    Text(
-                        text = subtitulo,
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1.5f)
-                    )
-
-                    // Icono de Ticket
-                    if (movement.ticketUrl.isNotEmpty()) {
-                        val context = androidx.compose.ui.platform.LocalContext.current
-                        Icon(
-                            imageVector = Icons.Default.Receipt,
-                            contentDescription = "Ver Ticket",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier
-                                .size(20.dp)
-                                .clickable {
-                                    try {
-                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(movement.ticketUrl))
-                                        context.startActivity(intent)
-                                    } catch (e: Exception) {
-                                        // Fallback or error
-                                    }
-                                }
-                                .padding(horizontal = 2.dp)
-                        )
-                    }
-
-                    // Tag Compartido vs Personal
-                    if (isGasto) {
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(4.dp))
-                                .background(
-                                    if (movement.esComun) MaterialTheme.colorScheme.error.copy(alpha = 0.08f)
-                                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f)
-                                )
-                                .padding(horizontal = 4.dp, vertical = 2.dp)
-                        ) {
-                            Text(
-                                text = if (movement.esComun) "Común" else "Pers.",
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = if (movement.esComun) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                            )
-                        }
-                    } else if (movement.tipo.lowercase() == "transferencia") {
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(4.dp))
-                                .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.08f))
-                                .padding(horizontal = 4.dp, vertical = 2.dp)
-                        ) {
-                            Text(
-                                text = "Transf.",
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.tertiary
-                            )
-                        }
-                    }
-                }
-
-                // Mostrar fecha muy minimal abajo
-                Text(
-                    text = formatDateMinimal(movement.fecha).replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() },
-                    fontSize = 10.sp,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
-                    modifier = Modifier.padding(top = 2.dp)
-                )
-            }
-        }
-    }
 }

@@ -1,19 +1,18 @@
 /**
  * Script de Google Apps Script para la sincronización de la App de Finanzas Personales.
  *
- * Versión: 3.3 (Manejo robusto de permisos y orientación)
+ * Versión: 4.0 (Soporte para baja lógica y carpeta configurable)
  * @description Este script requiere acceso a Google Drive para guardar los tickets.
  */
 
 const monthNames = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
-const folderId = "1LT_t2a7WBFe6wGjwJ5XuTYsS7gvjr3jU"; // Cambia por tu ID de carpeta real si es distinta
+const defaultFolderId = "1LT_t2a7WBFe6wGjwJ5XuTYsS7gvjr3jU";
 
 /**
  * Función para forzar la solicitud de permisos de Drive.
- * Ejecuta esta función manualmente desde el editor de Apps Script si ves errores de DriveApp.
  */
 function triggerAuthorization() {
-  const folder = DriveApp.getFolderById(folderId);
+  const folder = DriveApp.getFolderById(defaultFolderId);
   Logger.log("Acceso a carpeta verificado: " + folder.getName());
 }
 
@@ -26,6 +25,10 @@ function doGet(e) {
     const data = sheet.getDataRange().getValues();
     if (data.length > 1) {
       const rows = data.slice(1).map(row => {
+        // Ignorar si está marcado como eliminado (Columna K / index 10)
+        const eliminado = row[10] === true || row[10] === 'true' || row[10] === 'VERDADERO';
+        if (eliminado) return null;
+
         return {
           id: row[0] ? row[0].toString() : "",
           fecha: row[1] ? row[1].toString() : "",
@@ -36,9 +39,10 @@ function doGet(e) {
           esComun: row[6] === true || row[6] === 'true' || row[6] === 'VERDADERO',
           descripcion: row[7] ? row[7].toString() : "",
           metodoPago: row[8] ? row[8].toString() : "Billetera Virtual",
-          ticketUrl: row[9] ? row[9].toString() : ""
+          ticketUrl: row[9] ? row[9].toString() : "",
+          eliminado: false
         };
-      });
+      }).filter(r => r !== null);
       allData = allData.concat(rows);
     }
   });
@@ -52,8 +56,14 @@ function doPost(e) {
   try {
     const contents = e.postData.contents;
     const json = JSON.parse(contents);
+    const action = json.action;
+    const folderId = json.folderId || defaultFolderId;
 
-    if ((json.action === 'POST' || json.action === 'PUT') && json.body) {
+    if (action === 'DELETE' && json.id) {
+      return handleLogicalDelete(json.id);
+    }
+
+    if ((action === 'POST' || action === 'PUT') && json.body) {
       const mov = json.body;
 
       // --- LÓGICA DE SUBIDA DE IMAGEN BASE64 ---
@@ -81,8 +91,6 @@ function doPost(e) {
         } catch (imgErr) {
           imgStatus = "ERROR GUARDANDO IMAGEN: " + imgErr.toString();
         }
-      } else {
-        imgStatus = "No se recibió imageInfo o base64 en el JSON";
       }
 
       const dateParts = mov.fecha.split("-");
@@ -100,9 +108,22 @@ function doPost(e) {
 
       if (!sheet) {
         sheet = ss.insertSheet(sheetName);
-        sheet.appendRow(["ID", "Fecha", "Monto", "Tipo", "Categoría", "Responsable", "Es Común", "Descripción", "Metodo Pago", "Ticket URL"]);
-        sheet.getRange(1, 1, 1, 10).setFontWeight("bold").setBackground("#e2e8f0");
+        sheet.appendRow(["ID", "Fecha", "Monto", "Tipo", "Categoría", "Responsable", "Es Común", "Descripción", "Metodo Pago", "Ticket URL", "Eliminado"]);
+        sheet.getRange(1, 1, 1, 11).setFontWeight("bold").setBackground("#e2e8f0");
         sheet.setFrozenRows(1);
+      }
+
+      // Si es un PUT, buscar por ID y reemplazar
+      if (action === 'PUT') {
+          const data = sheet.getDataRange().getValues();
+          for (let i = 1; i < data.length; i++) {
+              if (data[i][0] == mov.id) {
+                  sheet.getRange(i + 1, 1, 1, 11).setValues([[
+                      mov.id, mov.fecha, mov.monto, mov.tipo, mov.categoria, mov.responsable, mov.esComun, mov.descripcion, mov.metodoPago, mov.ticketUrl || data[i][9], false
+                  ]]);
+                  return ContentService.createTextOutput(JSON.stringify({ status: "SUCCESS", message: "Actualizado OK" })).setMimeType(ContentService.MimeType.JSON);
+              }
+          }
       }
 
       sheet.appendRow([
@@ -115,7 +136,8 @@ function doPost(e) {
         mov.esComun,
         mov.descripcion,
         mov.metodoPago || "Billetera Virtual",
-        mov.ticketUrl || ""
+        mov.ticketUrl || "",
+        false // Columna Eliminado
       ]);
 
       return ContentService.createTextOutput(JSON.stringify({
@@ -130,4 +152,24 @@ function doPost(e) {
       imgStatus: imgStatus
     })).setMimeType(ContentService.MimeType.JSON);
   }
+}
+
+function handleLogicalDelete(id) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheets = ss.getSheets();
+
+  for (let sheet of sheets) {
+    const data = sheet.getDataRange().getValues();
+    for (let i = 1; i < data.length; i++) {
+      if (data[i][0] == id) {
+        // Marcar columna K (index 10) como TRUE
+        sheet.getRange(i + 1, 11).setValue(true);
+        return ContentService.createTextOutput(JSON.stringify({ status: "SUCCESS", message: "Eliminado (baja lógica) OK" }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+  }
+
+  return ContentService.createTextOutput(JSON.stringify({ status: "ERROR", message: "ID no encontrado" }))
+    .setMimeType(ContentService.MimeType.JSON);
 }

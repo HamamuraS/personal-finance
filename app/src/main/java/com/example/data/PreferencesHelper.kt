@@ -14,7 +14,8 @@ class PreferencesHelper(context: Context) {
     private val listAdapter = moshi.adapter<List<Movement>>(movementType)
 
     companion object {
-        private const val KEY_SPREADSHEET_ID = "spreadsheet_id"
+        private const val KEY_SCRIPT_URL = "script_url"
+        private const val KEY_FOLDER_ID = "folder_id"
         private const val KEY_USE_LOCAL_DEMO = "use_local_demo"
         private const val KEY_LOCAL_MOVEMENTS = "local_movements"
         private const val KEY_SHEETS_CACHE = "sheets_cache"
@@ -28,10 +29,16 @@ class PreferencesHelper(context: Context) {
             prefs.edit().putBoolean(KEY_IS_DARK_MODE, value).apply()
         }
 
-    var spreadsheetId: String
-        get() = prefs.getString(KEY_SPREADSHEET_ID, "") ?: ""
+    var scriptUrl: String
+        get() = prefs.getString(KEY_SCRIPT_URL, "https://script.google.com/macros/s/AKfycby1ADi59OoCza8Xj-HG3nuYBgLFAmw90hlAD8fPchlLQLmMyYnM7AtVI1O5NdpU7-MHRg/exec") ?: "https://script.google.com/macros/s/AKfycby1ADi59OoCza8Xj-HG3nuYBgLFAmw90hlAD8fPchlLQLmMyYnM7AtVI1O5NdpU7-MHRg/exec"
         set(value) {
-            prefs.edit().putString(KEY_SPREADSHEET_ID, value.trim()).apply()
+            prefs.edit().putString(KEY_SCRIPT_URL, value.trim()).apply()
+        }
+
+    var folderId: String
+        get() = prefs.getString(KEY_FOLDER_ID, "1LT_t2a7WBFe6wGjwJ5XuTYsS7gvjr3jU") ?: "1LT_t2a7WBFe6wGjwJ5XuTYsS7gvjr3jU"
+        set(value) {
+            prefs.edit().putString(KEY_FOLDER_ID, value.trim()).apply()
         }
 
     var useLocalDemo: Boolean

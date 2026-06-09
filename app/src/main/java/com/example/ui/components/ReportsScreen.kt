@@ -127,14 +127,34 @@ fun ReportsScreen(
                     ReportAportesCard(userProfile = userProfile, balance = balance, formatMoney = formatMoney)
                 }
 
-                // Tarjeta 2: Gastos por Categoría
+                // Tarjeta 2: Gastos Totales Combinados
                 item {
-                    ReportCategoriasCard(movements = movements, formatMoney = formatMoney)
+                    ReportCategoriasCard(
+                        title = "Gastos Totales (Combinados)",
+                        movements = movements.filter { it.tipo.lowercase() == "gasto" },
+                        formatMoney = formatMoney,
+                        accentColor = MaterialTheme.colorScheme.primary
+                    )
                 }
 
-                // Tarjeta 3: Distribución Histórica Mensual
+                // Tarjeta 3: Gastos Santiago
                 item {
-                    ReportHistoricoMensualCard(movements = movements, formatMoney = formatMoney)
+                    ReportCategoriasCard(
+                        title = "Gastos de Santiago",
+                        movements = movements.filter { it.tipo.lowercase() == "gasto" && it.responsable.equals("Santiago", ignoreCase = true) },
+                        formatMoney = formatMoney,
+                        accentColor = MaterialTheme.colorScheme.primary
+                    )
+                }
+
+                // Tarjeta 4: Gastos Rocío
+                item {
+                    ReportCategoriasCard(
+                        title = "Gastos de Rocío",
+                        movements = movements.filter { it.tipo.lowercase() == "gasto" && it.responsable.equals("Rocío", ignoreCase = true) },
+                        formatMoney = formatMoney,
+                        accentColor = MaterialTheme.colorScheme.tertiary
+                    )
                 }
             }
         }
@@ -236,7 +256,12 @@ fun ReportAportesCard(userProfile: String, balance: BalanceBreakdown, formatMone
 }
 
 @Composable
-fun ReportCategoriasCard(movements: List<Movement>, formatMoney: NumberFormat) {
+fun ReportCategoriasCard(
+    title: String,
+    movements: List<Movement>,
+    formatMoney: NumberFormat,
+    accentColor: Color
+) {
     val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
     val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
     val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
@@ -253,15 +278,14 @@ fun ReportCategoriasCard(movements: List<Movement>, formatMoney: NumberFormat) {
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             Text(
-                text = "Gastos Totales por Categoría",
+                text = title,
                 fontWeight = FontWeight.Bold,
                 fontSize = 15.sp,
                 color = MaterialTheme.colorScheme.onSurface
             )
 
-            // Filtrar gastos, agruparlos y ordenarlos
-            val gastos = movements.filter { it.tipo.lowercase() == "gasto" }
-            val sumPorCategoria = gastos.groupBy { it.categoria }
+            // Ya vienen filtrados por tipo (gasto) y responsable desde el llamador
+            val sumPorCategoria = movements.groupBy { it.categoria }
                 .mapValues { (_, list) -> list.sumOf { it.monto } }
                 .toList()
                 .sortedByDescending { it.second }
@@ -292,7 +316,7 @@ fun ReportCategoriasCard(movements: List<Movement>, formatMoney: NumberFormat) {
                                     modifier = Modifier
                                         .size(8.dp)
                                         .clip(CircleShape)
-                                        .background(MaterialTheme.colorScheme.primary.copy(alpha = if (percentage > 0.4) 1f else 0.5f))
+                                        .background(accentColor.copy(alpha = if (percentage > 0.4) 1f else 0.5f))
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
@@ -325,7 +349,7 @@ fun ReportCategoriasCard(movements: List<Movement>, formatMoney: NumberFormat) {
                                 .fillMaxWidth()
                                 .height(6.dp)
                                 .clip(CircleShape),
-                            color = MaterialTheme.colorScheme.primary,
+                            color = accentColor,
                             trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f)
                         )
                     }
@@ -335,149 +359,4 @@ fun ReportCategoriasCard(movements: List<Movement>, formatMoney: NumberFormat) {
     }
 }
 
-@Composable
-fun ReportHistoricoMensualCard(movements: List<Movement>, formatMoney: NumberFormat) {
-    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
-    val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
-    val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = cardBg),
-        border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-    ) {
-        Column(
-            modifier = Modifier.padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Text(
-                text = "Evolución Mensual (Aportes vs Gastos)",
-                fontWeight = FontWeight.Bold,
-                fontSize = 15.sp,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-
-            // Agrupar por Mes (YYYY-MM de las fechas)
-            val formatMes = { f: String -> if (f.length >= 7) f.substring(0, 7) else "Otro" }
-            
-            val aportesMensuales = movements.filter { it.tipo.lowercase() == "aporte" }
-                .groupBy { formatMes(it.fecha) }
-                .mapValues { (_, list) -> list.sumOf { it.monto } }
-
-            val gastosMensuales = movements.filter { it.tipo.lowercase() == "gasto" }
-                .groupBy { formatMes(it.fecha) }
-                .mapValues { (_, list) -> list.sumOf { it.monto } }
-
-            // Unir todos los meses existentes
-            val todosMeses = (aportesMensuales.keys + gastosMensuales.keys).sorted().takeLast(4)
-
-            if (todosMeses.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 16.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text("Sin datos históricos suficientes", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
-                }
-            } else {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(130.dp)
-                        .padding(top = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.Bottom
-                ) {
-                    val maxMonto = listOf(
-                        aportesMensuales.values.maxOrNull() ?: 1.0,
-                        gastosMensuales.values.maxOrNull() ?: 1.0
-                    ).maxOrNull() ?: 1.0
-
-                    todosMeses.forEach { mes ->
-                        val aporteVal = aportesMensuales[mes] ?: 0.0
-                        val gastoVal = gastosMensuales[mes] ?: 0.0
-
-                        val hAporte = (aporteVal / maxMonto).toFloat().coerceIn(0.02f, 1f)
-                        val hGasto = (gastoVal / maxMonto).toFloat().coerceIn(0.02f, 1f)
-
-                        // Columna del mes
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Bottom,
-                            modifier = Modifier.fillMaxHeight()
-                        ) {
-                            // Barras
-                            Row(
-                                modifier = Modifier.weight(1f),
-                                verticalAlignment = Alignment.Bottom,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                // Aporte verde
-                                Box(
-                                    modifier = Modifier
-                                        .width(14.dp)
-                                        .fillMaxHeight(hAporte)
-                                        .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
-                                        .background(MaterialTheme.colorScheme.primary)
-                                )
-                                // Gasto rojo/rosa
-                                Box(
-                                    modifier = Modifier
-                                        .width(14.dp)
-                                        .fillMaxHeight(hGasto)
-                                        .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
-                                        .background(MaterialTheme.colorScheme.error.copy(alpha = 0.8f))
-                                )
-                            }
-                            
-                            Spacer(modifier = Modifier.height(8.dp))
-                            
-                            // Traducir YYYY-MM a "Ene", "Feb", etc.
-                            val mesSimplificado = when (mes.takeLast(2)) {
-                                "01" -> "Ene"
-                                "02" -> "Feb"
-                                "03" -> "Mar"
-                                "04" -> "Abr"
-                                "05" -> "May"
-                                "06" -> "Jun"
-                                "07" -> "Jul"
-                                "08" -> "Ago"
-                                "09" -> "Sep"
-                                "10" -> "Oct"
-                                "11" -> "Nov"
-                                "12" -> "Dic"
-                                else -> mes
-                            }
-                            Text(
-                                text = mesSimplificado,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                            )
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                // Leyenda del Gráfico
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Aportes", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(MaterialTheme.colorScheme.error.copy(alpha = 0.8f)))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Gastos", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
-                }
-            }
-        }
-    }
-}
+// Eliminar ReportHistoricoMensualCard ya que no se usa y se solicitó remover el gráfico

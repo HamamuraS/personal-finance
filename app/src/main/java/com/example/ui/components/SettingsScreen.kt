@@ -29,20 +29,27 @@ fun SettingsScreen(
     val scrollState = rememberScrollState()
 
     // Configuración del Sheets
-    val spreadsheetIdState = viewModel.spreadsheetId.collectAsState()
+    val scriptUrlState = viewModel.spreadsheetId.collectAsState()
+    val folderIdState = viewModel.folderId.collectAsState()
     val useLocalDemoState = viewModel.useLocalDemo.collectAsState()
     val currentUserProfileState = viewModel.currentUserProfile.collectAsState()
     val isDarkModeState = viewModel.isDarkMode.collectAsState()
     val isLoadingState = viewModel.isLoading.collectAsState()
     val errorMessageState = viewModel.errorMessage.collectAsState()
 
-    var sheetInput by remember { mutableStateOf(spreadsheetIdState.value) }
+    var scriptInput by remember { mutableStateOf(scriptUrlState.value) }
+    var folderInput by remember { mutableStateOf(folderIdState.value) }
     var demoToggle by remember { mutableStateOf(useLocalDemoState.value) }
 
     // Sincronizar inputs si cambian de afuera
-    LaunchedEffect(spreadsheetIdState.value) {
-        if (sheetInput.isEmpty()) {
-            sheetInput = spreadsheetIdState.value
+    LaunchedEffect(scriptUrlState.value) {
+        if (scriptInput.isEmpty()) {
+            scriptInput = scriptUrlState.value
+        }
+    }
+    LaunchedEffect(folderIdState.value) {
+        if (folderInput.isEmpty()) {
+            folderInput = folderIdState.value
         }
     }
     LaunchedEffect(useLocalDemoState.value) {
@@ -186,7 +193,7 @@ fun SettingsScreen(
                             checked = demoToggle,
                             onCheckedChange = {
                                 demoToggle = it
-                                viewModel.saveSheetsConfig(sheetInput, it)
+                                viewModel.saveSheetsConfig(scriptInput, folderInput, it)
                             },
                             colors = SwitchDefaults.colors(
                                 checkedThumbColor = MaterialTheme.colorScheme.primary,
@@ -223,8 +230,8 @@ fun SettingsScreen(
 
                         // URL de Sincronización
                         OutlinedTextField(
-                            value = sheetInput,
-                            onValueChange = { sheetInput = it },
+                            value = scriptInput,
+                            onValueChange = { scriptInput = it },
                             label = { Text("URL del Web App (Google Apps Script)", fontSize = 12.sp) },
                             placeholder = { Text("https://script.google.com/macros/s/.../exec", fontSize = 12.sp) },
                             shape = RoundedCornerShape(12.dp),
@@ -235,8 +242,22 @@ fun SettingsScreen(
                             modifier = Modifier.fillMaxWidth()
                         )
 
+                        // ID Carpeta Drive
+                        OutlinedTextField(
+                            value = folderInput,
+                            onValueChange = { folderInput = it },
+                            label = { Text("ID Carpeta Google Drive (Tickets)", fontSize = 12.sp) },
+                            placeholder = { Text("ID de la carpeta donde se guardan los tickets", fontSize = 12.sp) },
+                            shape = RoundedCornerShape(12.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                unfocusedBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f)
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
                         Text(
-                            text = "Para no tener que renovar autenticación jamás, esta app se conecta de forma directa a un Web App. Pega arriba el enlace generado.",
+                            text = "Para no tener que renovar autenticación jamás, esta app se conecta de forma directa a un Web App. Pega arriba el enlace generado y el ID de la carpeta de Drive.",
                             fontSize = 10.sp,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                             lineHeight = 15.sp
@@ -262,9 +283,9 @@ fun SettingsScreen(
 
                         Button(
                             onClick = {
-                                viewModel.saveSheetsConfig(sheetInput, demoToggle)
+                                viewModel.saveSheetsConfig(scriptInput, folderInput, demoToggle)
                             },
-                            enabled = sheetInput.isNotEmpty() && !isLoadingState.value,
+                            enabled = scriptInput.isNotEmpty() && folderInput.isNotEmpty() && !isLoadingState.value,
                             shape = RoundedCornerShape(10.dp),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = MaterialTheme.colorScheme.primary

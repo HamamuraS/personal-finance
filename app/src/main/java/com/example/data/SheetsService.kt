@@ -12,7 +12,9 @@ data class WebAppRequest(
     val method: String? = null,
     val parameters: Map<String, Any>? = null,
     val body: Movement? = null,
-    val imageInfo: ImageInfo? = null
+    val imageInfo: ImageInfo? = null,
+    val folderId: String? = null,
+    val id: String? = null
 )
 
 data class ImageInfo(

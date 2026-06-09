@@ -12,7 +12,8 @@ data class Movement(
     val esComun: Boolean, // Si es compartido o personal (para gastos)
     val descripcion: String = "",
     val metodoPago: String = "Billetera Virtual", // "Efectivo", "Billetera Virtual"
-    val ticketUrl: String = "" // Nueva columna J
+    val ticketUrl: String = "", // Nueva columna J
+    val eliminado: Boolean = false // Columna K
 ) {
     // Convierte el movimiento en una fila para Google Sheets
     fun toRowValues(): List<String> {
@@ -26,7 +27,8 @@ data class Movement(
             esComun.toString(),
             descripcion,
             metodoPago,
-            ticketUrl
+            ticketUrl,
+            eliminado.toString()
         )
     }
 
@@ -45,7 +47,8 @@ data class Movement(
                     esComun = row.getOrNull(6)?.toBooleanStrictOrNull() ?: true,
                     descripcion = row.getOrNull(7) ?: "",
                     metodoPago = row.getOrNull(8) ?: "Billetera Virtual",
-                    ticketUrl = row.getOrNull(9) ?: ""
+                    ticketUrl = row.getOrNull(9) ?: "",
+                    eliminado = row.getOrNull(10)?.toBooleanStrictOrNull() ?: false
                 )
             } catch (e: Exception) {
                 null

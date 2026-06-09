@@ -66,8 +66,11 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
     // Configuración
-    private val _spreadsheetId = MutableStateFlow(prefsHelper.spreadsheetId)
+    private val _spreadsheetId = MutableStateFlow(prefsHelper.scriptUrl)
     val spreadsheetId: StateFlow<String> = _spreadsheetId.asStateFlow()
+
+    private val _folderId = MutableStateFlow(prefsHelper.folderId)
+    val folderId: StateFlow<String> = _folderId.asStateFlow()
 
     private val _useLocalDemo = MutableStateFlow(prefsHelper.useLocalDemo)
     val useLocalDemo: StateFlow<Boolean> = _useLocalDemo.asStateFlow()
@@ -87,7 +90,8 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun loadConfigAndData() {
-        _spreadsheetId.value = prefsHelper.spreadsheetId
+        _spreadsheetId.value = prefsHelper.scriptUrl
+        _folderId.value = prefsHelper.folderId
         _useLocalDemo.value = prefsHelper.useLocalDemo
         _currentUserProfile.value = prefsHelper.currentUserProfile
         refreshData()
@@ -261,7 +265,7 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
             )
 
             try {
-                val success = repository.saveMovement(_spreadsheetId.value, newMovement, imageInfo)
+                val success = repository.saveMovement(_spreadsheetId.value, newMovement, imageInfo, _folderId.value)
                 if (success) {
                     doRefreshData()
                     onSuccess()
@@ -277,23 +281,54 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     /**
-     * Elimina un movimiento localmente (solo modo demo)
+     * Elimina un movimiento (baja lógica)
      */
     fun deleteMovement(movement: Movement) {
         viewModelScope.launch {
-            repository.deleteLocalMovement(movement)
-            refreshData()
+            _isLoading.value = true
+            val success = repository.deleteMovement(_spreadsheetId.value, movement)
+            if (success) {
+                doRefreshData()
+            } else {
+                _errorMessage.value = "Error al eliminar el movimiento"
+            }
+            _isLoading.value = false
+        }
+    }
+
+    /**
+     * Duplica un movimiento
+     */
+    fun duplicateMovement(movement: Movement, onSuccess: () -> Unit) {
+        viewModelScope.launch {
+            _isLoading.value = true
+            val now = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date())
+            val duplicate = movement.copy(
+                id = java.util.UUID.randomUUID().toString(),
+                fecha = now
+            )
+            
+            val success = repository.saveMovement(_spreadsheetId.value, duplicate, null, _folderId.value)
+            if (success) {
+                doRefreshData()
+                onSuccess()
+            } else {
+                _errorMessage.value = "Error al duplicar el movimiento"
+            }
+            _isLoading.value = false
         }
     }
 
     /**
      * Guarda la configuración
      */
-    fun saveSheetsConfig(newSheetIdOrUrl: String, useDemo: Boolean) {
-        prefsHelper.spreadsheetId = newSheetIdOrUrl
+    fun saveSheetsConfig(newSheetIdOrUrl: String, newFolderId: String, useDemo: Boolean) {
+        prefsHelper.scriptUrl = newSheetIdOrUrl
+        prefsHelper.folderId = newFolderId
         prefsHelper.useLocalDemo = useDemo
         
         _spreadsheetId.value = newSheetIdOrUrl
+        _folderId.value = newFolderId
         _useLocalDemo.value = useDemo
         
         refreshData()
@@ -371,7 +406,7 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
                     esComun = false,
                     descripcion = "Arrastre de mes anterior ($prevMonth)"
                 )
-                success = success && repository.saveMovement(_spreadsheetId.value, movS)
+                success = success && repository.saveMovement(_spreadsheetId.value, movS, null, _folderId.value)
             }
             
             if (prevBalance.rocioSaldoFinal != 0.0) {
@@ -384,7 +419,7 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
                     esComun = false,
                     descripcion = "Arrastre de mes anterior ($prevMonth)"
                 )
-                success = success && repository.saveMovement(_spreadsheetId.value, movR)
+                success = success && repository.saveMovement(_spreadsheetId.value, movR, null, _folderId.value)
             }
             
             if (success) {
