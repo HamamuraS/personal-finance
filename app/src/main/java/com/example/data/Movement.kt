@@ -10,6 +10,7 @@ data class Movement(
     val categoria: String,
     val responsable: String, // "Santiago", "Rocío"
     val esComun: Boolean, // Si es compartido o personal (para gastos)
+    val propietario: String = responsable, // "Santiago", "Rocío", "Ambos"
     val descripcion: String = "",
     val metodoPago: String = "Billetera Virtual", // "Efectivo", "Billetera Virtual"
     val ticketUrl: String = "", // Nueva columna J
@@ -28,7 +29,8 @@ data class Movement(
             descripcion,
             metodoPago,
             ticketUrl,
-            eliminado.toString()
+            eliminado.toString(),
+            propietario
         )
     }
 
@@ -48,7 +50,8 @@ data class Movement(
                     descripcion = row.getOrNull(7) ?: "",
                     metodoPago = row.getOrNull(8) ?: "Billetera Virtual",
                     ticketUrl = row.getOrNull(9) ?: "",
-                    eliminado = row.getOrNull(10)?.toBooleanStrictOrNull() ?: false
+                    eliminado = row.getOrNull(10)?.toBooleanStrictOrNull() ?: false,
+                    propietario = row.getOrNull(11) ?: row.getOrNull(5) ?: "Santiago"
                 )
             } catch (e: Exception) {
                 null

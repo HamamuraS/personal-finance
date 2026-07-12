@@ -1,0 +1,233 @@
+package com.example
+
+import com.example.data.Movement
+import com.example.ui.AccountingEngine
+import com.example.ui.OpeningBalance
+import org.junit.Assert.assertEquals
+import org.junit.Test
+
+/**
+ * Tests del motor contable puro [AccountingEngine]. No requiere Android ni Robolectric.
+ */
+class AccountingLogicTest {
+
+    private val delta = 0.001
+
+    @Test
+    fun ejemploDeLosCienMil() {
+        // Ejemplo del usuario:
+        // 1) Santiago aporta 100k a su cuenta virtual.
+        // 2) Santiago transfiere 100k a Rocío, pero el dinero SIGUE siendo de Santiago.
+        // 3) Compra común de 40k desde la cuenta de Rocío (20k cada uno).
+        val movs = listOf(
+            Movement(fecha = "2026-06-01", monto = 100000.0, tipo = "Aporte", categoria = "Sueldo Santiago",
+                responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Billetera Virtual"),
+            Movement(fecha = "2026-06-02", monto = 100000.0, tipo = "Transferencia", categoria = "Ajuste",
+                responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Billetera Virtual"),
+            Movement(fecha = "2026-06-03", monto = 40000.0, tipo = "Gasto", categoria = "Super",
+                responsable = "Rocío", propietario = "Ambos", esComun = true, metodoPago = "Billetera Virtual")
+        )
+
+        val b = AccountingEngine.compute(movs)
+
+        // Físico: Santiago 0, Rocío 60k (100k recibidos - 40k gastados)
+        assertEquals(0.0, b.santiagoEnMano, delta)
+        assertEquals(60000.0, b.rocioEnMano, delta)
+        // Santiago mantiene 80k propios dentro de la cuenta de Rocío ("recuperé 80k")
+        assertEquals(80000.0, b.sEnRocio, delta)
+        assertEquals(80000.0, b.santiagoExterno, delta)
+        assertEquals(-80000.0, b.rocioExterno, delta)
+        // Patrimonios
+        assertEquals(80000.0, b.santiagoSaldoFinal, delta)
+        assertEquals(-20000.0, b.rocioSaldoFinal, delta)
+        // Pozo total = dinero físico existente = 60k
+        assertEquals(60000.0, b.totalPozo, delta)
+    }
+
+    @Test
+    fun gastoComunSimpleGeneraReclamo() {
+        // Santiago paga 5960 de un gasto común. Rocío le debe la mitad (2980).
+        val movs = listOf(
+            Movement(fecha = "2026-05-30", monto = 5960.0, tipo = "Gasto", categoria = "Otros comunes",
+                responsable = "Santiago", propietario = "Ambos", esComun = true, metodoPago = "Billetera Virtual")
+        )
+        val b = AccountingEngine.compute(movs)
+        assertEquals(2980.0, b.santiagoExterno, delta)
+        assertEquals(-2980.0, b.rocioExterno, delta)
+        assertEquals(2980.0, b.sEnRocio, delta)
+        assertEquals(0.0, b.rEnSantiago, delta)
+    }
+
+    @Test
+    fun efectivoSeArrastraSeparadoDeVirtual() {
+        // Bug 0: el efectivo NO debe agruparse como virtual al arrastrar.
+        val opening = AccountingEngine.opening(
+            listOf(
+                Movement(fecha = "2026-06-07", monto = 145800.0, tipo = "Aporte", categoria = "Otros",
+                    responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Efectivo"),
+                Movement(fecha = "2026-06-13", monto = 43771.0, tipo = "Gasto", categoria = "Otros",
+                    responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Efectivo"),
+                Movement(fecha = "2026-06-08", monto = 50000.0, tipo = "Aporte", categoria = "Otros",
+                    responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Billetera Virtual")
+            )
+        )
+        assertEquals(102029.0, opening.santiagoEfectivo, delta)   // 145800 - 43771
+        assertEquals(50000.0, opening.santiagoVirtual, delta)
+
+        // Al computar el mes siguiente con este arrastre, el efectivo se conserva.
+        val b = AccountingEngine.compute(emptyList(), opening)
+        assertEquals(102029.0, b.santiagoEfectivo, delta)
+        assertEquals(50000.0, b.santiagoVirtual, delta)
+        assertEquals(152029.0, b.santiagoSaldoFinal, delta)
+    }
+
+    @Test
+    fun transferenciaPropiaNoCambiaPozoNiPatrimonio() {
+        val movs = listOf(
+            Movement(fecha = "2026-06-01", monto = 100000.0, tipo = "Aporte", categoria = "Sueldo",
+                responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Billetera Virtual"),
+            Movement(fecha = "2026-06-02", monto = 30000.0, tipo = "Transferencia", categoria = "Ajuste",
+                responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Billetera Virtual")
+        )
+        val b = AccountingEngine.compute(movs)
+        // El dinero se movió a la cuenta de Rocío pero sigue siendo de Santiago.
+        assertEquals(100000.0, b.santiagoSaldoFinal, delta)
+        assertEquals(0.0, b.rocioSaldoFinal, delta)
+        assertEquals(30000.0, b.sEnRocio, delta)
+        assertEquals(70000.0, b.santiagoEnMano, delta)
+        assertEquals(30000.0, b.rocioEnMano, delta)
+    }
+
+    @Test
+    fun transferenciaRegaloSinCruceCambiaDeDueno() {
+        // Sin cruce previo: transferir marcando "es del otro" es un regalo real.
+        val movs = listOf(
+            Movement(fecha = "2026-06-01", monto = 100000.0, tipo = "Aporte", categoria = "Sueldo",
+                responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Billetera Virtual"),
+            Movement(fecha = "2026-06-02", monto = 30000.0, tipo = "Transferencia", categoria = "Regalo",
+                responsable = "Santiago", propietario = "Rocío", esComun = false, metodoPago = "Billetera Virtual")
+        )
+        val b = AccountingEngine.compute(movs)
+        assertEquals(70000.0, b.santiagoSaldoFinal, delta)
+        assertEquals(30000.0, b.rocioSaldoFinal, delta)
+        assertEquals(0.0, b.santiagoExterno, delta)
+    }
+
+    @Test
+    fun transferenciaDevuelveDineroCruzado() {
+        // Escenario del usuario: Santiago tiene plata en la cuenta de Rocío; Rocío se la transfiere
+        // de vuelta (marcándola como de Santiago). Debe DESCONTAR del dinero cruzado, no ser regalo.
+        val movs = listOf(
+            Movement(fecha = "2026-06-01", monto = 100000.0, tipo = "Aporte", categoria = "Sueldo",
+                responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Billetera Virtual"),
+            Movement(fecha = "2026-06-02", monto = 100000.0, tipo = "Transferencia", categoria = "Ajuste",
+                responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Billetera Virtual"),
+            Movement(fecha = "2026-06-03", monto = 40000.0, tipo = "Transferencia", categoria = "Ajuste",
+                responsable = "Rocío", propietario = "Santiago", esComun = false, metodoPago = "Billetera Virtual")
+        )
+        val b = AccountingEngine.compute(movs)
+        assertEquals(60000.0, b.sEnRocio, delta)         // 100k parkeados - 40k devueltos
+        assertEquals(60000.0, b.santiagoExterno, delta)
+        // Patrimonios sin cambios (solo se reubicó plata)
+        assertEquals(100000.0, b.santiagoSaldoFinal, delta)
+        assertEquals(0.0, b.rocioSaldoFinal, delta)
+        assertEquals(40000.0, b.santiagoEnMano, delta)
+        assertEquals(60000.0, b.rocioEnMano, delta)
+    }
+
+    @Test
+    fun transferenciaMixtaDevuelveYRegala() {
+        // Rocío tiene 30k en la cuenta de Santiago; Santiago le transfiere 50k marcándolos como de ella.
+        // 30k son devolución (sin cambio patrimonial) y 20k son regalo (cambia patrimonio).
+        val movs = listOf(
+            Movement(fecha = "2026-06-01", monto = 30000.0, tipo = "Aporte", categoria = "Sueldo Rocío",
+                responsable = "Santiago", propietario = "Rocío", esComun = false, metodoPago = "Billetera Virtual"),
+            Movement(fecha = "2026-06-02", monto = 100000.0, tipo = "Aporte", categoria = "Sueldo",
+                responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Billetera Virtual"),
+            Movement(fecha = "2026-06-03", monto = 50000.0, tipo = "Transferencia", categoria = "Ajuste",
+                responsable = "Santiago", propietario = "Rocío", esComun = false, metodoPago = "Billetera Virtual")
+        )
+        val b = AccountingEngine.compute(movs)
+        assertEquals(0.0, b.santiagoExterno, delta)       // se saldó el cruce
+        assertEquals(80000.0, b.santiagoSaldoFinal, delta) // 100k - 20k regalados
+        assertEquals(50000.0, b.rocioSaldoFinal, delta)    // 30k + 20k
+    }
+
+    @Test
+    fun gastoPersonalDeUnoPagadoDesdeCuentaDelOtro() {
+        // Escenario del usuario: Rocío hace un gasto que en realidad es un pago de Santiago.
+        val movs = listOf(
+            Movement(fecha = "2026-06-01", monto = 50000.0, tipo = "Transferencia", categoria = "Ajuste",
+                responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Billetera Virtual"),
+            Movement(fecha = "2026-06-02", monto = 20000.0, tipo = "Gasto", categoria = "Otros",
+                responsable = "Rocío", propietario = "Santiago", esComun = false, metodoPago = "Billetera Virtual")
+        )
+        val b = AccountingEngine.compute(movs)
+        // Santiago parkeó 50k en Rocío; su gasto de 20k desde ahí baja su dinero cruzado a 30k.
+        assertEquals(30000.0, b.sEnRocio, delta)
+        assertEquals(20000.0, b.santiagoGastosPersonales, delta)
+    }
+
+    @Test
+    fun invariantesSeMantienenConMezclaYArrastre() {
+        val opening = OpeningBalance(
+            santiagoEfectivo = 14900.0, santiagoVirtual = 590295.0,
+            rocioEfectivo = 0.0, rocioVirtual = 19465.0, netSantiagoEnRocio = 2980.0
+        )
+        val movs = listOf(
+            Movement(fecha = "2026-07-01", monto = 300000.0, tipo = "Aporte", categoria = "Sueldo",
+                responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Efectivo"),
+            Movement(fecha = "2026-07-02", monto = 50000.0, tipo = "Aporte", categoria = "Sueldo Rocío",
+                responsable = "Rocío", propietario = "Santiago", esComun = false, metodoPago = "Billetera Virtual"),
+            Movement(fecha = "2026-07-03", monto = 40000.0, tipo = "Gasto", categoria = "Super",
+                responsable = "Rocío", propietario = "Ambos", esComun = true, metodoPago = "Billetera Virtual"),
+            Movement(fecha = "2026-07-04", monto = 12000.0, tipo = "Gasto", categoria = "Ropa",
+                responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Efectivo"),
+            Movement(fecha = "2026-07-05", monto = 8000.0, tipo = "Gasto", categoria = "Otros",
+                responsable = "Santiago", propietario = "Rocío", esComun = false, metodoPago = "Billetera Virtual"),
+            Movement(fecha = "2026-07-06", monto = 70000.0, tipo = "Transferencia", categoria = "Ajuste",
+                responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Billetera Virtual"),
+            Movement(fecha = "2026-07-07", monto = 25000.0, tipo = "Transferencia", categoria = "Ajuste",
+                responsable = "Rocío", propietario = "Santiago", esComun = false, metodoPago = "Billetera Virtual"),
+            Movement(fecha = "2026-07-08", monto = 15000.0, tipo = "Transferencia", categoria = "Regalo",
+                responsable = "Santiago", propietario = "Rocío", esComun = false, metodoPago = "Efectivo")
+        )
+        val b = AccountingEngine.compute(movs, opening)
+
+        // Invariante 1: el pozo total = todo el dinero físico existente
+        assertEquals(b.santiagoEnMano + b.rocioEnMano, b.totalPozo, delta)
+        // Invariante 2: pozo = suma de patrimonios
+        assertEquals(b.santiagoSaldoFinal + b.rocioSaldoFinal, b.totalPozo, delta)
+        // Invariante 3: posición externa simétrica
+        assertEquals(-b.rocioExterno, b.santiagoExterno, delta)
+        // Invariante 4: saldoFinal = enMano + externo, para cada uno
+        assertEquals(b.santiagoEnMano + b.santiagoExterno, b.santiagoSaldoFinal, delta)
+        assertEquals(b.rocioEnMano + b.rocioExterno, b.rocioSaldoFinal, delta)
+        // Invariante 5: enMano = efectivo + virtual
+        assertEquals(b.santiagoEfectivo + b.santiagoVirtual, b.santiagoEnMano, delta)
+        assertEquals(b.rocioEfectivo + b.rocioVirtual, b.rocioEnMano, delta)
+
+        // Invariante 6: el pozo = arrastre + aportes del mes - gastos del mes (las transferencias no cambian el pozo)
+        val pozoOpening = opening.santiagoEfectivo + opening.santiagoVirtual + opening.rocioEfectivo + opening.rocioVirtual
+        val aportes = movs.filter { it.tipo == "Aporte" }.sumOf { it.monto }
+        val gastos = movs.filter { it.tipo == "Gasto" }.sumOf { it.monto }
+        assertEquals(pozoOpening + aportes - gastos, b.totalPozo, delta)
+    }
+
+    @Test
+    fun elOrdenDeEntradaNoAlteraElResultado() {
+        // El motor ordena cronológicamente; pasar la lista al revés debe dar lo mismo.
+        val movs = listOf(
+            Movement(fecha = "2026-06-01", monto = 100000.0, tipo = "Aporte", categoria = "Sueldo",
+                responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Billetera Virtual"),
+            Movement(fecha = "2026-06-02", monto = 100000.0, tipo = "Transferencia", categoria = "Ajuste",
+                responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Billetera Virtual"),
+            Movement(fecha = "2026-06-03", monto = 40000.0, tipo = "Transferencia", categoria = "Ajuste",
+                responsable = "Rocío", propietario = "Santiago", esComun = false, metodoPago = "Billetera Virtual")
+        )
+        val asc = AccountingEngine.compute(movs)
+        val desc = AccountingEngine.compute(movs.reversed())
+        assertEquals(asc.santiagoExterno, desc.santiagoExterno, delta)
+        assertEquals(asc.santiagoSaldoFinal, desc.santiagoSaldoFinal, delta)
+    }
+}

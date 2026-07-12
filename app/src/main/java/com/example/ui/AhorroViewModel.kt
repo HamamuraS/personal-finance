@@ -18,27 +18,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-data class BalanceBreakdown(
-    val totalPozo: Double,
-    val santiagoAportes: Double,
-    val santiagoGastosPersonales: Double,
-    val rocioAportes: Double,
-    val rocioGastosPersonales: Double,
-    val gastosComunesTotales: Double,
-    val santiagoGastosComunes: Double,
-    val rocioGastosComunes: Double,
-    val santiagoTransfersEnviadas: Double,
-    val rocioTransfersEnviadas: Double,
-    val santiagoSaldoFinal: Double,
-    val rocioSaldoFinal: Double,
-    val totalAportesMes: Double,
-    val totalGastosMes: Double,
-    val santiagoEfectivo: Double,
-    val santiagoVirtual: Double,
-    val rocioEfectivo: Double,
-    val rocioVirtual: Double
-)
-
 class AhorroViewModel(application: Application) : AndroidViewModel(application) {
 
     private val prefsHelper = PreferencesHelper(application)
@@ -82,7 +61,7 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     val isDarkMode: StateFlow<Boolean> = _isDarkMode.asStateFlow()
 
     // Estado calculado de balances
-    private val _balance = MutableStateFlow(calculateBalances(emptyList()))
+    private val _balance = MutableStateFlow(AccountingEngine.compute(emptyList()))
     val balance: StateFlow<BalanceBreakdown> = _balance.asStateFlow()
 
     init {
@@ -94,20 +73,43 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
         _folderId.value = prefsHelper.folderId
         _useLocalDemo.value = prefsHelper.useLocalDemo
         _currentUserProfile.value = prefsHelper.currentUserProfile
-        refreshData()
+
+        // Punto 2: mostrar el cache al instante y refrescar en segundo plano.
+        viewModelScope.launch {
+            if (_cachedAllMovements.isEmpty()) {
+                val cached = withContext(Dispatchers.IO) { prefsHelper.getSheetsCache() }
+                if (cached.isNotEmpty()) applyMovements(cached)
+            }
+            refreshData()
+        }
     }
+
+    private fun monthOf(m: Movement): String =
+        if (m.fecha.length >= 7) m.fecha.substring(0, 7) else ""
+
+    /**
+     * Los aportes automáticos de arrastre ("Saldo inicial") de versiones anteriores se ignoran:
+     * el arrastre ahora se calcula plegando los meses previos (ver [updateFilteredData]), así que
+     * conservarlos duplicaría el saldo. Filtrarlos también repara los datos históricos existentes.
+     */
+    private fun isLegacyCarryover(m: Movement): Boolean =
+        m.categoria.equals("Saldo inicial", ignoreCase = true)
 
     fun updateFilteredData() {
         val currentSel = _selectedMonth.value
         val actualCurrent = java.text.SimpleDateFormat("yyyy-MM", java.util.Locale.US).format(java.util.Date())
         _isCurrentMonth.value = (currentSel == actualCurrent)
 
-        val filtered = _cachedAllMovements.filter {
-            val fechaPrefix = if (it.fecha.length >= 7) it.fecha.substring(0, 7) else ""
-            fechaPrefix == currentSel
-        }
+        // Movimientos reales (sin las filas legacy de arrastre automático)
+        val relevant = _cachedAllMovements.filter { !isLegacyCarryover(it) && monthOf(it).isNotEmpty() }
+
+        // Arrastre: estado final de todos los meses anteriores al seleccionado.
+        val prior = relevant.filter { monthOf(it) < currentSel }
+        val opening = AccountingEngine.opening(prior)
+
+        val filtered = relevant.filter { monthOf(it) == currentSel }
         _movements.value = filtered
-        _balance.value = calculateBalances(filtered)
+        _balance.value = AccountingEngine.compute(filtered, opening)
     }
 
     fun setSelectedMonth(month: String) {
@@ -161,37 +163,39 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     private suspend fun doRefreshData(): Boolean {
         return try {
             val rawList = repository.fetchMovements(_spreadsheetId.value)
-            val list = rawList.map { it.copy(fecha = normalizeFechaToString(it.fecha)) }
-            val sortedList = list.sortedWith(compareByDescending<Movement> { it.fecha }.thenByDescending { it.id })
-            _cachedAllMovements = sortedList
-                
-            val currentRealMonth = java.text.SimpleDateFormat("yyyy-MM", java.util.Locale.US).format(java.util.Date())
-            val monthsSet = sortedList.mapNotNull { 
-                if (it.fecha.length >= 7) it.fecha.substring(0, 7) else null 
-            }.toSortedSet(reverseOrder())
-                
-            if (!monthsSet.contains(currentRealMonth)) {
-                monthsSet.add(currentRealMonth)
-            }
-                
-            _availableMonths.value = monthsSet.toList()
-            if (_selectedMonth.value.isEmpty()) {
-                _selectedMonth.value = currentRealMonth
-            }
-                
-            updateFilteredData()
-            
-            // Si el mes seleccionado es el actual, verificar arrastre de saldo
-            if (_isCurrentMonth.value) {
-                checkAndInjectInitialBalances(currentRealMonth)
-            }
-            
+            applyMovements(rawList)
             true
         } catch (e: Exception) {
             _errorMessage.value = "Error al recargar datos: ${e.localizedMessage}"
             Log.e("AhorroViewModel", "Error cargando datos", e)
             false
         }
+    }
+
+    /**
+     * Normaliza, ordena y publica una nueva lista de movimientos, recalculando meses disponibles
+     * y balances. Se usa tanto para el cache instantáneo como para la carga de red.
+     */
+    private fun applyMovements(rawList: List<Movement>) {
+        val list = rawList.map { it.copy(fecha = normalizeFechaToString(it.fecha)) }
+        val sortedList = list.sortedWith(compareByDescending<Movement> { it.fecha }.thenByDescending { it.id })
+        _cachedAllMovements = sortedList
+
+        val currentRealMonth = java.text.SimpleDateFormat("yyyy-MM", java.util.Locale.US).format(java.util.Date())
+        val monthsSet = sortedList.mapNotNull {
+            if (it.fecha.length >= 7) it.fecha.substring(0, 7) else null
+        }.toSortedSet(reverseOrder())
+
+        if (!monthsSet.contains(currentRealMonth)) {
+            monthsSet.add(currentRealMonth)
+        }
+
+        _availableMonths.value = monthsSet.toList()
+        if (_selectedMonth.value.isEmpty()) {
+            _selectedMonth.value = currentRealMonth
+        }
+
+        updateFilteredData()
     }
 
     /**
@@ -204,6 +208,7 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
         categoria: String,
         responsable: String,
         esComun: Boolean,
+        propietario: String,
         descripcion: String,
         metodoPago: String,
         ticketUri: android.net.Uri? = null,
@@ -259,6 +264,7 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
                 categoria = categoria,
                 responsable = responsable,
                 esComun = if (tipo == "Gasto") esComun else false,
+                propietario = propietario,
                 descripcion = descripcion,
                 metodoPago = metodoPago,
                 ticketUrl = "" // El script lo llenará si hay imagen
@@ -361,193 +367,4 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
         return android.graphics.Bitmap.createBitmap(img, 0, 0, img.width, img.height, matrix, true)
     }
 
-    /**
-     * Verifica si el mes actual ya tiene los saldos iniciales (Aportes con categoría "Saldo inicial")
-     * Si no los tiene, busca el mes anterior, calcula sus saldos finales e inyecta los nuevos movimientos.
-     */
-    private fun checkAndInjectInitialBalances(currentMonth: String) {
-        viewModelScope.launch {
-            // Buscamos si ya existen movimientos de "Saldo inicial" en el mes actual
-            val hasInitialBalance = _movements.value.any { 
-                it.tipo.lowercase() == "aporte" && it.categoria == "Saldo inicial" 
-            }
-            
-            if (hasInitialBalance) return@launch
-            
-            // Determinar mes anterior (yyyy-MM)
-            val sdf = java.text.SimpleDateFormat("yyyy-MM", java.util.Locale.US)
-            val cal = java.util.Calendar.getInstance()
-            cal.time = sdf.parse(currentMonth) ?: return@launch
-            cal.add(java.util.Calendar.MONTH, -1)
-            val prevMonth = sdf.format(cal.time)
-            
-            // Si no hay datos previos o el mes anterior no está en availableMonths, no podemos arrastrar nada fiable
-            if (!_availableMonths.value.contains(prevMonth)) return@launch
-            
-            // Calcular balances del mes anterior
-            val prevMonthMovements = _cachedAllMovements.filter {
-                it.fecha.startsWith(prevMonth)
-            }
-            if (prevMonthMovements.isEmpty()) return@launch
-            
-            val prevBalance = calculateBalances(prevMonthMovements)
-            
-            // Inyectar aportes de saldo inicial para Santiago y Rocío
-            val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
-            
-            var success = true
-            if (prevBalance.santiagoSaldoFinal != 0.0) {
-                val movS = Movement(
-                    fecha = today,
-                    monto = prevBalance.santiagoSaldoFinal,
-                    tipo = "Aporte",
-                    categoria = "Saldo inicial",
-                    responsable = "Santiago",
-                    esComun = false,
-                    descripcion = "Arrastre de mes anterior ($prevMonth)"
-                )
-                success = success && repository.saveMovement(_spreadsheetId.value, movS, null, _folderId.value)
-            }
-            
-            if (prevBalance.rocioSaldoFinal != 0.0) {
-                val movR = Movement(
-                    fecha = today,
-                    monto = prevBalance.rocioSaldoFinal,
-                    tipo = "Aporte",
-                    categoria = "Saldo inicial",
-                    responsable = "Rocío",
-                    esComun = false,
-                    descripcion = "Arrastre de mes anterior ($prevMonth)"
-                )
-                success = success && repository.saveMovement(_spreadsheetId.value, movR, null, _folderId.value)
-            }
-            
-            if (success) {
-                doRefreshData()
-            }
-        }
-    }
-
-    /**
-     * Ejecuta el cálculo completo del balance contable de acuerdo a las reglas de negocio:
-     * - Aportes: Aumentan únicamente el saldo del aportante.
-     * - Gastos personales: Impactan únicamente el saldo del responsable.
-     * - Gastos comunes: Se dividen automáticamente 50% entre ambos (Santiago y Rocío).
-     * - Transferencias: Disminuyen del responsable y aumentan del otro, sin alterar el pozo total.
-     */
-    private fun calculateBalances(list: List<Movement>): BalanceBreakdown {
-        var sAportes = 0.0
-        var sGastosPersonales = 0.0
-        var sTransfersHechas = 0.0
-
-        var rAportes = 0.0
-        var rGastosPersonales = 0.0
-        var rTransfersHechas = 0.0
-
-        var gastosComunesTotales = 0.0
-
-        // Variables secundarias para los reportes de mes en curso (p.ej. Mayo 2026)
-        var totalAportesMes = 0.0
-        var totalGastosMes = 0.0
-
-        // Desglose de saldos por método de pago para el pozo
-        var sEfectivo = 0.0
-        var sVirtual = 0.0
-        var rEfectivo = 0.0
-        var rVirtual = 0.0
-
-        for (m in list) {
-            val isSantiago = m.responsable.equals("Santiago", ignoreCase = true)
-            val isEfectivo = m.metodoPago.equals("Efectivo", ignoreCase = true)
-
-            when (m.tipo.lowercase()) {
-                "aporte" -> {
-                    if (isSantiago) {
-                        sAportes += m.monto
-                        if (isEfectivo) sEfectivo += m.monto else sVirtual += m.monto
-                    } else {
-                        rAportes += m.monto
-                        if (isEfectivo) rEfectivo += m.monto else rVirtual += m.monto
-                    }
-                    totalAportesMes += m.monto
-                }
-                "gasto" -> {
-                    if (m.esComun) {
-                        gastosComunesTotales += m.monto
-                        // Los gastos comunes impactan 50% a cada uno en el método de pago usado
-                        if (isSantiago) {
-                            if (isEfectivo) sEfectivo -= m.monto else sVirtual -= m.monto
-                            // Pero contablemente, cada uno paga la mitad.
-                            // Si Santiago paga 100 en efectivo, su efectivo baja 100,
-                            // pero Rocío le "debe" 50.
-                        } else {
-                            if (isEfectivo) rEfectivo -= m.monto else rVirtual -= m.monto
-                        }
-                    } else {
-                        if (isSantiago) {
-                            sGastosPersonales += m.monto
-                            if (isEfectivo) sEfectivo -= m.monto else sVirtual -= m.monto
-                        } else {
-                            rGastosPersonales += m.monto
-                            if (isEfectivo) rEfectivo -= m.monto else rVirtual -= m.monto
-                        }
-                    }
-                    totalGastosMes += m.monto
-                }
-                "transferencia" -> {
-                    if (isSantiago) {
-                        sTransfersHechas += m.monto
-                        if (isEfectivo) sEfectivo -= m.monto else sVirtual -= m.monto
-                        // Y el otro recibe
-                        if (isEfectivo) rEfectivo += m.monto else rVirtual += m.monto
-                    } else {
-                        rTransfersHechas += m.monto
-                        if (isEfectivo) rEfectivo -= m.monto else rVirtual -= m.monto
-                        // Y Santiago recibe
-                        if (isEfectivo) sEfectivo += m.monto else sVirtual += m.monto
-                    }
-                }
-            }
-        }
-
-        // Un gasto común se divide exactamente 50% entre los dos contablemente
-        val sGastosComunes = gastosComunesTotales / 2.0
-        val rGastosComunes = gastosComunesTotales / 2.0
-
-        // El saldo final contable ya contempla las transferencias y gastos comunes.
-        // Los saldos por método de pago (sEfectivo, sVirtual, etc) también deben 
-        // ajustarse por la "deuda" generada por los gastos comunes pagados por el otro.
-        
-        // Si Santiago pagó un gasto común de 100, su sEfectivo/sVirtual bajó 100,
-        // pero solo debería haber bajado 50. Rocío le debe 50.
-        // Vamos a simplificar: los saldos por método muestran la DISPONIBILIDAD REAL
-        // de dinero de cada uno en cada bolsa, considerando quién puso qué y quién pagó qué.
-
-        // Balances Finales Contables
-        val sSaldoFinal = sAportes - sGastosPersonales - sGastosComunes - sTransfersHechas + rTransfersHechas
-        val rSaldoFinal = rAportes - rGastosPersonales - rGastosComunes - rTransfersHechas + sTransfersHechas
-
-        val totalPozo = sSaldoFinal + rSaldoFinal
-
-        return BalanceBreakdown(
-            totalPozo = totalPozo,
-            santiagoAportes = sAportes,
-            santiagoGastosPersonales = sGastosPersonales,
-            rocioAportes = rAportes,
-            rocioGastosPersonales = rGastosPersonales,
-            gastosComunesTotales = gastosComunesTotales,
-            santiagoGastosComunes = sGastosComunes,
-            rocioGastosComunes = rGastosComunes,
-            santiagoTransfersEnviadas = sTransfersHechas,
-            rocioTransfersEnviadas = rTransfersHechas,
-            santiagoSaldoFinal = sSaldoFinal,
-            rocioSaldoFinal = rSaldoFinal,
-            totalAportesMes = totalAportesMes,
-            totalGastosMes = totalGastosMes,
-            santiagoEfectivo = sEfectivo,
-            santiagoVirtual = sVirtual,
-            rocioEfectivo = rEfectivo,
-            rocioVirtual = rVirtual
-        )
-    }
 }

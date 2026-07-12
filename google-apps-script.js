@@ -40,7 +40,8 @@ function doGet(e) {
           descripcion: row[7] ? row[7].toString() : "",
           metodoPago: row[8] ? row[8].toString() : "Billetera Virtual",
           ticketUrl: row[9] ? row[9].toString() : "",
-          eliminado: false
+          eliminado: false,
+          propietario: row[11] ? row[11].toString() : (row[5] ? row[5].toString() : "")
         };
       }).filter(r => r !== null);
       allData = allData.concat(rows);
@@ -108,8 +109,8 @@ function doPost(e) {
 
       if (!sheet) {
         sheet = ss.insertSheet(sheetName);
-        sheet.appendRow(["ID", "Fecha", "Monto", "Tipo", "Categoría", "Responsable", "Es Común", "Descripción", "Metodo Pago", "Ticket URL", "Eliminado"]);
-        sheet.getRange(1, 1, 1, 11).setFontWeight("bold").setBackground("#e2e8f0");
+        sheet.appendRow(["ID", "Fecha", "Monto", "Tipo", "Categoría", "Responsable", "Es Común", "Descripción", "Metodo Pago", "Ticket URL", "Eliminado", "Propietario"]);
+        sheet.getRange(1, 1, 1, 12).setFontWeight("bold").setBackground("#e2e8f0");
         sheet.setFrozenRows(1);
       }
 
@@ -118,8 +119,8 @@ function doPost(e) {
           const data = sheet.getDataRange().getValues();
           for (let i = 1; i < data.length; i++) {
               if (data[i][0] == mov.id) {
-                  sheet.getRange(i + 1, 1, 1, 11).setValues([[
-                      mov.id, mov.fecha, mov.monto, mov.tipo, mov.categoria, mov.responsable, mov.esComun, mov.descripcion, mov.metodoPago, mov.ticketUrl || data[i][9], false
+                  sheet.getRange(i + 1, 1, 1, 12).setValues([[
+                      mov.id, mov.fecha, mov.monto, mov.tipo, mov.categoria, mov.responsable, mov.esComun, mov.descripcion, mov.metodoPago, mov.ticketUrl || data[i][9], false, mov.propietario || mov.responsable
                   ]]);
                   return ContentService.createTextOutput(JSON.stringify({ status: "SUCCESS", message: "Actualizado OK" })).setMimeType(ContentService.MimeType.JSON);
               }
@@ -137,7 +138,8 @@ function doPost(e) {
         mov.descripcion,
         mov.metodoPago || "Billetera Virtual",
         mov.ticketUrl || "",
-        false // Columna Eliminado
+        false, // Columna Eliminado
+        mov.propietario || mov.responsable
       ]);
 
       return ContentService.createTextOutput(JSON.stringify({

@@ -30,7 +30,7 @@ class PreferencesHelper(context: Context) {
         }
 
     var scriptUrl: String
-        get() = prefs.getString(KEY_SCRIPT_URL, "https://script.google.com/macros/s/AKfycby1ADi59OoCza8Xj-HG3nuYBgLFAmw90hlAD8fPchlLQLmMyYnM7AtVI1O5NdpU7-MHRg/exec") ?: "https://script.google.com/macros/s/AKfycby1ADi59OoCza8Xj-HG3nuYBgLFAmw90hlAD8fPchlLQLmMyYnM7AtVI1O5NdpU7-MHRg/exec"
+        get() = prefs.getString(KEY_SCRIPT_URL, "https://script.google.com/macros/s/AKfycbxj-q6pc3VXkDSIXjgrjz7KTIKAvCPZLDWoBXantjG9FG6LNxn6CQGXcFLDBF8gOU5Rkw/exec") ?: "https://script.google.com/macros/s/AKfycbxj-q6pc3VXkDSIXjgrjz7KTIKAvCPZLDWoBXantjG9FG6LNxn6CQGXcFLDBF8gOU5Rkw/exec"
         set(value) {
             prefs.edit().putString(KEY_SCRIPT_URL, value.trim()).apply()
         }

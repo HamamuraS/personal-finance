@@ -120,6 +120,7 @@ fun AddMovementScreen(
     var esComun by remember { mutableStateOf(false) } // personal por defecto
     val responsable = currentUserProfile // Siempre el usuario actual
     var metodoPago by remember { mutableStateOf("Billetera Virtual") } // "Efectivo", "Billetera Virtual"
+    var propietario by remember { mutableStateOf(currentUserProfile) }
     var descripcion by remember { mutableStateOf("") }
     var ticketUri by remember { mutableStateOf<Uri?>(null) }
     var tempPhotoUri by remember { mutableStateOf<Uri?>(null) }
@@ -132,8 +133,11 @@ fun AddMovementScreen(
     var hora by remember { mutableStateOf(timeFormatter.format(currentCalendar.time)) }
 
     // Categorías basadas en Tipo y Comunalidad
-    val listAportes = listOf("Sueldo Santiago", "Sueldo Rocío", "Transferencias extraordinarias", "Otros")
-    val listGastos = listOf("Transporte publico", "Servicios", "Animales", "Salidas", "Otros")
+    val listAportes = listOf("Sueldo", "Transferencias", "Otros")
+    val listGastos = listOf(
+        "Transporte", "Servicios", "Animales", "Supermercado", "Verdulería",
+        "Farmacia", "Cuidado personal", "Salidas", "Gustos", "Utilería", "Otros"
+    )
     val listTransferencias = listOf("Ajuste", "Reembolso", "Otros")
 
     var categoria by remember { mutableStateOf("") }
@@ -162,10 +166,16 @@ fun AddMovementScreen(
     // Resetear categoría cuando cambia tipo o esComun
     LaunchedEffect(tipo, esComun, currentUserProfile) {
         categoria = when (tipo) {
-            "Aporte" -> if (currentUserProfile == "Rocío") "Sueldo Rocío" else "Sueldo Santiago"
+            "Aporte" -> "Sueldo"
             "Transferencia" -> listTransferencias.first()
             "Gasto" -> listGastos.first()
             else -> "Otros"
+        }
+        
+        // Predeterminar propietario
+        propietario = when {
+            tipo == "Gasto" && esComun -> "Ambos"
+            else -> currentUserProfile // Aporte, Transferencia (sigue siendo mía) y Gasto personal
         }
     }
 
@@ -342,7 +352,10 @@ fun AddMovementScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Button(
-                            onClick = { esComun = true },
+                            onClick = { 
+                                esComun = true
+                                propietario = "Ambos"
+                            },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = if (esComun) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
                                 contentColor = if (esComun) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
@@ -361,7 +374,10 @@ fun AddMovementScreen(
                         }
 
                         Button(
-                            onClick = { esComun = false },
+                            onClick = { 
+                                esComun = false
+                                propietario = currentUserProfile
+                            },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = if (!esComun) {
                                     if (currentUserProfile == "Rocío") MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f)
@@ -383,6 +399,66 @@ fun AddMovementScreen(
                                 Text("Personal", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                                 Text("Paga solo $responsable", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f), maxLines = 1)
                             }
+                        }
+                    }
+                }
+            }
+
+            // Propiedad del Dinero (Solo si no es Común)
+            if (!(tipo == "Gasto" && esComun)) {
+                Column {
+                    val label = when(tipo) {
+                        "Aporte" -> "¿En qué cuenta entra?"
+                        "Transferencia" -> "¿La plata sigue siendo de $currentUserProfile?"
+                        else -> "¿Quién debe pagar realmente?"
+                    }
+                    Text(
+                        text = label,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        val otherUser = if (currentUserProfile == "Santiago") "Rocío" else "Santiago"
+                        
+                        // Opción 1: Mío (o sigue siendo mío)
+                        val isMine = propietario == currentUserProfile
+                        Button(
+                            onClick = { propietario = currentUserProfile },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isMine) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
+                                contentColor = if (isMine) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                            elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp),
+                            modifier = Modifier.weight(1f).height(44.dp)
+                        ) {
+                            Text(if (tipo == "Transferencia") "Sí, es mía" else "Mío", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+
+                        // Opción 2: Del otro (o cambia de dueño)
+                        val isOthers = propietario == otherUser
+                        Button(
+                            onClick = { propietario = otherUser },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isOthers) MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
+                                contentColor = if (isOthers) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurface
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                            elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp),
+                            modifier = Modifier.weight(1f).height(44.dp)
+                        ) {
+                            val text = when(tipo) {
+                                "Transferencia" -> "No, es de $otherUser"
+                                "Aporte" -> "De $otherUser"
+                                else -> "De $otherUser"
+                            }
+                            Text(text, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -642,6 +718,7 @@ fun AddMovementScreen(
                         categoria = categoria,
                         responsable = responsable,
                         esComun = if (tipo == "Gasto") esComun else false,
+                        propietario = propietario,
                         descripcion = descripcion,
                         metodoPago = metodoPago,
                         ticketUri = ticketUri,

@@ -48,7 +48,10 @@ fun DashboardScreen(
     isCurrentMonth: Boolean,
     onMonthSelected: (String) -> Unit
 ) {
-    var selectedFilter by remember { mutableStateOf("Todos") }
+    // Filtros: persona (responsable) + tipo + categorías (multi-selección)
+    var filterPerson by remember { mutableStateOf("Todos") }   // Todos | Santiago | Rocío
+    var filterTipo by remember { mutableStateOf("Todos") }     // Todos | Gastos | Aportes | Transfer.
+    var selectedCategories by remember { mutableStateOf<Set<String>>(emptySet()) }
     val formatMoney = remember {
         java.text.DecimalFormat("#,##0.00").apply {
             val symbols = java.text.DecimalFormatSymbols()
@@ -157,9 +160,9 @@ fun DashboardScreen(
                             modifier = Modifier.weight(1f),
                             nombre = "Santiago",
                             saldo = balance.santiagoSaldoFinal,
+                            enMano = balance.santiagoEnMano,
                             aportes = balance.santiagoAportes,
                             personales = balance.santiagoGastosPersonales,
-                            comunes = balance.santiagoGastosComunes,
                             formatMoney = formatMoney,
                             avatarColor = MaterialTheme.colorScheme.primary
                         )
@@ -167,13 +170,23 @@ fun DashboardScreen(
                             modifier = Modifier.weight(1f),
                             nombre = "Rocío",
                             saldo = balance.rocioSaldoFinal,
+                            enMano = balance.rocioEnMano,
                             aportes = balance.rocioAportes,
                             personales = balance.rocioGastosPersonales,
-                            comunes = balance.rocioGastosComunes,
                             formatMoney = formatMoney,
                             avatarColor = MaterialTheme.colorScheme.tertiary
                         )
                     }
+                }
+
+                // Gasto común total (una sola vez; antes se repetía simétrico en rojo en cada tarjeta)
+                item {
+                    GastosComunesCard(total = balance.gastosComunesTotales, formatMoney = formatMoney)
+                }
+
+                // Relación de propiedad cruzada (una sola vez, no redundante por tarjeta)
+                item {
+                    DineroCruzadoCard(externoSantiago = balance.santiagoExterno, formatMoney = formatMoney)
                 }
 
                 // Historial Reciente de Movimientos
@@ -200,39 +213,42 @@ fun DashboardScreen(
                     }
                 }
 
-                // Chips Filtros de Movimientos
-                item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        listOf("Todos", "Aportes", "Gastos", "Transfer.").forEach { filter ->
-                            FilterChip(
-                                selected = selectedFilter == filter,
-                                onClick = { selectedFilter = filter },
-                                label = { Text(filter, fontSize = 11.sp) },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary
-                                ),
-                                border = FilterChipDefaults.filterChipBorder(
-                                    enabled = true,
-                                    selected = selectedFilter == filter,
-                                    borderColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.15f)
-                                )
-                            )
+                // Filtrado: persona (responsable) -> tipo -> categorías (multi)
+                val baseFiltered = movements.filter { m ->
+                    (filterPerson == "Todos" || m.responsable.equals(filterPerson, ignoreCase = true)) &&
+                        when (filterTipo) {
+                            "Gastos" -> m.tipo.equals("Gasto", ignoreCase = true)
+                            "Aportes" -> m.tipo.equals("Aporte", ignoreCase = true)
+                            "Transfer." -> m.tipo.equals("Transferencia", ignoreCase = true)
+                            else -> true
                         }
-                    }
+                }
+                // Las categorías disponibles se derivan de lo que realmente quedó visible
+                val availableCategories = baseFiltered.map { it.categoria }.distinct().sorted()
+                // Solo consideramos las categorías seleccionadas que siguen estando disponibles
+                val effectiveCategories = selectedCategories intersect availableCategories.toSet()
+                val filteredMovements = baseFiltered.filter {
+                    effectiveCategories.isEmpty() || effectiveCategories.contains(it.categoria)
                 }
 
-                // Lista de movimientos filtrada
-                val filteredMovements = movements.filter {
-                    when (selectedFilter) {
-                        "Aportes" -> it.tipo.lowercase() == "aporte"
-                        "Gastos" -> it.tipo.lowercase() == "gasto"
-                        "Transfer." -> it.tipo.lowercase() == "transferencia"
-                        else -> true
-                    }
+                // Panel de Filtros (rediseñado)
+                item {
+                    MovementFilters(
+                        person = filterPerson,
+                        onPersonChange = { filterPerson = it },
+                        tipo = filterTipo,
+                        onTipoChange = { filterTipo = it },
+                        availableCategories = availableCategories,
+                        selectedCategories = effectiveCategories,
+                        onToggleCategory = { cat ->
+                            selectedCategories = if (selectedCategories.contains(cat)) {
+                                selectedCategories - cat
+                            } else {
+                                selectedCategories + cat
+                            }
+                        },
+                        onClearCategories = { selectedCategories = emptySet() }
+                    )
                 }
 
                 if (filteredMovements.isEmpty()) {
@@ -575,6 +591,22 @@ fun MovementItem(
                                 }
                             }
 
+                            if (movement.propietario != movement.responsable && movement.propietario != "Ambos") {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.1f))
+                                        .padding(horizontal = 4.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        text = "De ${movement.propietario}",
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(4.dp))
@@ -593,17 +625,35 @@ fun MovementItem(
                             }
                         }
                     } else if (movement.tipo.lowercase() == "transferencia") {
+                        val isPropia = movement.propietario == movement.responsable
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(4.dp))
-                                .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.08f))
+                                .background(
+                                    if (isPropia) MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+                                    else MaterialTheme.colorScheme.tertiary.copy(alpha = 0.08f)
+                                )
                                 .padding(horizontal = 4.dp, vertical = 2.dp)
                         ) {
                             Text(
-                                text = "Transf.",
+                                text = if (isPropia) "Mía" else "Transf.",
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.tertiary
+                                color = if (isPropia) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary
+                            )
+                        }
+                    } else if (movement.tipo.lowercase() == "aporte" && movement.propietario != movement.responsable) {
+                         Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f))
+                                .padding(horizontal = 4.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = "A ${movement.responsable}",
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
                             )
                         }
                     }
@@ -764,14 +814,87 @@ fun PozoComunCard(userProfile: String, balance: BalanceBreakdown, formatMoney: N
     }
 }
 
+/**
+ * Muestra, una sola vez, la posición de propiedad cruzada entre ambos.
+ * [externoSantiago] es la posición externa neta de Santiago (positiva = tiene plata en cuentas
+ * de Rocío; negativa = Rocío tiene plata en cuentas de Santiago). Como es simétrica, no tiene
+ * sentido repetirla en cada tarjeta.
+ */
+@Composable
+fun DineroCruzadoCard(externoSantiago: Double, formatMoney: NumberFormat) {
+    // Umbral para ignorar redondeos de centavos
+    if (kotlin.math.abs(externoSantiago) < 1.0) return
+
+    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
+    val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
+    val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
+    val textMainColor = if (isDark) Color.White else Color(0xFF191C19)
+
+    // Quién tiene plata en la cuenta de quién
+    val dueno = if (externoSantiago > 0) "Santiago" else "Rocío"
+    val cuentaDe = if (externoSantiago > 0) "Rocío" else "Santiago"
+    val monto = kotlin.math.abs(externoSantiago)
+    val acento = if (externoSantiago > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = cardBg),
+        border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(acento.copy(alpha = 0.12f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.SwapHoriz,
+                    contentDescription = null,
+                    tint = acento
+                )
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Dinero cruzado",
+                    fontSize = 11.sp,
+                    color = textMainColor.copy(alpha = 0.5f),
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    text = "$dueno tiene plata en la cuenta de $cuentaDe",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = textMainColor
+                )
+            }
+            Text(
+                text = formatMoney.format(monto),
+                fontSize = 15.sp,
+                fontWeight = FontWeight.ExtraBold,
+                color = acento
+            )
+        }
+    }
+}
+
 @Composable
 fun DesgloseSocioCard(
     modifier: Modifier,
     nombre: String,
     saldo: Double,
+    enMano: Double,
     aportes: Double,
     personales: Double,
-    comunes: Double,
     formatMoney: NumberFormat,
     avatarColor: Color
 ) {
@@ -822,10 +945,10 @@ fun DesgloseSocioCard(
                 )
             }
 
-            // Balance
+            // Balance Total
             Column {
                 Text(
-                    text = "Saldo Hoy",
+                    text = "Saldo Total",
                     fontSize = 11.sp,
                     color = textMainColor.copy(alpha = 0.5f)
                 )
@@ -836,6 +959,22 @@ fun DesgloseSocioCard(
                     color = textMainColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            // Saldo físico en sus propias cuentas (efectivo + virtual)
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = "En sus cuentas",
+                    fontSize = 11.sp,
+                    color = textMainColor.copy(alpha = 0.5f),
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    text = formatMoney.format(enMano),
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = textMainColor.copy(alpha = 0.9f)
                 )
             }
 
@@ -872,22 +1011,71 @@ fun DesgloseSocioCard(
                     maxLines = 1
                 )
             }
+        }
+    }
+}
 
-            // G. Comunes (-)
-            Column {
-                Text(
-                    text = "Comunes (-)",
-                    fontSize = 10.sp,
-                    color = textMainColor.copy(alpha = 0.5f)
-                )
-                Text(
-                    text = formatMoney.format(comunes),
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Color(0xFFD32F2F).copy(alpha = 0.8f),
-                    maxLines = 1
+/**
+ * Muestra, una sola vez, el total de gastos comunes del periodo (se dividen 50/50).
+ * Antes se repetía como "Comunes (-)" en rojo en ambas tarjetas, siempre con el mismo valor.
+ */
+@Composable
+fun GastosComunesCard(total: Double, formatMoney: NumberFormat) {
+    if (total < 1.0) return
+
+    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
+    val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
+    val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
+    val textMainColor = if (isDark) Color.White else Color(0xFF191C19)
+    val rojo = MaterialTheme.colorScheme.error
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = cardBg),
+        border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(rojo.copy(alpha = 0.1f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Groups,
+                    contentDescription = null,
+                    tint = rojo
                 )
             }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Gastos comunes",
+                    fontSize = 11.sp,
+                    color = textMainColor.copy(alpha = 0.5f),
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    text = "${formatMoney.format(total / 2.0)} cada uno",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = textMainColor
+                )
+            }
+            Text(
+                text = formatMoney.format(total),
+                fontSize = 15.sp,
+                fontWeight = FontWeight.ExtraBold,
+                color = rojo
+            )
         }
     }
 }
@@ -935,4 +1123,212 @@ fun formatDateMinimal(input: String): String {
         }
     } catch (e: Exception) {}
     return input
+}
+
+/**
+ * Panel de filtros del historial de movimientos.
+ * Combina tres niveles: persona (responsable) -> tipo -> categorías (multi-selección).
+ * Las categorías mostradas se derivan dinámicamente de los movimientos ya filtrados por
+ * persona/tipo, de modo que solo aparecen opciones que realmente existen.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MovementFilters(
+    person: String,
+    onPersonChange: (String) -> Unit,
+    tipo: String,
+    onTipoChange: (String) -> Unit,
+    availableCategories: List<String>,
+    selectedCategories: Set<String>,
+    onToggleCategory: (String) -> Unit,
+    onClearCategories: () -> Unit
+) {
+    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
+    val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
+    val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
+    val trackBg = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = cardBg),
+        border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            // 1) Persona (control segmentado)
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = "Persona",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(trackBg)
+                        .padding(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    listOf("Todos", "Santiago", "Rocío").forEach { p ->
+                        val selected = person == p
+                        val accent = when (p) {
+                            "Santiago" -> MaterialTheme.colorScheme.primary
+                            "Rocío" -> MaterialTheme.colorScheme.tertiary
+                            else -> MaterialTheme.colorScheme.onSurface
+                        }
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(if (selected) accent.copy(alpha = 0.15f) else Color.Transparent)
+                                .clickable { onPersonChange(p) }
+                                .padding(vertical = 9.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = p,
+                                fontSize = 13.sp,
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                color = if (selected) accent else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 2) Tipo de movimiento (selección única)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                listOf("Todos", "Gastos", "Aportes", "Transfer.").forEach { t ->
+                    val selected = tipo == t
+                    FilterChip(
+                        selected = selected,
+                        onClick = { onTipoChange(t) },
+                        label = {
+                            Text(
+                                text = t,
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                modifier = Modifier.fillMaxWidth(),
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            )
+                        },
+                        modifier = Modifier.weight(1f),
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.primary,
+                            selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                        ),
+                        border = FilterChipDefaults.filterChipBorder(
+                            enabled = true,
+                            selected = selected,
+                            borderColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.15f)
+                        )
+                    )
+                }
+            }
+
+            // 3) Categorías (multi-selección) - desplegable, contraído por defecto.
+            // El estado del filtro vive fuera de este composable, así que contraer/expandir
+            // nunca deshace la selección.
+            if (availableCategories.isNotEmpty()) {
+                var categoriesExpanded by remember { mutableStateOf(false) }
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { categoriesExpanded = !categoriesExpanded }
+                            .padding(vertical = 2.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = if (categoriesExpanded) Icons.Default.KeyboardArrowUp
+                                else Icons.Default.KeyboardArrowDown,
+                                contentDescription = if (categoriesExpanded) "Contraer" else "Expandir",
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = if (selectedCategories.isEmpty()) "Categorías"
+                                else "Categorías (${selectedCategories.size})",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                            )
+                        }
+                        if (selectedCategories.isNotEmpty()) {
+                            Text(
+                                text = "Limpiar",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.clickable { onClearCategories() }
+                            )
+                        }
+                    }
+
+                    // Resumen compacto cuando está contraído y hay selección activa
+                    if (!categoriesExpanded && selectedCategories.isNotEmpty()) {
+                        Text(
+                            text = availableCategories.filter { selectedCategories.contains(it) }
+                                .joinToString(" · "),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    AnimatedVisibility(visible = categoriesExpanded) {
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            availableCategories.forEach { cat ->
+                                val selected = selectedCategories.contains(cat)
+                                FilterChip(
+                                    selected = selected,
+                                    onClick = { onToggleCategory(cat) },
+                                    label = { Text(cat, fontSize = 11.sp) },
+                                    leadingIcon = if (selected) {
+                                        {
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                        }
+                                    } else null,
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                        selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+                                        selectedLeadingIconColor = MaterialTheme.colorScheme.onPrimary
+                                    ),
+                                    border = FilterChipDefaults.filterChipBorder(
+                                        enabled = true,
+                                        selected = selected,
+                                        borderColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.15f)
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
