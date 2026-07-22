@@ -27,6 +27,7 @@ import com.example.data.CuotaPlan
 import com.example.data.Movement
 import com.example.ui.BalanceBreakdown
 import com.example.ui.CuotasEngine
+import com.example.ui.theme.personaColor
 import java.text.NumberFormat
 import java.util.Locale
 
@@ -163,7 +164,7 @@ fun ReportsScreen(
                             title = "Gastos de Santiago",
                             movements = movements.filter { it.tipo.lowercase() == "gasto" && it.responsable.equals("Santiago", ignoreCase = true) },
                             formatMoney = formatMoney,
-                            accentColor = MaterialTheme.colorScheme.primary
+                            accentColor = personaColor("Santiago", userProfile)
                         )
                     }
 
@@ -173,7 +174,7 @@ fun ReportsScreen(
                             title = "Gastos de Rocío",
                             movements = movements.filter { it.tipo.lowercase() == "gasto" && it.responsable.equals("Rocío", ignoreCase = true) },
                             formatMoney = formatMoney,
-                            accentColor = MaterialTheme.colorScheme.tertiary
+                            accentColor = personaColor("Rocío", userProfile)
                         )
                     }
                 }
@@ -211,9 +212,9 @@ fun ReportAportesCard(userProfile: String, balance: BalanceBreakdown, formatMone
             val sRocioPct = 1f - sSantiagoPct
 
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                val isUserRocio = userProfile == "Rocío"
-                val santiagoColor = if (isUserRocio) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary
-                val rocioColor    = if (isUserRocio) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary
+                // Colores de identidad estables (invariantes al usuario activo).
+                val santiagoColor = personaColor("Santiago", userProfile)
+                val rocioColor = personaColor("Rocío", userProfile)
 
                 // Fila Santiago
                 Column {

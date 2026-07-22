@@ -32,6 +32,7 @@ import com.example.data.Movement
 import com.example.ui.BalanceBreakdown
 import com.example.ui.CuotaRecordatorio
 import com.example.ui.CuotasEngine
+import com.example.ui.theme.personaColor
 import java.text.NumberFormat
 import java.util.Locale
 
@@ -187,7 +188,7 @@ fun DashboardScreen(
                             aportes = balance.santiagoAportes,
                             personales = balance.santiagoGastosPersonales,
                             formatMoney = formatMoney,
-                            avatarColor = MaterialTheme.colorScheme.primary
+                            avatarColor = personaColor("Santiago", userProfile)
                         )
                         DesgloseSocioCard(
                             modifier = Modifier.weight(1f),
@@ -197,7 +198,7 @@ fun DashboardScreen(
                             aportes = balance.rocioAportes,
                             personales = balance.rocioGastosPersonales,
                             formatMoney = formatMoney,
-                            avatarColor = MaterialTheme.colorScheme.tertiary
+                            avatarColor = personaColor("Rocío", userProfile)
                         )
                     }
                 }
@@ -209,7 +210,11 @@ fun DashboardScreen(
 
                 // Relación de propiedad cruzada (una sola vez, no redundante por tarjeta)
                 item {
-                    DineroCruzadoCard(externoSantiago = balance.santiagoExterno, formatMoney = formatMoney)
+                    DineroCruzadoCard(
+                        externoSantiago = balance.santiagoExterno,
+                        currentUserProfile = userProfile,
+                        formatMoney = formatMoney
+                    )
                 }
 
                 // Historial Reciente de Movimientos
@@ -258,6 +263,7 @@ fun DashboardScreen(
                 item {
                     MovementFilters(
                         person = filterPerson,
+                        currentUser = userProfile,
                         onPersonChange = { filterPerson = it },
                         tipo = filterTipo,
                         onTipoChange = { filterTipo = it },
@@ -485,10 +491,11 @@ fun MovementItem(
             val isAporte = movement.tipo.lowercase() == "aporte"
             val isSantiagoAporte = isAporte && movement.responsable.equals("Santiago", ignoreCase = true)
             val isRocioAporte = isAporte && movement.responsable.equals("Rocío", ignoreCase = true)
-            
+
+            // El color del aporte es el de identidad del aportante (estable ante el usuario activo).
             val aporteColor = when {
-                isSantiagoAporte -> MaterialTheme.colorScheme.primary // Santiago siempre verde
-                isRocioAporte -> MaterialTheme.colorScheme.tertiary // Rocío siempre azul
+                isSantiagoAporte -> personaColor("Santiago", currentUserProfile)
+                isRocioAporte -> personaColor("Rocío", currentUserProfile)
                 else -> MaterialTheme.colorScheme.tertiary // Fallback para transferencias u otros
             }
             
@@ -615,17 +622,19 @@ fun MovementItem(
                             }
 
                             if (movement.propietario != movement.responsable && movement.propietario != "Ambos") {
+                                // Tag que nombra al propietario: usa su color de identidad estable.
+                                val propietarioColor = personaColor(movement.propietario, currentUserProfile)
                                 Box(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(4.dp))
-                                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.1f))
+                                        .background(propietarioColor.copy(alpha = 0.1f))
                                         .padding(horizontal = 4.dp, vertical = 2.dp)
                                 ) {
                                     Text(
                                         text = "De ${movement.propietario}",
                                         fontSize = 9.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.primary
+                                        color = propietarioColor
                                     )
                                 }
                             }
@@ -666,17 +675,19 @@ fun MovementItem(
                             )
                         }
                     } else if (movement.tipo.lowercase() == "aporte" && movement.propietario != movement.responsable) {
+                         // Tag que nombra a la cuenta destino (responsable): color de identidad estable.
+                         val responsableColor = personaColor(movement.responsable, currentUserProfile)
                          Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(4.dp))
-                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f))
+                                .background(responsableColor.copy(alpha = 0.08f))
                                 .padding(horizontal = 4.dp, vertical = 2.dp)
                         ) {
                             Text(
                                 text = "A ${movement.responsable}",
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
+                                color = responsableColor
                             )
                         }
                     }
@@ -754,14 +765,14 @@ fun PozoComunCard(userProfile: String, balance: BalanceBreakdown, formatMoney: N
                     modifier = Modifier
                         .fillMaxHeight()
                         .weight(if (santiagoRatio > 0) santiagoRatio.toFloat() else 0.001f)
-                        .background(MaterialTheme.colorScheme.primary)
+                        .background(personaColor("Santiago", userProfile))
                 )
                 // Barra Rocío (Azul)
                 Box(
                     modifier = Modifier
                         .fillMaxHeight()
                         .weight(if (rocioRatio > 0) rocioRatio.toFloat() else 0.001f)
-                        .background(MaterialTheme.colorScheme.tertiary)
+                        .background(personaColor("Rocío", userProfile))
                 )
             }
 
@@ -774,7 +785,7 @@ fun PozoComunCard(userProfile: String, balance: BalanceBreakdown, formatMoney: N
                 // Columna 1 (Santiago - Verde)
                 Column {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary))
+                        Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(personaColor("Santiago", userProfile)))
                         Spacer(modifier = Modifier.width(6.dp))
                         Text("Santiago", fontSize = 12.sp, color = labelColor, fontWeight = FontWeight.SemiBold)
                     }
@@ -807,7 +818,7 @@ fun PozoComunCard(userProfile: String, balance: BalanceBreakdown, formatMoney: N
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("Rocío", fontSize = 12.sp, color = labelColor, fontWeight = FontWeight.SemiBold)
                         Spacer(modifier = Modifier.width(6.dp))
-                        Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(MaterialTheme.colorScheme.tertiary))
+                        Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(personaColor("Rocío", userProfile)))
                     }
                     val saldoR = balance.rocioSaldoFinal
                     val efecR = balance.rocioEfectivo
@@ -844,7 +855,7 @@ fun PozoComunCard(userProfile: String, balance: BalanceBreakdown, formatMoney: N
  * sentido repetirla en cada tarjeta.
  */
 @Composable
-fun DineroCruzadoCard(externoSantiago: Double, formatMoney: NumberFormat) {
+fun DineroCruzadoCard(externoSantiago: Double, currentUserProfile: String, formatMoney: NumberFormat) {
     // Umbral para ignorar redondeos de centavos
     if (kotlin.math.abs(externoSantiago) < 1.0) return
 
@@ -853,11 +864,12 @@ fun DineroCruzadoCard(externoSantiago: Double, formatMoney: NumberFormat) {
     val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
     val textMainColor = if (isDark) Color.White else Color(0xFF191C19)
 
-    // Quién tiene plata en la cuenta de quién
+    // Quién tiene plata en la cuenta de quién. El acento representa al dueño (persona concreta),
+    // así que usa su color de identidad estable, no `primary` a secas.
     val dueno = if (externoSantiago > 0) "Santiago" else "Rocío"
     val cuentaDe = if (externoSantiago > 0) "Rocío" else "Santiago"
     val monto = kotlin.math.abs(externoSantiago)
-    val acento = if (externoSantiago > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary
+    val acento = personaColor(dueno, currentUserProfile)
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -1014,7 +1026,7 @@ fun DesgloseSocioCard(
                     text = formatMoney.format(aportes),
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold,
-                    color = Color(0xFF386B3F),
+                    color = avatarColor,
                     maxLines = 1
                 )
             }
@@ -1264,6 +1276,7 @@ fun formatDateMinimal(input: String): String {
 @Composable
 fun MovementFilters(
     person: String,
+    currentUser: String,
     onPersonChange: (String) -> Unit,
     tipo: String,
     onTipoChange: (String) -> Unit,
@@ -1306,11 +1319,8 @@ fun MovementFilters(
                 ) {
                     listOf("Todos", "Santiago", "Rocío").forEach { p ->
                         val selected = person == p
-                        val accent = when (p) {
-                            "Santiago" -> MaterialTheme.colorScheme.primary
-                            "Rocío" -> MaterialTheme.colorScheme.tertiary
-                            else -> MaterialTheme.colorScheme.onSurface
-                        }
+                        val accent = if (p == "Todos") MaterialTheme.colorScheme.onSurface
+                        else personaColor(p, currentUser)
                         Box(
                             modifier = Modifier
                                 .weight(1f)

@@ -217,6 +217,24 @@ class AhorroRepository(private val prefsHelper: PreferencesHelper) {
     }
 
     /**
+     * Planes PENDIENTES cacheados, **sin tocar la red** y ya normalizados/ordenados. Sirve para el
+     * arranque instantáneo del módulo de cuotas (mismo patrón "cache al instante + refresco en
+     * segundo plano" que los movimientos). En modo demo deriva los pendientes de los planes locales.
+     */
+    fun cachedPendingPlans(): List<CuotaPlan> {
+        if (prefsHelper.useLocalDemo) {
+            val movs = prefsHelper.getLocalMovements().filter { !it.eliminado }
+            return prefsHelper.getLocalPlans()
+                .filter { !it.eliminado }
+                .filter { !isPlanComplete(it, movs) }
+                .sortedByDescending { it.fechaCreacion }
+        }
+        return prefsHelper.getPlansCache()
+            .map { normalizePlan(it) }
+            .sortedByDescending { it.fechaCreacion }
+    }
+
+    /**
      * Trae los planes filtrados por estado. Por defecto ([soloPagos] = false) devuelve los
      * PENDIENTES (no completos) y los cachea; con [soloPagos] = true devuelve los completos
      * (on-demand, no se cachean). Siempre ordenados por fechaCreacion descendente.

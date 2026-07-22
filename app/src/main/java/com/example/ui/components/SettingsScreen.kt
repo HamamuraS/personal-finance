@@ -20,6 +20,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.AhorroViewModel
+import com.example.ui.theme.personaColor
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -106,7 +107,7 @@ fun SettingsScreen(
                             modifier = Modifier.weight(1f),
                             name = "Santiago",
                             isSelected = currentUserProfileState.value == "Santiago",
-                            color = Color(0xFF386B3F),
+                            color = personaColor("Santiago", currentUserProfileState.value),
                             onClick = { viewModel.setCurrentUserProfile("Santiago") }
                         )
 
@@ -114,7 +115,7 @@ fun SettingsScreen(
                             modifier = Modifier.weight(1f),
                             name = "Rocío",
                             isSelected = currentUserProfileState.value == "Rocío",
-                            color = Color(0xFF4A607A),
+                            color = personaColor("Rocío", currentUserProfileState.value),
                             onClick = { viewModel.setCurrentUserProfile("Rocío") }
                         )
                     }

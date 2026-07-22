@@ -36,6 +36,7 @@ import com.example.data.Movement
 import com.example.ui.AhorroViewModel
 import com.example.ui.CuotaProgramada
 import com.example.ui.CuotasEngine
+import com.example.ui.theme.personaColor
 import java.text.NumberFormat
 import java.util.Calendar
 import java.util.Locale
@@ -75,24 +76,6 @@ fun formatMonthLabel(yyyyMM: String): String {
 
 private fun currentYyyyMm(): String =
     java.text.SimpleDateFormat("yyyy-MM", Locale.US).format(java.util.Date())
-
-/**
- * Color de identidad de una persona, **estable** sin importar el usuario activo:
- * Santiago = verde (primary base), Rocío = azul (tertiary base).
- *
- * El tema invierte `primary`/`tertiary` cuando el usuario activo es Rocío (para que "lo tuyo" use
- * primary); aquí deshacemos esa inversión para que el color del propietario sea siempre consistente.
- */
-@Composable
-private fun personaColor(persona: String, currentUser: String): Color {
-    val userRocio = currentUser.equals("Rocío", ignoreCase = true)
-    val esRocio = persona.equals("Rocío", ignoreCase = true)
-    return if (esRocio) {
-        if (userRocio) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary
-    } else {
-        if (userRocio) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary
-    }
-}
 
 private sealed interface CuotasRoute {
     data object List : CuotasRoute

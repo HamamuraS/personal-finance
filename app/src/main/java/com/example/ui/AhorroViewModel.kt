@@ -100,6 +100,12 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
                 val cached = withContext(Dispatchers.IO) { prefsHelper.getSheetsCache() }
                 if (cached.isNotEmpty()) applyMovements(cached)
             }
+            // Módulo de cuotas: mismo patrón. Mostramos los planes pendientes cacheados al instante
+            // (los pagados siguen siendo on-demand) para que la pestaña Cuotas no arranque vacía.
+            if (_plans.value.isEmpty()) {
+                val cachedPlans = withContext(Dispatchers.IO) { repository.cachedPendingPlans() }
+                if (cachedPlans.isNotEmpty()) _plans.value = cachedPlans
+            }
             refreshData()
         }
     }

@@ -379,14 +379,12 @@ fun AddMovementScreen(
                                 propietario = currentUserProfile
                             },
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = if (!esComun) {
-                                    if (currentUserProfile == "Rocío") MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f)
-                                    else MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                                } else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
-                                contentColor = if (!esComun) {
-                                    if (currentUserProfile == "Rocío") MaterialTheme.colorScheme.tertiary
-                                    else MaterialTheme.colorScheme.primary
-                                } else MaterialTheme.colorScheme.onSurface
+                                // "Personal" = paga el usuario activo → su propio color, que en el
+                                // tema activo siempre es `primary` (no hace falta invertir a mano).
+                                containerColor = if (!esComun) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
+                                contentColor = if (!esComun) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurface
                             ),
                             shape = RoundedCornerShape(12.dp),
                             elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp),
