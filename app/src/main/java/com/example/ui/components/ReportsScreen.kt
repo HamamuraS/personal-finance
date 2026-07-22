@@ -10,6 +10,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -22,8 +23,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.CuotaPlan
 import com.example.data.Movement
 import com.example.ui.BalanceBreakdown
+import com.example.ui.CuotasEngine
 import java.text.NumberFormat
 import java.util.Locale
 
@@ -35,8 +38,13 @@ fun ReportsScreen(
     movements: List<Movement>,
     availableMonths: List<String>,
     selectedMonth: String,
-    onMonthSelected: (String) -> Unit
+    onMonthSelected: (String) -> Unit,
+    plans: List<CuotaPlan> = emptyList(),
+    allMovements: List<Movement> = emptyList()
 ) {
+    // Total que caerá en cada tarjeta en el mes seleccionado (cuotas pagadas + impagas).
+    val tarjetaTotals = CuotasEngine.totalTarjetaPorMes(selectedMonth, plans, allMovements)
+
     val formatMoney = remember {
         java.text.DecimalFormat("#,##0.00").apply {
             val symbols = java.text.DecimalFormatSymbols()
@@ -89,7 +97,7 @@ fun ReportsScreen(
             )
         }
     ) { innerPadding ->
-        if (movements.isEmpty()) {
+        if (movements.isEmpty() && tarjetaTotals.isEmpty()) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -122,39 +130,52 @@ fun ReportsScreen(
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                // Tarjeta 1: Aportes por socio (Santiago vs Rocío)
-                item {
-                    ReportAportesCard(userProfile = userProfile, balance = balance, formatMoney = formatMoney)
+                // Tarjeta: Total en tarjetas por mes (módulo de cuotas)
+                if (tarjetaTotals.isNotEmpty()) {
+                    item {
+                        TarjetasPorMesCard(
+                            mes = selectedMonth,
+                            totales = tarjetaTotals,
+                            formatMoney = formatMoney
+                        )
+                    }
                 }
 
-                // Tarjeta 2: Gastos Totales Combinados
-                item {
-                    ReportCategoriasCard(
-                        title = "Gastos Totales (Combinados)",
-                        movements = movements.filter { it.tipo.lowercase() == "gasto" },
-                        formatMoney = formatMoney,
-                        accentColor = MaterialTheme.colorScheme.primary
-                    )
-                }
+                if (movements.isNotEmpty()) {
+                    // Tarjeta 1: Aportes por socio (Santiago vs Rocío)
+                    item {
+                        ReportAportesCard(userProfile = userProfile, balance = balance, formatMoney = formatMoney)
+                    }
 
-                // Tarjeta 3: Gastos Santiago
-                item {
-                    ReportCategoriasCard(
-                        title = "Gastos de Santiago",
-                        movements = movements.filter { it.tipo.lowercase() == "gasto" && it.responsable.equals("Santiago", ignoreCase = true) },
-                        formatMoney = formatMoney,
-                        accentColor = MaterialTheme.colorScheme.primary
-                    )
-                }
+                    // Tarjeta 2: Gastos Totales Combinados
+                    item {
+                        ReportCategoriasCard(
+                            title = "Gastos Totales (Combinados)",
+                            movements = movements.filter { it.tipo.lowercase() == "gasto" },
+                            formatMoney = formatMoney,
+                            accentColor = MaterialTheme.colorScheme.primary
+                        )
+                    }
 
-                // Tarjeta 4: Gastos Rocío
-                item {
-                    ReportCategoriasCard(
-                        title = "Gastos de Rocío",
-                        movements = movements.filter { it.tipo.lowercase() == "gasto" && it.responsable.equals("Rocío", ignoreCase = true) },
-                        formatMoney = formatMoney,
-                        accentColor = MaterialTheme.colorScheme.tertiary
-                    )
+                    // Tarjeta 3: Gastos Santiago
+                    item {
+                        ReportCategoriasCard(
+                            title = "Gastos de Santiago",
+                            movements = movements.filter { it.tipo.lowercase() == "gasto" && it.responsable.equals("Santiago", ignoreCase = true) },
+                            formatMoney = formatMoney,
+                            accentColor = MaterialTheme.colorScheme.primary
+                        )
+                    }
+
+                    // Tarjeta 4: Gastos Rocío
+                    item {
+                        ReportCategoriasCard(
+                            title = "Gastos de Rocío",
+                            movements = movements.filter { it.tipo.lowercase() == "gasto" && it.responsable.equals("Rocío", ignoreCase = true) },
+                            formatMoney = formatMoney,
+                            accentColor = MaterialTheme.colorScheme.tertiary
+                        )
+                    }
                 }
             }
         }
@@ -354,6 +375,73 @@ fun ReportCategoriasCard(
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Total que caerá en cada tarjeta en el mes seleccionado, agrupado por tarjeta (módulo de cuotas).
+ * Suma tanto las cuotas ya pagadas como las impagas que vencen ese mes.
+ */
+@Composable
+fun TarjetasPorMesCard(
+    mes: String,
+    totales: Map<String, Double>,
+    formatMoney: NumberFormat
+) {
+    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
+    val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
+    val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
+    val accent = MaterialTheme.colorScheme.tertiary
+    val total = totales.values.sum()
+    val ordenadas = totales.entries.sortedByDescending { it.value }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = cardBg),
+        border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Box(
+                    modifier = Modifier.size(32.dp).clip(CircleShape).background(accent.copy(alpha = 0.12f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Default.CreditCard, contentDescription = null, tint = accent, modifier = Modifier.size(18.dp))
+                }
+                Column {
+                    Text("Total en tarjetas", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurface)
+                    Text(formatMonthLabel(mes), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+                }
+            }
+
+            ordenadas.forEach { (tarjeta, monto) ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                        Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(accent))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(tarjeta, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    Text(formatMoney.format(monto), fontSize = 13.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                }
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Total del mes", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), fontWeight = FontWeight.Medium)
+                Text(formatMoney.format(total), fontSize = 16.sp, fontWeight = FontWeight.Black, color = accent)
             }
         }
     }

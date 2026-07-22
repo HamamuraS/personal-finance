@@ -13,6 +13,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Settings
@@ -21,13 +22,14 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import com.example.ui.AhorroViewModel
 import com.example.ui.components.AddMovementScreen
+import com.example.ui.components.CuotasScreen
 import com.example.ui.components.DashboardScreen
 import com.example.ui.components.ReportsScreen
 import com.example.ui.components.SettingsScreen
 import com.example.ui.theme.MyApplicationTheme
 
 enum class ScreenTab {
-    INICIO, NUEVO, METRICAS, AJUSTES
+    INICIO, NUEVO, CUOTAS, METRICAS, AJUSTES
 }
 
 class MainActivity : ComponentActivity() {
@@ -50,6 +52,9 @@ class MainActivity : ComponentActivity() {
                 val isLoading by viewModel.isLoading.collectAsState()
                 val useLocalDemo by viewModel.useLocalDemo.collectAsState()
                 val isCurrentMonth by viewModel.isCurrentMonth.collectAsState()
+                val plans by viewModel.plans.collectAsState()
+                val allMovements by viewModel.allMovements.collectAsState()
+                val selectedMonth by viewModel.selectedMonth.collectAsState()
 
                 LaunchedEffect(isCurrentMonth) {
                     if (!isCurrentMonth && currentTab == ScreenTab.NUEVO) {
@@ -79,6 +84,12 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
                             NavigationBarItem(
+                                selected = currentTab == ScreenTab.CUOTAS,
+                                onClick = { currentTab = ScreenTab.CUOTAS },
+                                icon = { Icon(Icons.Default.CreditCard, contentDescription = "Cuotas") },
+                                label = { Text("Cuotas", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                            )
+                            NavigationBarItem(
                                 selected = currentTab == ScreenTab.METRICAS,
                                 onClick = { currentTab = ScreenTab.METRICAS },
                                 icon = { Icon(Icons.Default.Info, contentDescription = "Métricas") },
@@ -106,9 +117,14 @@ class MainActivity : ComponentActivity() {
                                     onDeleteMovement = { viewModel.deleteMovement(it) },
                                     onDuplicateMovement = { viewModel.duplicateMovement(it) {} },
                                     availableMonths = viewModel.availableMonths.collectAsState().value,
-                                    selectedMonth = viewModel.selectedMonth.collectAsState().value,
+                                    selectedMonth = selectedMonth,
                                     isCurrentMonth = isCurrentMonth,
-                                    onMonthSelected = { viewModel.setSelectedMonth(it) }
+                                    onMonthSelected = { viewModel.setSelectedMonth(it) },
+                                    plans = plans,
+                                    allMovements = allMovements,
+                                    onConfirmCuota = { plan, numero, fecha, metodo, monto, onSuccess ->
+                                        viewModel.confirmarCuota(plan, numero, fecha, metodo, monto, onSuccess = onSuccess)
+                                    }
                                 )
                             }
                             ScreenTab.NUEVO -> {
@@ -119,14 +135,19 @@ class MainActivity : ComponentActivity() {
                                     }
                                 )
                             }
+                            ScreenTab.CUOTAS -> {
+                                CuotasScreen(viewModel = viewModel)
+                            }
                             ScreenTab.METRICAS -> {
                                 ReportsScreen(
                                     userProfile = userProfile,
                                     balance = balance,
                                     movements = movements,
                                     availableMonths = viewModel.availableMonths.collectAsState().value,
-                                    selectedMonth = viewModel.selectedMonth.collectAsState().value,
-                                    onMonthSelected = { viewModel.setSelectedMonth(it) }
+                                    selectedMonth = selectedMonth,
+                                    onMonthSelected = { viewModel.setSelectedMonth(it) },
+                                    plans = plans,
+                                    allMovements = allMovements
                                 )
                             }
                             ScreenTab.AJUSTES -> {

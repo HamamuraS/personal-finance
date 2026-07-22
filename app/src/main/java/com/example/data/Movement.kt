@@ -14,7 +14,10 @@ data class Movement(
     val descripcion: String = "",
     val metodoPago: String = "Billetera Virtual", // "Efectivo", "Billetera Virtual"
     val ticketUrl: String = "", // Nueva columna J
-    val eliminado: Boolean = false // Columna K
+    val eliminado: Boolean = false, // Columna K
+    // --- Vínculo con el módulo de cuotas (retrocompatible; vacío/0 en filas viejas) ---
+    val planId: String = "",    // Columna M (índice 12): plan de cuotas que este gasto paga
+    val cuotaNumero: Int = 0    // Columna N (índice 13): número de cuota (1..N) que paga
 ) {
     // Convierte el movimiento en una fila para Google Sheets
     fun toRowValues(): List<String> {
@@ -30,7 +33,9 @@ data class Movement(
             metodoPago,
             ticketUrl,
             eliminado.toString(),
-            propietario
+            propietario,
+            planId,
+            cuotaNumero.toString()
         )
     }
 
@@ -51,7 +56,9 @@ data class Movement(
                     metodoPago = row.getOrNull(8) ?: "Billetera Virtual",
                     ticketUrl = row.getOrNull(9) ?: "",
                     eliminado = row.getOrNull(10)?.toBooleanStrictOrNull() ?: false,
-                    propietario = row.getOrNull(11) ?: row.getOrNull(5) ?: "Santiago"
+                    propietario = row.getOrNull(11) ?: row.getOrNull(5) ?: "Santiago",
+                    planId = row.getOrNull(12) ?: "",
+                    cuotaNumero = row.getOrNull(13)?.toIntOrNull() ?: 0
                 )
             } catch (e: Exception) {
                 null

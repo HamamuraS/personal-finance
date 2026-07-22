@@ -27,8 +27,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import com.example.data.CuotaPlan
 import com.example.data.Movement
 import com.example.ui.BalanceBreakdown
+import com.example.ui.CuotaRecordatorio
+import com.example.ui.CuotasEngine
 import java.text.NumberFormat
 import java.util.Locale
 
@@ -46,7 +49,10 @@ fun DashboardScreen(
     availableMonths: List<String>,
     selectedMonth: String,
     isCurrentMonth: Boolean,
-    onMonthSelected: (String) -> Unit
+    onMonthSelected: (String) -> Unit,
+    plans: List<CuotaPlan> = emptyList(),
+    allMovements: List<Movement> = emptyList(),
+    onConfirmCuota: (CuotaPlan, Int, String, String, Double?, () -> Unit) -> Unit = { _, _, _, _, _, _ -> }
 ) {
     // Filtros: persona (responsable) + tipo + categorías (multi-selección)
     var filterPerson by remember { mutableStateOf("Todos") }   // Todos | Santiago | Rocío
@@ -140,6 +146,23 @@ fun DashboardScreen(
                 // Tarjeta de Pozo Común
                 item {
                     PozoComunCard(userProfile = userProfile, balance = balance, formatMoney = formatMoney)
+                }
+
+                // Recordatorio: cuotas a pagar del usuario activo hasta el MES ACTUAL real
+                // (incluye atrasadas), independiente del mes que se esté visualizando. Así el pago
+                // rápido nunca ofrece cuotas futuras (consistente con el detalle del plan).
+                val mesActualReal = java.text.SimpleDateFormat("yyyy-MM", java.util.Locale.US).format(java.util.Date())
+                val recordatoriosCuotas = CuotasEngine.recordatoriosDelMes(mesActualReal, plans, allMovements)
+                    .filter { it.plan.propietario.equals(userProfile, ignoreCase = true) }
+                if (recordatoriosCuotas.isNotEmpty()) {
+                    item {
+                        CuotasRecordatorioCard(
+                            recordatorios = recordatoriosCuotas,
+                            formatMoney = formatMoney,
+                            isLoading = isLoading,
+                            onConfirmCuota = onConfirmCuota
+                        )
+                    }
                 }
 
                 // Desglose de Saldos Individuales
@@ -1076,6 +1099,112 @@ fun GastosComunesCard(total: Double, formatMoney: NumberFormat) {
                 fontWeight = FontWeight.ExtraBold,
                 color = rojo
             )
+        }
+    }
+}
+
+/**
+ * Tarjeta recordatorio del Dashboard: lista las cuotas impagas del usuario activo (incluidas las
+ * atrasadas) con un botón de pago rápido que reutiliza el mismo diálogo que el detalle del plan.
+ */
+@Composable
+fun CuotasRecordatorioCard(
+    recordatorios: List<CuotaRecordatorio>,
+    formatMoney: NumberFormat,
+    isLoading: Boolean,
+    onConfirmCuota: (CuotaPlan, Int, String, String, Double?, () -> Unit) -> Unit
+) {
+    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
+    val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
+    val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
+    val textMain = if (isDark) Color.White else Color(0xFF191C19)
+    val accent = MaterialTheme.colorScheme.primary
+
+    var target by remember { mutableStateOf<CuotaRecordatorio?>(null) }
+    target?.let { rec ->
+        ConfirmarCuotaDialog(
+            planDescripcion = rec.plan.descripcion,
+            numero = rec.cuota.numero,
+            cantidadCuotas = rec.plan.cantidadCuotas,
+            esUltima = rec.cuota.numero == rec.plan.cantidadCuotas,
+            esAtrasada = rec.atrasada,
+            mesVencimiento = rec.cuota.mesVencimiento,
+            montoSugerido = rec.plan.montoPorCuota,
+            formatMoney = formatMoney,
+            isLoading = isLoading,
+            onDismiss = { target = null },
+            onConfirm = { fecha, metodo, monto ->
+                onConfirmCuota(rec.plan, rec.cuota.numero, fecha, metodo, monto) { target = null }
+            }
+        )
+    }
+
+    val total = recordatorios.sumOf { it.cuota.monto }
+    val hayAtrasadas = recordatorios.any { it.atrasada }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = cardBg),
+        border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(
+                        modifier = Modifier.size(32.dp).clip(CircleShape).background(accent.copy(alpha = 0.12f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.CreditCard, contentDescription = null, tint = accent, modifier = Modifier.size(18.dp))
+                    }
+                    Column {
+                        Text("Cuotas a pagar", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = textMain)
+                        if (hayAtrasadas) {
+                            Text("Tenés cuotas atrasadas", fontSize = 11.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+                Text(formatMoney.format(total), fontWeight = FontWeight.ExtraBold, fontSize = 15.sp, color = accent)
+            }
+
+            recordatorios.forEach { rec ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Cuota ${rec.cuota.numero}/${rec.plan.cantidadCuotas} — ${rec.plan.descripcion}",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = textMain,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = if (rec.atrasada) "Venció en ${formatMonthLabel(rec.cuota.mesVencimiento)}" else formatMonthLabel(rec.cuota.mesVencimiento),
+                            fontSize = 10.sp,
+                            color = if (rec.atrasada) MaterialTheme.colorScheme.error else textMain.copy(alpha = 0.5f)
+                        )
+                    }
+                    Text(formatMoney.format(rec.cuota.monto), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = textMain.copy(alpha = 0.8f))
+                    Button(
+                        onClick = { target = rec },
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = accent, contentColor = MaterialTheme.colorScheme.onPrimary),
+                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp)
+                    ) {
+                        Text("Pagar", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
         }
     }
 }

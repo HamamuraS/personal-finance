@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.AhorroRepository
+import com.example.data.CuotaPlan
 import com.example.data.DriveService
 import com.example.data.Movement
 import com.example.data.PreferencesHelper
@@ -24,6 +25,25 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     private val repository = AhorroRepository(prefsHelper)
 
     private var _cachedAllMovements: List<Movement> = emptyList()
+
+    // Todos los movimientos (sin filtrar por mes). Lo usa el módulo de cuotas para derivar el
+    // estado por cuota (una cuota se paga en cualquier mes, no solo el seleccionado).
+    private val _allMovements = MutableStateFlow<List<Movement>>(emptyList())
+    val allMovements: StateFlow<List<Movement>> = _allMovements.asStateFlow()
+
+    // Planes de cuotas. `_plans` = pendientes (se cargan en refreshData); `_paidPlans` = completos
+    // (on-demand, cuando el usuario activa el switch "Mostrar pagados").
+    private val _plans = MutableStateFlow<List<CuotaPlan>>(emptyList())
+    val plans: StateFlow<List<CuotaPlan>> = _plans.asStateFlow()
+
+    private val _paidPlans = MutableStateFlow<List<CuotaPlan>>(emptyList())
+    val paidPlans: StateFlow<List<CuotaPlan>> = _paidPlans.asStateFlow()
+
+    private val _showPaidPlans = MutableStateFlow(false)
+    val showPaidPlans: StateFlow<Boolean> = _showPaidPlans.asStateFlow()
+
+    private val _isLoadingPaid = MutableStateFlow(false)
+    val isLoadingPaidPlans: StateFlow<Boolean> = _isLoadingPaid.asStateFlow()
 
     private val _availableMonths = MutableStateFlow<List<String>>(emptyList())
     val availableMonths: StateFlow<List<String>> = _availableMonths.asStateFlow()
@@ -164,6 +184,13 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
         return try {
             val rawList = repository.fetchMovements(_spreadsheetId.value)
             applyMovements(rawList)
+            // Planes pendientes junto con los movimientos (los pagos son on-demand).
+            _plans.value = repository.fetchPlans(_spreadsheetId.value, soloPagos = false)
+            if (_showPaidPlans.value) {
+                _isLoadingPaid.value = true
+                _paidPlans.value = repository.fetchPlans(_spreadsheetId.value, soloPagos = true)
+                _isLoadingPaid.value = false
+            }
             true
         } catch (e: Exception) {
             _errorMessage.value = "Error al recargar datos: ${e.localizedMessage}"
@@ -180,6 +207,7 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
         val list = rawList.map { it.copy(fecha = normalizeFechaToString(it.fecha)) }
         val sortedList = list.sortedWith(compareByDescending<Movement> { it.fecha }.thenByDescending { it.id })
         _cachedAllMovements = sortedList
+        _allMovements.value = sortedList
 
         val currentRealMonth = java.text.SimpleDateFormat("yyyy-MM", java.util.Locale.US).format(java.util.Date())
         val monthsSet = sortedList.mapNotNull {
@@ -351,6 +379,176 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     fun setIsDarkMode(isDark: Boolean) {
         prefsHelper.isDarkMode = isDark
         _isDarkMode.value = isDark
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Módulo de cuotas
+    // ---------------------------------------------------------------------------------------------
+
+    /** Activa/desactiva la sección de planes pagados; al activarla, dispara la request on-demand. */
+    fun setShowPaidPlans(show: Boolean) {
+        _showPaidPlans.value = show
+        if (show) loadPaidPlans() else _paidPlans.value = emptyList()
+    }
+
+    fun loadPaidPlans() {
+        viewModelScope.launch {
+            _isLoadingPaid.value = true
+            _paidPlans.value = repository.fetchPlans(_spreadsheetId.value, soloPagos = true)
+            _isLoadingPaid.value = false
+        }
+    }
+
+    /** Alta de un plan de cuotas (siempre personal: propietario ∈ {Santiago, Rocío}). */
+    fun addPlan(
+        descripcion: String,
+        montoPorCuota: Double,
+        cantidadCuotas: Int,
+        fechaPrimeraCuota: String,
+        propietario: String,
+        categoria: String,
+        tarjeta: String,
+        onSuccess: () -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            _isLoading.value = true
+            _errorMessage.value = null
+            val now = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date())
+            val plan = CuotaPlan(
+                fechaCreacion = now,
+                descripcion = descripcion,
+                montoPorCuota = montoPorCuota,
+                cantidadCuotas = cantidadCuotas,
+                fechaPrimeraCuota = fechaPrimeraCuota,
+                propietario = propietario,
+                categoria = categoria,
+                tarjeta = tarjeta
+            )
+            val success = repository.savePlan(_spreadsheetId.value, plan)
+            if (success) {
+                doRefreshData()
+                onSuccess()
+            } else {
+                _errorMessage.value = "No se pudo crear el plan de cuotas."
+            }
+            _isLoading.value = false
+        }
+    }
+
+    /** Edición de un plan existente (conserva el id). */
+    fun updatePlan(plan: CuotaPlan, onSuccess: () -> Unit = {}) {
+        viewModelScope.launch {
+            _isLoading.value = true
+            _errorMessage.value = null
+            val success = repository.updatePlan(_spreadsheetId.value, plan)
+            if (success) {
+                doRefreshData()
+                onSuccess()
+            } else {
+                _errorMessage.value = "No se pudo actualizar el plan."
+            }
+            _isLoading.value = false
+        }
+    }
+
+    /** Baja lógica de un plan. */
+    fun deletePlan(plan: CuotaPlan, onSuccess: () -> Unit = {}) {
+        viewModelScope.launch {
+            _isLoading.value = true
+            val success = repository.deletePlan(_spreadsheetId.value, plan)
+            if (success) {
+                doRefreshData()
+                onSuccess()
+            } else {
+                _errorMessage.value = "No se pudo eliminar el plan."
+            }
+            _isLoading.value = false
+        }
+    }
+
+    /**
+     * Paga en lote las cuotas indicadas (una por plan) — usado por el "Pagar la tarjeta" del mes.
+     * Crea un Movement de gasto personal por cada cuota (fecha = hoy, mes actual) y refresca **una
+     * sola vez** al terminar. Cada par es (plan, número de cuota).
+     */
+    fun pagarCuotas(
+        cuotas: List<Pair<CuotaPlan, Int>>,
+        metodoPago: String,
+        onSuccess: () -> Unit = {}
+    ) {
+        if (cuotas.isEmpty()) return
+        viewModelScope.launch {
+            _isLoading.value = true
+            _errorMessage.value = null
+            val fecha = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date())
+            var todoOk = true
+            for ((plan, numero) in cuotas) {
+                val movimiento = Movement(
+                    fecha = fecha,
+                    monto = plan.montoPorCuota,
+                    tipo = "Gasto",
+                    categoria = plan.categoria,
+                    responsable = plan.propietario,
+                    esComun = false,
+                    propietario = plan.propietario,
+                    descripcion = "Cuota $numero/${plan.cantidadCuotas} — ${plan.descripcion}",
+                    metodoPago = metodoPago,
+                    planId = plan.id,
+                    cuotaNumero = numero
+                )
+                val ok = repository.saveMovement(_spreadsheetId.value, movimiento, null, _folderId.value)
+                if (!ok) todoOk = false
+            }
+            doRefreshData()
+            if (todoOk) {
+                onSuccess()
+            } else {
+                _errorMessage.value = "Algunas cuotas no se pudieron pagar. Revisá el resumen."
+            }
+            _isLoading.value = false
+        }
+    }
+
+    /**
+     * Confirma el pago de una cuota: crea un Movement de tipo "Gasto" (personal, sin propiedad
+     * cruzada) que la referencia. El AccountingEngine lo debita como cualquier gasto y, al
+     * refrescar, la cuota queda "pagada" de forma derivada. [monto] permite ajustar el importe
+     * (p. ej. redondeo en la última cuota); si es null se usa el monto por cuota del plan.
+     */
+    fun confirmarCuota(
+        plan: CuotaPlan,
+        numero: Int,
+        fecha: String,
+        metodoPago: String,
+        monto: Double? = null,
+        onSuccess: () -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            _isLoading.value = true
+            _errorMessage.value = null
+            val movimiento = Movement(
+                fecha = fecha,
+                monto = monto ?: plan.montoPorCuota,
+                tipo = "Gasto",
+                categoria = plan.categoria,
+                responsable = plan.propietario,   // el dueño paga desde su propia cuenta
+                esComun = false,
+                propietario = plan.propietario,   // responsable == propietario => sin propiedad cruzada
+                descripcion = "Cuota $numero/${plan.cantidadCuotas} — ${plan.descripcion}",
+                metodoPago = metodoPago,
+                planId = plan.id,
+                cuotaNumero = numero
+            )
+            val success = repository.saveMovement(_spreadsheetId.value, movimiento, null, _folderId.value)
+            if (success) {
+                // Refresca movimientos y planes: un pago puede completar el plan (pasa a "pagados").
+                doRefreshData()
+                onSuccess()
+            } else {
+                _errorMessage.value = "No se pudo confirmar el pago de la cuota."
+            }
+            _isLoading.value = false
+        }
     }
 
     /**

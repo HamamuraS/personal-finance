@@ -1,12 +1,22 @@
 /**
  * Script de Google Apps Script para la sincronización de la App de Finanzas Personales.
  *
- * Versión: 4.0 (Soporte para baja lógica y carpeta configurable)
+ * Versión: 6.0 (Módulo de cuotas)
  * @description Este script requiere acceso a Google Drive para guardar los tickets.
+ *
+ * Novedades v6.0:
+ *  - Hoja nueva "Planes" para compras en cuotas (ver PLANS_SHEET). Se EXCLUYE del doGet de
+ *    movimientos para que sus filas no se lean como movimientos.
+ *  - Movimientos: 2 columnas nuevas M (planId) y N (cuotaNumero) que vinculan un gasto con la
+ *    cuota que paga. El estado "cuota pagada" es DERIVADO (existe el movimiento), no se duplica.
+ *  - doGet?action=GET_PLANS&filtro=pendientes|pagos: lista planes filtrando por si están
+ *    completamente pagos (derivado escaneando los movimientos), ordenados por creación desc.
+ *  - doPost con entity:"plan": alta (POST), edición (PUT) y baja lógica (DELETE) de planes.
  */
 
 const monthNames = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
 const defaultFolderId = "1LT_t2a7WBFe6wGjwJ5XuTYsS7gvjr3jU";
+const PLANS_SHEET = "Planes";
 
 /**
  * Función para forzar la solicitud de permisos de Drive.
@@ -16,18 +26,53 @@ function triggerAuthorization() {
   Logger.log("Acceso a carpeta verificado: " + folder.getName());
 }
 
+function jsonOutput(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
+
+/** True si el valor de una celda "eliminado" representa verdadero. */
+function isEliminado(v) {
+  return v === true || v === 'true' || v === 'VERDADERO';
+}
+
+/** Devuelve "yyyy-MM". Si Sheets guardó la celda como Date, la formatea; si no, la pasa a string. */
+function toYearMonth(v) {
+  if (v instanceof Date) {
+    return Utilities.formatDate(v, Session.getScriptTimeZone(), "yyyy-MM");
+  }
+  return v ? v.toString() : "";
+}
+
+/** Devuelve "yyyy-MM-dd HH:mm" (sortable). Formatea si la celda es Date. */
+function toDateTime(v) {
+  if (v instanceof Date) {
+    return Utilities.formatDate(v, Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm");
+  }
+  return v ? v.toString() : "";
+}
+
 function doGet(e) {
+  const action = (e && e.parameter && e.parameter.action) ? e.parameter.action : null;
+
+  // --- Endpoint del módulo de cuotas ---
+  if (action === 'GET_PLANS') {
+    return getPlans(e);
+  }
+
+  // --- Movimientos (comportamiento por defecto) ---
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheets = ss.getSheets();
   let allData = [];
 
   sheets.forEach(sheet => {
+    // ⚠️ La hoja de planes NO contiene movimientos: hay que saltarla.
+    if (sheet.getName() === PLANS_SHEET) return;
+
     const data = sheet.getDataRange().getValues();
     if (data.length > 1) {
       const rows = data.slice(1).map(row => {
         // Ignorar si está marcado como eliminado (Columna K / index 10)
-        const eliminado = row[10] === true || row[10] === 'true' || row[10] === 'VERDADERO';
-        if (eliminado) return null;
+        if (isEliminado(row[10])) return null;
 
         return {
           id: row[0] ? row[0].toString() : "",
@@ -41,15 +86,84 @@ function doGet(e) {
           metodoPago: row[8] ? row[8].toString() : "Billetera Virtual",
           ticketUrl: row[9] ? row[9].toString() : "",
           eliminado: false,
-          propietario: row[11] ? row[11].toString() : (row[5] ? row[5].toString() : "")
+          propietario: row[11] ? row[11].toString() : (row[5] ? row[5].toString() : ""),
+          planId: row[12] ? row[12].toString() : "",
+          cuotaNumero: Number(row[13]) || 0
         };
       }).filter(r => r !== null);
       allData = allData.concat(rows);
     }
   });
 
-  return ContentService.createTextOutput(JSON.stringify({ status: "SUCCESS", data: allData }))
-    .setMimeType(ContentService.MimeType.JSON);
+  return jsonOutput({ status: "SUCCESS", data: allData });
+}
+
+/**
+ * Lista los planes de cuotas. Deriva "completamente pago" escaneando TODAS las hojas de
+ * movimientos (fuente única de verdad): un plan está completo si tiene tantas cuotas distintas
+ * pagadas como cuotas totales.
+ *
+ * @param filtro "pendientes" (default) = no completos | "pagos" = completos.
+ * Ambos casos se devuelven ordenados por fechaCreacion descendente.
+ */
+function getPlans(e) {
+  const filtro = (e && e.parameter && e.parameter.filtro) ? e.parameter.filtro : 'pendientes';
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  // 1) paidMap: planId -> Set de cuotaNumero pagadas (derivado de los movimientos).
+  const paidMap = {};
+  ss.getSheets().forEach(sheet => {
+    if (sheet.getName() === PLANS_SHEET) return; // solo movimientos
+    const data = sheet.getDataRange().getValues();
+    for (let i = 1; i < data.length; i++) {
+      const row = data[i];
+      if (isEliminado(row[10])) continue;
+      const planId = row[12] ? row[12].toString() : "";
+      if (!planId) continue;
+      const cuotaNum = Number(row[13]) || 0;
+      if (cuotaNum <= 0) continue;
+      if (!paidMap[planId]) paidMap[planId] = {};
+      paidMap[planId][cuotaNum] = true;
+    }
+  });
+
+  // 2) Recorrer la hoja de planes, derivar "completo" y filtrar.
+  const plansSheet = ss.getSheetByName(PLANS_SHEET);
+  let plans = [];
+  if (plansSheet) {
+    const data = plansSheet.getDataRange().getValues();
+    for (let i = 1; i < data.length; i++) {
+      const row = data[i];
+      if (isEliminado(row[9])) continue; // Columna J / index 9
+      const id = row[0] ? row[0].toString() : "";
+      if (!id) continue;
+
+      const cantidadCuotas = Number(row[4]) || 0;
+      const pagadas = paidMap[id] ? Object.keys(paidMap[id]).length : 0;
+      const completo = cantidadCuotas > 0 && pagadas >= cantidadCuotas;
+
+      if (filtro === 'pagos' && !completo) continue;
+      if (filtro !== 'pagos' && completo) continue; // "pendientes"
+
+      plans.push({
+        id: id,
+        fechaCreacion: toDateTime(row[1]),
+        descripcion: row[2] ? row[2].toString() : "",
+        montoPorCuota: Number(row[3]) || 0,
+        cantidadCuotas: cantidadCuotas,
+        fechaPrimeraCuota: toYearMonth(row[5]),
+        propietario: row[6] ? row[6].toString() : "",
+        categoria: row[7] ? row[7].toString() : "",
+        tarjeta: row[8] ? row[8].toString() : "",
+        eliminado: false
+      });
+    }
+  }
+
+  // 3) Ordenar por fechaCreacion descendente (ISO -> orden lexicográfico).
+  plans.sort((a, b) => (a.fechaCreacion < b.fechaCreacion) ? 1 : ((a.fechaCreacion > b.fechaCreacion) ? -1 : 0));
+
+  return jsonOutput({ status: "SUCCESS", plans: plans });
 }
 
 function doPost(e) {
@@ -58,6 +172,16 @@ function doPost(e) {
     const contents = e.postData.contents;
     const json = JSON.parse(contents);
     const action = json.action;
+
+    // --- Módulo de cuotas: escritura de planes ---
+    if (json.entity === 'plan') {
+      if (action === 'DELETE') {
+        return handlePlanDelete(json.id);
+      }
+      return handlePlanUpsert(action, json.plan);
+    }
+
+    // --- Movimientos ---
     const folderId = json.folderId || defaultFolderId;
 
     if (action === 'DELETE' && json.id) {
@@ -109,8 +233,8 @@ function doPost(e) {
 
       if (!sheet) {
         sheet = ss.insertSheet(sheetName);
-        sheet.appendRow(["ID", "Fecha", "Monto", "Tipo", "Categoría", "Responsable", "Es Común", "Descripción", "Metodo Pago", "Ticket URL", "Eliminado", "Propietario"]);
-        sheet.getRange(1, 1, 1, 12).setFontWeight("bold").setBackground("#e2e8f0");
+        sheet.appendRow(["ID", "Fecha", "Monto", "Tipo", "Categoría", "Responsable", "Es Común", "Descripción", "Metodo Pago", "Ticket URL", "Eliminado", "Propietario", "Plan ID", "Cuota N°"]);
+        sheet.getRange(1, 1, 1, 14).setFontWeight("bold").setBackground("#e2e8f0");
         sheet.setFrozenRows(1);
       }
 
@@ -119,10 +243,10 @@ function doPost(e) {
           const data = sheet.getDataRange().getValues();
           for (let i = 1; i < data.length; i++) {
               if (data[i][0] == mov.id) {
-                  sheet.getRange(i + 1, 1, 1, 12).setValues([[
-                      mov.id, mov.fecha, mov.monto, mov.tipo, mov.categoria, mov.responsable, mov.esComun, mov.descripcion, mov.metodoPago, mov.ticketUrl || data[i][9], false, mov.propietario || mov.responsable
+                  sheet.getRange(i + 1, 1, 1, 14).setValues([[
+                      mov.id, mov.fecha, mov.monto, mov.tipo, mov.categoria, mov.responsable, mov.esComun, mov.descripcion, mov.metodoPago, mov.ticketUrl || data[i][9], false, mov.propietario || mov.responsable, mov.planId || "", mov.cuotaNumero || 0
                   ]]);
-                  return ContentService.createTextOutput(JSON.stringify({ status: "SUCCESS", message: "Actualizado OK" })).setMimeType(ContentService.MimeType.JSON);
+                  return jsonOutput({ status: "SUCCESS", message: "Actualizado OK" });
               }
           }
       }
@@ -139,21 +263,84 @@ function doPost(e) {
         mov.metodoPago || "Billetera Virtual",
         mov.ticketUrl || "",
         false, // Columna Eliminado
-        mov.propietario || mov.responsable
+        mov.propietario || mov.responsable,
+        mov.planId || "",       // Columna M
+        mov.cuotaNumero || 0    // Columna N
       ]);
 
-      return ContentService.createTextOutput(JSON.stringify({
-        status: "SUCCESS",
-        message: imgStatus
-      })).setMimeType(ContentService.MimeType.JSON);
+      return jsonOutput({ status: "SUCCESS", message: imgStatus });
     }
   } catch (err) {
-    return ContentService.createTextOutput(JSON.stringify({
-      status: "ERROR",
-      message: err.toString(),
-      imgStatus: imgStatus
-    })).setMimeType(ContentService.MimeType.JSON);
+    return jsonOutput({ status: "ERROR", message: err.toString(), imgStatus: imgStatus });
   }
+}
+
+/**
+ * Alta (POST) o edición (PUT) de un plan de cuotas en la hoja "Planes".
+ * Crea la hoja con sus encabezados si no existe. Las columnas de fecha (B y F) se fuerzan a
+ * formato texto para que Sheets no convierta "yyyy-MM" / "yyyy-MM-dd HH:mm" en objetos Date.
+ */
+function handlePlanUpsert(action, plan) {
+  if (!plan || !plan.id) {
+    return jsonOutput({ status: "ERROR", message: "Plan inválido (falta id)" });
+  }
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(PLANS_SHEET);
+  if (!sheet) {
+    sheet = ss.insertSheet(PLANS_SHEET);
+    sheet.appendRow(["ID", "Fecha Creación", "Descripción", "Monto Por Cuota", "Cantidad Cuotas", "Primera Cuota", "Propietario", "Categoría", "Tarjeta", "Eliminado"]);
+    sheet.getRange(1, 1, 1, 10).setFontWeight("bold").setBackground("#e2e8f0");
+    sheet.setFrozenRows(1);
+    // Forzar texto en las columnas de fecha para preservar el formato "yyyy-MM"/"yyyy-MM-dd HH:mm".
+    sheet.getRange("B:B").setNumberFormat("@");
+    sheet.getRange("F:F").setNumberFormat("@");
+  }
+
+  const rowValues = [
+    plan.id,
+    plan.fechaCreacion,
+    plan.descripcion,
+    plan.montoPorCuota,
+    plan.cantidadCuotas,
+    plan.fechaPrimeraCuota,
+    plan.propietario,
+    plan.categoria,
+    plan.tarjeta || "",
+    false
+  ];
+
+  if (action === 'PUT') {
+    const data = sheet.getDataRange().getValues();
+    for (let i = 1; i < data.length; i++) {
+      if (data[i][0] == plan.id) {
+        sheet.getRange(i + 1, 1, 1, 10).setValues([rowValues]);
+        return jsonOutput({ status: "SUCCESS", message: "Plan actualizado OK" });
+      }
+    }
+    // Si no se encontró, cae a append (alta).
+  }
+
+  sheet.appendRow(rowValues);
+  return jsonOutput({ status: "SUCCESS", message: "Plan creado OK" });
+}
+
+/** Baja lógica de un plan: marca la columna J (index 9) = true en la hoja "Planes". */
+function handlePlanDelete(id) {
+  if (!id) return jsonOutput({ status: "ERROR", message: "Falta id del plan" });
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(PLANS_SHEET);
+  if (!sheet) return jsonOutput({ status: "ERROR", message: "No existe la hoja de planes" });
+
+  const data = sheet.getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][0] == id) {
+      sheet.getRange(i + 1, 10).setValue(true); // Columna J
+      return jsonOutput({ status: "SUCCESS", message: "Plan eliminado (baja lógica) OK" });
+    }
+  }
+  return jsonOutput({ status: "ERROR", message: "ID de plan no encontrado" });
 }
 
 function handleLogicalDelete(id) {
@@ -161,17 +348,16 @@ function handleLogicalDelete(id) {
   const sheets = ss.getSheets();
 
   for (let sheet of sheets) {
+    if (sheet.getName() === PLANS_SHEET) continue; // los planes se borran por su propio endpoint
     const data = sheet.getDataRange().getValues();
     for (let i = 1; i < data.length; i++) {
       if (data[i][0] == id) {
         // Marcar columna K (index 10) como TRUE
         sheet.getRange(i + 1, 11).setValue(true);
-        return ContentService.createTextOutput(JSON.stringify({ status: "SUCCESS", message: "Eliminado (baja lógica) OK" }))
-          .setMimeType(ContentService.MimeType.JSON);
+        return jsonOutput({ status: "SUCCESS", message: "Eliminado (baja lógica) OK" });
       }
     }
   }
 
-  return ContentService.createTextOutput(JSON.stringify({ status: "ERROR", message: "ID no encontrado" }))
-    .setMimeType(ContentService.MimeType.JSON);
+  return jsonOutput({ status: "ERROR", message: "ID no encontrado" });
 }

@@ -14,7 +14,10 @@ data class WebAppRequest(
     val body: Movement? = null,
     val imageInfo: ImageInfo? = null,
     val folderId: String? = null,
-    val id: String? = null
+    val id: String? = null,
+    // Discriminador del módulo de cuotas: si es "plan", el servidor opera sobre la hoja Planes.
+    val entity: String? = null,
+    val plan: CuotaPlan? = null
 )
 
 data class ImageInfo(
@@ -25,12 +28,19 @@ data class ImageInfo(
 data class WebAppResponse(
     val status: String,
     val data: List<Movement>? = null,
+    val plans: List<CuotaPlan>? = null,
     val message: String? = null
 )
 
 interface SheetsService {
     @GET
     suspend fun getMovements(
+        @Url url: String
+    ): Response<WebAppResponse>
+
+    // Mismo endpoint que getMovements pero con action=GET_PLANS; devuelve WebAppResponse.plans.
+    @GET
+    suspend fun getPlans(
         @Url url: String
     ): Response<WebAppResponse>
 

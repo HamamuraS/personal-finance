@@ -12,6 +12,8 @@ class PreferencesHelper(context: Context) {
     // Convertidores de JSON
     private val movementType = Types.newParameterizedType(List::class.java, Movement::class.java)
     private val listAdapter = moshi.adapter<List<Movement>>(movementType)
+    private val planType = Types.newParameterizedType(List::class.java, CuotaPlan::class.java)
+    private val planListAdapter = moshi.adapter<List<CuotaPlan>>(planType)
 
     companion object {
         private const val KEY_SCRIPT_URL = "script_url"
@@ -21,6 +23,8 @@ class PreferencesHelper(context: Context) {
         private const val KEY_SHEETS_CACHE = "sheets_cache"
         private const val KEY_USER_PROFILE = "user_profile"
         private const val KEY_IS_DARK_MODE = "is_dark_mode"
+        private const val KEY_LOCAL_PLANS = "local_plans"
+        private const val KEY_PLANS_CACHE = "plans_cache"
     }
 
     var isDarkMode: Boolean
@@ -30,7 +34,7 @@ class PreferencesHelper(context: Context) {
         }
 
     var scriptUrl: String
-        get() = prefs.getString(KEY_SCRIPT_URL, "https://script.google.com/macros/s/AKfycbxj-q6pc3VXkDSIXjgrjz7KTIKAvCPZLDWoBXantjG9FG6LNxn6CQGXcFLDBF8gOU5Rkw/exec") ?: "https://script.google.com/macros/s/AKfycbxj-q6pc3VXkDSIXjgrjz7KTIKAvCPZLDWoBXantjG9FG6LNxn6CQGXcFLDBF8gOU5Rkw/exec"
+        get() = prefs.getString(KEY_SCRIPT_URL, "https://script.google.com/macros/s/AKfycbwXY6j89WfQ4lqHPEOwVj921fS1PHSxhhyeOVL4bMhA1nchN91xPLpSEW6MhGve93EVow/exec") ?: "https://script.google.com/macros/s/AKfycbwXY6j89WfQ4lqHPEOwVj921fS1PHSxhhyeOVL4bMhA1nchN91xPLpSEW6MhGve93EVow/exec"
         set(value) {
             prefs.edit().putString(KEY_SCRIPT_URL, value.trim()).apply()
         }
@@ -87,6 +91,61 @@ class PreferencesHelper(context: Context) {
         } catch (e: Exception) {
             emptyList()
         }
+    }
+
+    // --- Módulo de cuotas ---
+
+    // Planes en modo local (demo). Persisten todos (pendientes y completos); el filtrado
+    // pendientes/pagos lo hace el repositorio derivando "completo" de los movimientos.
+    fun saveLocalPlans(plans: List<CuotaPlan>) {
+        try {
+            prefs.edit().putString(KEY_LOCAL_PLANS, planListAdapter.toJson(plans)).apply()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    fun getLocalPlans(): List<CuotaPlan> {
+        val json = prefs.getString(KEY_LOCAL_PLANS, null) ?: return getMockPlans()
+        return try {
+            planListAdapter.fromJson(json) ?: getMockPlans()
+        } catch (e: Exception) {
+            getMockPlans()
+        }
+    }
+
+    // Cache de los planes PENDIENTES traídos de la red (los pagos son on-demand, no se cachean).
+    fun savePlansCache(plans: List<CuotaPlan>) {
+        try {
+            prefs.edit().putString(KEY_PLANS_CACHE, planListAdapter.toJson(plans)).apply()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    fun getPlansCache(): List<CuotaPlan> {
+        val json = prefs.getString(KEY_PLANS_CACHE, null) ?: return emptyList()
+        return try {
+            planListAdapter.fromJson(json) ?: emptyList()
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    // Planes de ejemplo para que el módulo no empiece vacío en modo demo (todas las cuotas impagas).
+    private fun getMockPlans(): List<CuotaPlan> {
+        return listOf(
+            CuotaPlan(
+                fechaCreacion = "2026-07-05 10:00", descripcion = "Notebook Lenovo",
+                montoPorCuota = 150000.0, cantidadCuotas = 12, fechaPrimeraCuota = "2026-07",
+                propietario = "Santiago", categoria = "Utilería", tarjeta = "Visa Santiago"
+            ),
+            CuotaPlan(
+                fechaCreacion = "2026-06-18 19:30", descripcion = "Heladera no-frost",
+                montoPorCuota = 80000.0, cantidadCuotas = 6, fechaPrimeraCuota = "2026-06",
+                propietario = "Rocío", categoria = "Otros", tarjeta = "Naranja"
+            )
+        )
     }
 
     // Genera datos iniciales hermosos para que la app no empiece vacía

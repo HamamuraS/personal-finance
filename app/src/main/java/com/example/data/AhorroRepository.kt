@@ -159,4 +159,168 @@ class AhorroRepository(private val prefsHelper: PreferencesHelper) {
         current.removeAll { it.id == movement.id }
         prefsHelper.saveLocalMovements(current)
     }
+
+    // ---------------------------------------------------------------------------------------------
+    // Módulo de cuotas
+    // ---------------------------------------------------------------------------------------------
+
+    private fun monthAbbrevToNum(abbr: String): String? = when (abbr.lowercase()) {
+        "jan", "ene" -> "01"; "feb" -> "02"; "mar" -> "03"; "apr", "abr" -> "04"
+        "may" -> "05"; "jun" -> "06"; "jul" -> "07"; "aug", "ago" -> "08"
+        "sep" -> "09"; "oct" -> "10"; "nov" -> "11"; "dec", "dic" -> "12"
+        else -> null
+    }
+
+    /** Extrae "yyyy-MM" de varios formatos, incluida la fecha "Wed Jul 01 2026 …" que Sheets puede
+     *  devolver cuando guardó la celda como Date. Si no reconoce el formato, deja la entrada intacta. */
+    private fun toYyyyMm(raw: String): String {
+        val s = raw.trim()
+        if (s.isEmpty()) return s
+        Regex("^(\\d{4})-(\\d{2})").find(s)?.let { return "${it.groupValues[1]}-${it.groupValues[2]}" }
+        Regex("^[A-Za-z]{3}\\s([A-Za-z]{3})\\s\\d{2}\\s(\\d{4})").find(s)?.let { m ->
+            val mm = monthAbbrevToNum(m.groupValues[1]) ?: return s
+            return "${m.groupValues[2]}-$mm"
+        }
+        return s
+    }
+
+    /** Normaliza `fechaCreacion` a "yyyy-MM-dd HH:mm" (sortable). Convierte el formato Date GMT. */
+    private fun normalizeCreation(raw: String): String {
+        val s = raw.trim()
+        if (s.isEmpty()) return s
+        if (Regex("^\\d{4}-\\d{2}-\\d{2}").containsMatchIn(s)) return s
+        Regex("^[A-Za-z]{3}\\s([A-Za-z]{3})\\s(\\d{2})\\s(\\d{4})(?:\\s(\\d{2}:\\d{2}))?").find(s)?.let { m ->
+            val mm = monthAbbrevToNum(m.groupValues[1]) ?: return s
+            val hora = m.groupValues.getOrNull(4)?.ifEmpty { "00:00" } ?: "00:00"
+            return "${m.groupValues[3]}-$mm-${m.groupValues[2]} $hora"
+        }
+        return s
+    }
+
+    /** Repara las fechas de un plan que pudieron llegar del server como Date/GMT. */
+    private fun normalizePlan(p: CuotaPlan): CuotaPlan =
+        p.copy(
+            fechaPrimeraCuota = toYyyyMm(p.fechaPrimeraCuota),
+            fechaCreacion = normalizeCreation(p.fechaCreacion)
+        )
+
+    /** Un plan está completo si tiene tantas cuotas distintas pagadas como cuotas totales.
+     *  (Réplica local de la derivación que hace el servidor; evita que `data` dependa de `ui`.) */
+    private fun isPlanComplete(plan: CuotaPlan, movs: List<Movement>): Boolean {
+        if (plan.cantidadCuotas <= 0) return false
+        val pagadas = movs
+            .filter { !it.eliminado && it.planId == plan.id && it.cuotaNumero in 1..plan.cantidadCuotas }
+            .map { it.cuotaNumero }
+            .distinct()
+            .size
+        return pagadas >= plan.cantidadCuotas
+    }
+
+    /**
+     * Trae los planes filtrados por estado. Por defecto ([soloPagos] = false) devuelve los
+     * PENDIENTES (no completos) y los cachea; con [soloPagos] = true devuelve los completos
+     * (on-demand, no se cachean). Siempre ordenados por fechaCreacion descendente.
+     */
+    suspend fun fetchPlans(webAppUrl: String, soloPagos: Boolean = false): List<CuotaPlan> {
+        if (prefsHelper.useLocalDemo) {
+            val movs = prefsHelper.getLocalMovements().filter { !it.eliminado }
+            return prefsHelper.getLocalPlans()
+                .filter { !it.eliminado }
+                .filter { isPlanComplete(it, movs) == soloPagos }
+                .sortedByDescending { it.fechaCreacion }
+        }
+
+        if (webAppUrl.isEmpty()) {
+            return if (soloPagos) emptyList() else prefsHelper.getPlansCache().map { normalizePlan(it) }
+        }
+
+        val filtro = if (soloPagos) "pagos" else "pendientes"
+        return try {
+            val sep = if (webAppUrl.contains("?")) "&" else "?"
+            val requestUrl = "$webAppUrl${sep}action=GET_PLANS&filtro=$filtro"
+            val response = sheetsService.getPlans(requestUrl)
+
+            if (response.isSuccessful && response.body()?.status == "SUCCESS") {
+                val plans = (response.body()?.plans ?: emptyList())
+                    .map { normalizePlan(it) }
+                    .sortedByDescending { it.fechaCreacion }
+                if (!soloPagos) prefsHelper.savePlansCache(plans)
+                plans
+            } else {
+                Log.e("AhorroRepository", "GET_PLANS error: ${response.body()?.message}")
+                if (soloPagos) emptyList() else prefsHelper.getPlansCache().map { normalizePlan(it) }
+            }
+        } catch (e: Exception) {
+            Log.e("AhorroRepository", "Exception fetchPlans: ${e.message}", e)
+            if (soloPagos) emptyList() else prefsHelper.getPlansCache().map { normalizePlan(it) }
+        }
+    }
+
+    suspend fun savePlan(webAppUrl: String, plan: CuotaPlan): Boolean =
+        upsertPlan(webAppUrl, plan, action = "POST")
+
+    suspend fun updatePlan(webAppUrl: String, plan: CuotaPlan): Boolean =
+        upsertPlan(webAppUrl, plan, action = "PUT")
+
+    private suspend fun upsertPlan(webAppUrl: String, plan: CuotaPlan, action: String): Boolean {
+        if (prefsHelper.useLocalDemo) {
+            val current = prefsHelper.getLocalPlans().toMutableList()
+            val idx = current.indexOfFirst { it.id == plan.id }
+            if (idx != -1) current[idx] = plan else current.add(0, plan)
+            prefsHelper.saveLocalPlans(current)
+            return true
+        }
+
+        if (webAppUrl.isEmpty()) return false
+
+        return try {
+            val req = WebAppRequest(action = action, entity = "plan", plan = plan)
+            val response = sheetsService.addMovement(webAppUrl, req)
+            if (response.isSuccessful && response.body()?.status == "SUCCESS") {
+                // Mantener el cache de pendientes coherente sin re-pedir a la red.
+                val cached = prefsHelper.getPlansCache().toMutableList()
+                val idx = cached.indexOfFirst { it.id == plan.id }
+                if (idx != -1) cached[idx] = plan else cached.add(0, plan)
+                prefsHelper.savePlansCache(cached)
+                true
+            } else {
+                Log.e("AhorroRepository", "upsertPlan error: ${response.body()?.message}")
+                false
+            }
+        } catch (e: Exception) {
+            Log.e("AhorroRepository", "Exception upsertPlan: ${e.message}", e)
+            false
+        }
+    }
+
+    /** Baja lógica de un plan. */
+    suspend fun deletePlan(webAppUrl: String, plan: CuotaPlan): Boolean {
+        if (prefsHelper.useLocalDemo) {
+            val current = prefsHelper.getLocalPlans().toMutableList()
+            val idx = current.indexOfFirst { it.id == plan.id }
+            if (idx != -1) {
+                current[idx] = current[idx].copy(eliminado = true)
+                prefsHelper.saveLocalPlans(current)
+            }
+            return true
+        }
+
+        if (webAppUrl.isEmpty()) return false
+
+        return try {
+            val req = WebAppRequest(action = "DELETE", entity = "plan", id = plan.id)
+            val response = sheetsService.addMovement(webAppUrl, req)
+            if (response.isSuccessful && response.body()?.status == "SUCCESS") {
+                val cached = prefsHelper.getPlansCache().toMutableList()
+                cached.removeAll { it.id == plan.id }
+                prefsHelper.savePlansCache(cached)
+                true
+            } else {
+                false
+            }
+        } catch (e: Exception) {
+            Log.e("AhorroRepository", "Exception deletePlan: ${e.message}", e)
+            false
+        }
+    }
 }
