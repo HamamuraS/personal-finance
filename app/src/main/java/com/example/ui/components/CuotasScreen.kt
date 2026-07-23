@@ -33,7 +33,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.CuotaPlan
 import com.example.data.Movement
+import com.example.data.UsuariosConfig
 import com.example.ui.AhorroViewModel
+import com.example.ui.CuotaDraft
 import com.example.ui.CuotaProgramada
 import com.example.ui.CuotasEngine
 import com.example.ui.theme.personaColor
@@ -44,11 +46,17 @@ import java.util.Locale
 // Categorías del gasto que generará cada cuota (mismo set que los gastos en AddMovementScreen).
 private val CATEGORIAS_CUOTAS = listOf(
     "Transporte", "Servicios", "Animales", "Supermercado", "Verdulería",
-    "Farmacia", "Cuidado personal", "Salidas", "Gustos", "Utilería", "Otros"
+    "Farmacia", "Indumentaria", "Cuidado personal", "Salidas", "Gustos", "Utilería", "Otros"
 )
 
-// Tarjetas disponibles (selección por chip; el color marca la tarjeta elegida).
-private val TARJETAS_SUGERIDAS = listOf("Visa Santiago", "BBVA Rocío", "Ualá Rocío")
+// Tarjetas sugeridas (selección por chip). Se derivan de los nombres actuales de los usuarios:
+// con la config por defecto dan "Visa Santiago"/"BBVA Rocío"/"Ualá Rocío" (idénticas a antes), y si
+// se renombra un usuario, la sugerencia lo acompaña. Los planes ya guardados conservan su `tarjeta`.
+private fun tarjetasSugeridas(config: UsuariosConfig): List<String> = listOf(
+    "Visa ${config.primario.nombre}",
+    "BBVA ${config.secundario.nombre}",
+    "Ualá ${config.secundario.nombre}"
+)
 
 /** Formato de dinero consistente con el resto de la app ($ 1.234,56). */
 private fun cuotasMoneyFormat(): java.text.DecimalFormat =
@@ -90,11 +98,17 @@ fun CuotasScreen(viewModel: AhorroViewModel) {
     val paidPlans by viewModel.paidPlans.collectAsState()
     val allMovements by viewModel.allMovements.collectAsState()
     val currentUser by viewModel.currentUserProfile.collectAsState()
+    val config by viewModel.usuarios.collectAsState()
+    val cuotaDraft by viewModel.cuotaDraft.collectAsState()
     val showPaid by viewModel.showPaidPlans.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val isLoadingPaid by viewModel.isLoadingPaidPlans.collectAsState()
 
-    var route by remember { mutableStateOf<CuotasRoute>(CuotasRoute.List) }
+    // Si hay un borrador de "nueva compra" en curso, al volver a la pestaña se reabre el formulario
+    // (conservación del borrador entre pestañas). Si no, arranca en el listado.
+    var route by remember {
+        mutableStateOf<CuotasRoute>(if (cuotaDraft.tieneContenido) CuotasRoute.Form(null) else CuotasRoute.List)
+    }
 
     when (val r = route) {
         is CuotasRoute.List -> CuotasListContent(
@@ -102,6 +116,7 @@ fun CuotasScreen(viewModel: AhorroViewModel) {
             paidPlans = paidPlans,
             allMovements = allMovements,
             currentUser = currentUser,
+            config = config,
             showPaid = showPaid,
             isLoading = isLoading,
             isLoadingPaid = isLoadingPaid,
@@ -118,6 +133,7 @@ fun CuotasScreen(viewModel: AhorroViewModel) {
                 tarjeta = r.tarjeta,
                 plans = plans,
                 allMovements = allMovements,
+                currentUser = currentUser,
                 isLoading = isLoading,
                 onBack = { route = CuotasRoute.List },
                 onPagar = { cuotas, metodo ->
@@ -136,6 +152,7 @@ fun CuotasScreen(viewModel: AhorroViewModel) {
                     plan = plan,
                     allMovements = allMovements,
                     currentUser = currentUser,
+                    config = config,
                     isLoading = isLoading,
                     onBack = { route = CuotasRoute.List },
                     onConfirmCuota = { numero, fecha, metodo, monto, onSuccess ->
@@ -153,11 +170,16 @@ fun CuotasScreen(viewModel: AhorroViewModel) {
             PlanFormContent(
                 existing = existing,
                 currentUser = currentUser,
+                config = config,
                 isLoading = isLoading,
+                draft = cuotaDraft,
+                onDraftChange = { viewModel.setCuotaDraft(it) },
+                onClearDraft = { viewModel.clearCuotaDraft() },
                 onBack = { route = CuotasRoute.List },
                 onSave = { descripcion, monto, cant, primera, propietario, categoria, tarjeta ->
                     if (existing == null) {
                         viewModel.addPlan(descripcion, monto, cant, primera, propietario, categoria, tarjeta) {
+                            viewModel.clearCuotaDraft()   // borrador consumido al crear
                             route = CuotasRoute.List
                         }
                     } else {
@@ -190,6 +212,7 @@ private fun CuotasListContent(
     paidPlans: List<CuotaPlan>,
     allMovements: List<Movement>,
     currentUser: String,
+    config: UsuariosConfig,
     showPaid: Boolean,
     isLoading: Boolean,
     isLoadingPaid: Boolean,
@@ -212,12 +235,12 @@ private fun CuotasListContent(
     val pendingFiltered = applyFilters(plans).sortedByDescending { it.fechaCreacion }
     val paidFiltered = applyFilters(paidPlans).sortedByDescending { it.fechaCreacion }
 
-    // "Pagar la tarjeta": cuotas del mes actual impagas, agrupadas por tarjeta. Respeta el filtro
-    // de propietario (no la categoría: el resumen de tarjeta abarca todas las categorías). Solo se
-    // muestra una card por tarjeta que aún tenga cuotas del mes sin pagar.
+    // "Pagar la tarjeta": cuotas del mes actual impagas, agrupadas por tarjeta. Solo aplica a TUS
+    // planes (no se pueden pagar las cuotas de la otra persona), sin importar el filtro de propietario.
+    // Se muestra una card por tarjeta tuya que aún tenga cuotas del mes sin pagar.
     val mesActual = currentYyyyMm()
-    val pendingByOwner = plans.filter { filterOwner == "Todos" || it.propietario.equals(filterOwner, ignoreCase = true) }
-    val tarjetasAPagar = CuotasEngine.cuotasImpagasDelMes(mesActual, pendingByOwner, allMovements)
+    val misPendientes = plans.filter { it.propietario.equals(currentUser, ignoreCase = true) }
+    val tarjetasAPagar = CuotasEngine.cuotasImpagasDelMes(mesActual, misPendientes, allMovements)
         .filter { it.first.tarjeta.isNotBlank() }
         .groupBy { it.first.tarjeta }
         .toList()
@@ -282,6 +305,7 @@ private fun CuotasListContent(
                 CuotasFilters(
                     owner = filterOwner,
                     currentUser = currentUser,
+                    config = config,
                     onOwnerChange = { filterOwner = it },
                     availableCategories = availableCategories,
                     selectedCategories = selectedCategories intersect availableCategories.toSet(),
@@ -317,6 +341,7 @@ private fun CuotasListContent(
                         cronograma = CuotasEngine.cronograma(plan, allMovements),
                         formatMoney = formatMoney,
                         currentUser = currentUser,
+                        config = config,
                         attenuated = false,
                         onClick = { onOpenPlan(plan) }
                     )
@@ -372,6 +397,7 @@ private fun CuotasListContent(
                             cronograma = CuotasEngine.cronograma(plan, allMovements),
                             formatMoney = formatMoney,
                             currentUser = currentUser,
+                            config = config,
                             attenuated = true,
                             onClick = { onOpenPlan(plan) }
                         )
@@ -423,6 +449,7 @@ private fun PlanCard(
     cronograma: List<CuotaProgramada>,
     formatMoney: NumberFormat,
     currentUser: String,
+    config: UsuariosConfig,
     attenuated: Boolean,
     onClick: () -> Unit
 ) {
@@ -513,7 +540,7 @@ private fun PlanCard(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        MiniTag(text = plan.propietario, color = ownerColor)
+                        MiniTag(text = config.nombreDe(plan.propietario), color = ownerColor)
                         if (plan.tarjeta.isNotBlank()) {
                             MiniTag(text = plan.tarjeta, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f), soft = true)
                         }
@@ -593,6 +620,7 @@ private fun MiniTag(text: String, color: Color, soft: Boolean = false) {
 private fun CuotasFilters(
     owner: String,
     currentUser: String,
+    config: UsuariosConfig,
     onOwnerChange: (String) -> Unit,
     availableCategories: List<String>,
     selectedCategories: Set<String>,
@@ -633,21 +661,23 @@ private fun CuotasFilters(
                         .padding(4.dp),
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    listOf("Todos", "Santiago", "Rocío").forEach { p ->
-                        val selected = owner == p
-                        val accent = if (p == "Todos") MaterialTheme.colorScheme.onSurface
-                        else personaColor(p, currentUser)
+                    // Valor del filtro = "Todos" o un slotKey; la etiqueta visible es el nombre.
+                    listOf("Todos", config.primario.slotKey, config.secundario.slotKey).forEach { key ->
+                        val selected = owner == key
+                        val accent = if (key == "Todos") MaterialTheme.colorScheme.onSurface
+                        else personaColor(key, currentUser)
+                        val label = if (key == "Todos") "Todos" else config.nombreDe(key)
                         Box(
                             modifier = Modifier
                                 .weight(1f)
                                 .clip(RoundedCornerShape(9.dp))
                                 .background(if (selected) accent.copy(alpha = 0.15f) else Color.Transparent)
-                                .clickable { onOwnerChange(p) }
+                                .clickable { onOwnerChange(key) }
                                 .padding(vertical = 9.dp),
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = p,
+                                text = label,
                                 fontSize = 13.sp,
                                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                                 color = if (selected) accent else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
@@ -770,6 +800,7 @@ private fun PlanDetailContent(
     plan: CuotaPlan,
     allMovements: List<Movement>,
     currentUser: String,
+    config: UsuariosConfig,
     isLoading: Boolean,
     onBack: () -> Unit,
     onConfirmCuota: (numero: Int, fecha: String, metodoPago: String, monto: Double, onSuccess: () -> Unit) -> Unit,
@@ -785,6 +816,9 @@ private fun PlanDetailContent(
     var showDeleteDialog by remember { mutableStateOf(false) }
 
     val ownerColor = personaColor(plan.propietario, currentUser)
+    // El plan es siempre personal: solo su dueño puede pagar/editar/eliminar. Para el otro es de
+    // solo lectura.
+    val canManage = plan.propietario.equals(currentUser, ignoreCase = true)
 
     cuotaAConfirmar?.let { cuota ->
         ConfirmarCuotaDialog(
@@ -828,9 +862,12 @@ private fun PlanDetailContent(
                     }
                 },
                 actions = {
-                    IconButton(onClick = onEdit, enabled = !isLoading) { Icon(Icons.Default.Edit, contentDescription = "Editar") }
-                    IconButton(onClick = { showDeleteDialog = true }, enabled = !isLoading) {
-                        Icon(Icons.Default.Delete, contentDescription = "Eliminar", tint = MaterialTheme.colorScheme.error)
+                    // Editar/eliminar solo para el dueño del plan.
+                    if (canManage) {
+                        IconButton(onClick = onEdit, enabled = !isLoading) { Icon(Icons.Default.Edit, contentDescription = "Editar") }
+                        IconButton(onClick = { showDeleteDialog = true }, enabled = !isLoading) {
+                            Icon(Icons.Default.Delete, contentDescription = "Eliminar", tint = MaterialTheme.colorScheme.error)
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
@@ -869,9 +906,16 @@ private fun PlanDetailContent(
                         Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text(plan.descripcion.ifBlank { "Compra en cuotas" }, fontWeight = FontWeight.Bold, fontSize = 20.sp)
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                MiniTag(text = plan.propietario, color = ownerColor)
+                                MiniTag(text = config.nombreDe(plan.propietario), color = ownerColor)
                                 if (plan.tarjeta.isNotBlank()) MiniTag(text = plan.tarjeta, color = ownerColor, soft = true)
                                 MiniTag(text = plan.categoria, color = ownerColor, soft = true)
+                            }
+                            if (!canManage) {
+                                Text(
+                                    text = "Solo lectura: es un plan de ${config.nombreDe(plan.propietario)}.",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                )
                             }
                             Spacer(modifier = Modifier.height(4.dp))
                             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -902,6 +946,7 @@ private fun PlanDetailContent(
                         mesActual = mesActual,
                         accent = ownerColor,
                         enabled = !isLoading,
+                        canPay = canManage,
                         onConfirm = { cuotaAConfirmar = cuota }
                     )
                 }
@@ -931,6 +976,7 @@ private fun CuotaRow(
     mesActual: String,
     accent: Color,
     enabled: Boolean,
+    canPay: Boolean,
     onConfirm: () -> Unit
 ) {
     val atrasada = !cuota.pagada && cuota.mesVencimiento < mesActual
@@ -1019,7 +1065,7 @@ private fun CuotaRow(
                     fontWeight = FontWeight.Bold, fontSize = 14.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                 )
-                pagable -> Button(
+                pagable && canPay -> Button(   // solo el dueño del plan puede pagar
                     onClick = onConfirm,
                     enabled = enabled,
                     shape = RoundedCornerShape(10.dp),
@@ -1029,10 +1075,15 @@ private fun CuotaRow(
                 ) {
                     Text("Pagar", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 }
-                else -> Text(  // futura: solo el monto, atenuado (no pagable aún)
+                esFutura -> Text(  // futura: solo el monto, atenuado (no pagable aún)
                     formatMoney.format(cuota.monto),
                     fontWeight = FontWeight.Bold, fontSize = 14.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
+                )
+                else -> Text(  // pagable pero no es tu plan: solo lectura, mostramos el monto
+                    formatMoney.format(cuota.monto),
+                    fontWeight = FontWeight.Bold, fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                 )
             }
         }
@@ -1247,25 +1298,45 @@ private fun DateShortcut(label: String, selected: Boolean, modifier: Modifier, o
 private fun PlanFormContent(
     existing: CuotaPlan?,
     currentUser: String,
+    config: UsuariosConfig,
     isLoading: Boolean,
+    draft: CuotaDraft,
+    onDraftChange: (CuotaDraft) -> Unit,
+    onClearDraft: () -> Unit,
     onBack: () -> Unit,
     onSave: (descripcion: String, monto: Double, cantidad: Int, fechaPrimeraCuota: String, propietario: String, categoria: String, tarjeta: String) -> Unit
 ) {
     val scrollState = rememberScrollState()
+    val isNew = existing == null
 
-    var descripcion by remember { mutableStateOf(existing?.descripcion ?: "") }
+    // En ALTA se siembra del borrador (persistente entre pestañas); en EDICIÓN, del plan existente.
+    var descripcion by remember { mutableStateOf(existing?.descripcion ?: draft.descripcion) }
     var montoText by remember {
         mutableStateOf(
-            existing?.let { if (it.montoPorCuota % 1.0 == 0.0) it.montoPorCuota.toLong().toString() else it.montoPorCuota.toString() } ?: ""
+            existing?.let { if (it.montoPorCuota % 1.0 == 0.0) it.montoPorCuota.toLong().toString() else it.montoPorCuota.toString() } ?: draft.montoText
         )
     }
-    var cantidadText by remember { mutableStateOf(existing?.cantidadCuotas?.toString() ?: "") }
+    var cantidadText by remember { mutableStateOf(existing?.cantidadCuotas?.toString() ?: draft.cantidadText) }
     // El plan es siempre del usuario activo (o conserva su dueño al editar): no se pregunta.
     val propietario = existing?.propietario ?: currentUser
-    var categoria by remember { mutableStateOf(existing?.categoria ?: CATEGORIAS_CUOTAS.first()) }
-    var tarjeta by remember { mutableStateOf(existing?.tarjeta ?: "") }
-    var primeraCuota by remember { mutableStateOf(existing?.fechaPrimeraCuota ?: currentYyyyMm()) }
+    var categoria by remember { mutableStateOf(existing?.categoria ?: draft.categoria.ifEmpty { CATEGORIAS_CUOTAS.first() }) }
+    var tarjeta by remember { mutableStateOf(existing?.tarjeta ?: draft.tarjeta) }
+    var primeraCuota by remember { mutableStateOf(existing?.fechaPrimeraCuota ?: draft.primeraCuota.ifEmpty { currentYyyyMm() }) }
     var showMonthPicker by remember { mutableStateOf(false) }
+
+    // Volcar el borrador (solo en alta) para que sobreviva el cambio de pestaña.
+    if (isNew) {
+        LaunchedEffect(descripcion, montoText, cantidadText, categoria, tarjeta, primeraCuota) {
+            onDraftChange(CuotaDraft(descripcion, montoText, cantidadText, categoria, tarjeta, primeraCuota))
+        }
+    }
+
+    // Limpia el formulario de alta (botón "Limpiar").
+    fun limpiarFormulario() {
+        descripcion = ""; montoText = ""; cantidadText = ""
+        categoria = CATEGORIAS_CUOTAS.first(); tarjeta = ""; primeraCuota = currentYyyyMm()
+        onClearDraft()
+    }
 
     if (showMonthPicker) {
         MonthYearPickerDialog(
@@ -1285,6 +1356,15 @@ private fun PlanFormContent(
                 title = { Text(if (existing == null) "Nueva compra en cuotas" else "Editar plan", fontWeight = FontWeight.Bold, fontSize = 18.sp) },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Volver") }
+                },
+                actions = {
+                    if (isNew) {
+                        TextButton(onClick = { limpiarFormulario() }) {
+                            Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Limpiar", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        }
+                    }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
             )
@@ -1434,7 +1514,7 @@ private fun PlanFormContent(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                TARJETAS_SUGERIDAS.forEach { t ->
+                tarjetasSugeridas(config).forEach { t ->
                     val selected = tarjeta == t
                     FilterChip(
                         selected = selected,
@@ -1647,14 +1727,16 @@ private fun TarjetaResumenContent(
     tarjeta: String,
     plans: List<CuotaPlan>,
     allMovements: List<Movement>,
+    currentUser: String,
     isLoading: Boolean,
     onBack: () -> Unit,
     onPagar: (cuotas: List<Pair<CuotaPlan, Int>>, metodoPago: String) -> Unit
 ) {
     val formatMoney = remember { cuotasMoneyFormat() }
     val mesActual = currentYyyyMm()
+    // Solo cuotas de MIS planes: no se pagan las de la otra persona.
     val cuotas = CuotasEngine.cuotasImpagasDelMes(mesActual, plans, allMovements)
-        .filter { it.first.tarjeta == tarjeta }
+        .filter { it.first.tarjeta == tarjeta && it.first.propietario.equals(currentUser, ignoreCase = true) }
         .sortedBy { it.first.descripcion }
 
     // Si un refresh dejó la tarjeta sin cuotas del mes (todo pagado), volver al listado.

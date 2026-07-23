@@ -341,4 +341,75 @@ class AhorroRepository(private val prefsHelper: PreferencesHelper) {
             false
         }
     }
+
+    // ---------------------------------------------------------------------------------------------
+    // Usuarios parametrizables
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * Config de usuarios cacheada, **sin tocar la red**. Para el arranque instantáneo del tema y la
+     * identidad (mismo patrón que [cachedPendingPlans]). Cae a [UsuariosConfig.DEFAULT] si no hay cache.
+     */
+    fun cachedUsuarios(): UsuariosConfig = UsuariosConfig.fromList(prefsHelper.getUsersCache())
+
+    /** Persiste en cache la config completa (los dos slots) reemplazando el usuario editado. */
+    private fun persistUsuario(usuario: Usuario) {
+        val current = cachedUsuarios()
+        val updated =
+            if (current.primario.slotKey.equals(usuario.slotKey, ignoreCase = true)) current.copy(primario = usuario)
+            else current.copy(secundario = usuario)
+        prefsHelper.saveUsersCache(updated.todos)
+    }
+
+    /**
+     * Trae la config de usuarios. En demo/offline/fallo devuelve el cache (o [UsuariosConfig.DEFAULT]).
+     * En red, `GET_USERS`; si la hoja está vacía cae al DEFAULT sin pisar el cache existente.
+     */
+    suspend fun fetchUsuarios(webAppUrl: String): UsuariosConfig {
+        if (prefsHelper.useLocalDemo || webAppUrl.isEmpty()) {
+            return cachedUsuarios()
+        }
+        return try {
+            val sep = if (webAppUrl.contains("?")) "&" else "?"
+            val response = sheetsService.getUsers("$webAppUrl${sep}action=GET_USERS")
+            if (response.isSuccessful && response.body()?.status == "SUCCESS") {
+                val users = response.body()?.users ?: emptyList()
+                val config = UsuariosConfig.fromList(users)
+                if (users.isNotEmpty()) prefsHelper.saveUsersCache(config.todos)
+                config
+            } else {
+                Log.e("AhorroRepository", "GET_USERS error: ${response.body()?.message}")
+                cachedUsuarios()
+            }
+        } catch (e: Exception) {
+            Log.e("AhorroRepository", "Exception fetchUsuarios: ${e.message}", e)
+            cachedUsuarios()
+        }
+    }
+
+    /**
+     * Edita el perfil de un usuario (nombre/color). `PUT entity:"user"`; actualiza el cache local.
+     * En demo solo persiste local. `slotKey`/`orden` son inmutables (no se envían para cambiarlos).
+     */
+    suspend fun updateUsuario(webAppUrl: String, usuario: Usuario): Boolean {
+        if (prefsHelper.useLocalDemo) {
+            persistUsuario(usuario)
+            return true
+        }
+        if (webAppUrl.isEmpty()) return false
+        return try {
+            val req = WebAppRequest(action = "PUT", entity = "user", user = usuario)
+            val response = sheetsService.addMovement(webAppUrl, req)
+            if (response.isSuccessful && response.body()?.status == "SUCCESS") {
+                persistUsuario(usuario)
+                true
+            } else {
+                Log.e("AhorroRepository", "updateUsuario error: ${response.body()?.message}")
+                false
+            }
+        } catch (e: Exception) {
+            Log.e("AhorroRepository", "Exception updateUsuario: ${e.message}", e)
+            false
+        }
+    }
 }

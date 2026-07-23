@@ -14,6 +14,8 @@ class PreferencesHelper(context: Context) {
     private val listAdapter = moshi.adapter<List<Movement>>(movementType)
     private val planType = Types.newParameterizedType(List::class.java, CuotaPlan::class.java)
     private val planListAdapter = moshi.adapter<List<CuotaPlan>>(planType)
+    private val usuarioType = Types.newParameterizedType(List::class.java, Usuario::class.java)
+    private val usuarioListAdapter = moshi.adapter<List<Usuario>>(usuarioType)
 
     companion object {
         private const val KEY_SCRIPT_URL = "script_url"
@@ -25,6 +27,8 @@ class PreferencesHelper(context: Context) {
         private const val KEY_IS_DARK_MODE = "is_dark_mode"
         private const val KEY_LOCAL_PLANS = "local_plans"
         private const val KEY_PLANS_CACHE = "plans_cache"
+        private const val KEY_USERS_CACHE = "users_cache"
+        private const val KEY_HAS_CHOSEN_IDENTITY = "has_chosen_identity"
     }
 
     var isDarkMode: Boolean
@@ -34,7 +38,7 @@ class PreferencesHelper(context: Context) {
         }
 
     var scriptUrl: String
-        get() = prefs.getString(KEY_SCRIPT_URL, "https://script.google.com/macros/s/AKfycbwXY6j89WfQ4lqHPEOwVj921fS1PHSxhhyeOVL4bMhA1nchN91xPLpSEW6MhGve93EVow/exec") ?: "https://script.google.com/macros/s/AKfycbwXY6j89WfQ4lqHPEOwVj921fS1PHSxhhyeOVL4bMhA1nchN91xPLpSEW6MhGve93EVow/exec"
+        get() = prefs.getString(KEY_SCRIPT_URL, "https://script.google.com/macros/s/AKfycby86a_8z2apl16RHUjqGFfY7T8jbuAyi7LOepDKivkkENauzbIs4JgXUJTKIZhtutwkSA/exec") ?: "https://script.google.com/macros/s/AKfycby86a_8z2apl16RHUjqGFfY7T8jbuAyi7LOepDKivkkENauzbIs4JgXUJTKIZhtutwkSA/exec"
         set(value) {
             prefs.edit().putString(KEY_SCRIPT_URL, value.trim()).apply()
         }
@@ -49,9 +53,16 @@ class PreferencesHelper(context: Context) {
         get() = prefs.getBoolean(KEY_USE_LOCAL_DEMO, true)
         set(value) = prefs.edit().putBoolean(KEY_USE_LOCAL_DEMO, value).apply()
 
+    // Identidad activa en ESTE dispositivo. Guarda el slotKey del usuario ("Santiago"/"Rocío"):
+    // mismo espacio de valores que antes, ahora interpretado como clave interna del slot.
     var currentUserProfile: String
         get() = prefs.getString(KEY_USER_PROFILE, "Santiago") ?: "Santiago"
         set(value) = prefs.edit().putString(KEY_USER_PROFILE, value).apply()
+
+    // ¿Ya eligió quién es en este dispositivo? Si no, la app muestra el picker "¿Quién sos?".
+    var hasChosenIdentity: Boolean
+        get() = prefs.getBoolean(KEY_HAS_CHOSEN_IDENTITY, false)
+        set(value) = prefs.edit().putBoolean(KEY_HAS_CHOSEN_IDENTITY, value).apply()
 
     // Guarda los movimientos para el modo local
     fun saveLocalMovements(movements: List<Movement>) {
@@ -127,6 +138,27 @@ class PreferencesHelper(context: Context) {
         val json = prefs.getString(KEY_PLANS_CACHE, null) ?: return emptyList()
         return try {
             planListAdapter.fromJson(json) ?: emptyList()
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    // --- Usuarios parametrizables ---
+
+    // Cache de los dos usuarios (nombre + color). Sirve tanto para el arranque instantáneo desde la
+    // red como para persistir las ediciones locales en modo demo. Vacío = todavía sin datos (DEFAULT).
+    fun saveUsersCache(users: List<Usuario>) {
+        try {
+            prefs.edit().putString(KEY_USERS_CACHE, usuarioListAdapter.toJson(users)).apply()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    fun getUsersCache(): List<Usuario> {
+        val json = prefs.getString(KEY_USERS_CACHE, null) ?: return emptyList()
+        return try {
+            usuarioListAdapter.fromJson(json) ?: emptyList()
         } catch (e: Exception) {
             emptyList()
         }

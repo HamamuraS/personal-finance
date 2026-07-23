@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.CuotaPlan
 import com.example.data.Movement
+import com.example.data.UsuariosConfig
 import com.example.ui.BalanceBreakdown
 import com.example.ui.CuotasEngine
 import com.example.ui.theme.personaColor
@@ -35,6 +36,7 @@ import java.util.Locale
 @Composable
 fun ReportsScreen(
     userProfile: String,
+    config: UsuariosConfig,
     balance: BalanceBreakdown,
     movements: List<Movement>,
     availableMonths: List<String>,
@@ -143,9 +145,9 @@ fun ReportsScreen(
                 }
 
                 if (movements.isNotEmpty()) {
-                    // Tarjeta 1: Aportes por socio (Santiago vs Rocío)
+                    // Tarjeta 1: Aportes por socio
                     item {
-                        ReportAportesCard(userProfile = userProfile, balance = balance, formatMoney = formatMoney)
+                        ReportAportesCard(userProfile = userProfile, config = config, balance = balance, formatMoney = formatMoney)
                     }
 
                     // Tarjeta 2: Gastos Totales Combinados
@@ -158,23 +160,23 @@ fun ReportsScreen(
                         )
                     }
 
-                    // Tarjeta 3: Gastos Santiago
+                    // Tarjeta 3: Gastos del slot primario
                     item {
                         ReportCategoriasCard(
-                            title = "Gastos de Santiago",
-                            movements = movements.filter { it.tipo.lowercase() == "gasto" && it.responsable.equals("Santiago", ignoreCase = true) },
+                            title = "Gastos de ${config.primario.nombre}",
+                            movements = movements.filter { it.tipo.lowercase() == "gasto" && it.responsable.equals(config.primario.slotKey, ignoreCase = true) },
                             formatMoney = formatMoney,
-                            accentColor = personaColor("Santiago", userProfile)
+                            accentColor = personaColor(config.primario.slotKey, userProfile)
                         )
                     }
 
-                    // Tarjeta 4: Gastos Rocío
+                    // Tarjeta 4: Gastos del slot secundario
                     item {
                         ReportCategoriasCard(
-                            title = "Gastos de Rocío",
-                            movements = movements.filter { it.tipo.lowercase() == "gasto" && it.responsable.equals("Rocío", ignoreCase = true) },
+                            title = "Gastos de ${config.secundario.nombre}",
+                            movements = movements.filter { it.tipo.lowercase() == "gasto" && it.responsable.equals(config.secundario.slotKey, ignoreCase = true) },
                             formatMoney = formatMoney,
-                            accentColor = personaColor("Rocío", userProfile)
+                            accentColor = personaColor(config.secundario.slotKey, userProfile)
                         )
                     }
                 }
@@ -184,7 +186,7 @@ fun ReportsScreen(
 }
 
 @Composable
-fun ReportAportesCard(userProfile: String, balance: BalanceBreakdown, formatMoney: NumberFormat) {
+fun ReportAportesCard(userProfile: String, config: UsuariosConfig, balance: BalanceBreakdown, formatMoney: NumberFormat) {
     val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
     val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
     val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
@@ -213,17 +215,17 @@ fun ReportAportesCard(userProfile: String, balance: BalanceBreakdown, formatMone
 
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 // Colores de identidad estables (invariantes al usuario activo).
-                val santiagoColor = personaColor("Santiago", userProfile)
-                val rocioColor = personaColor("Rocío", userProfile)
+                val santiagoColor = personaColor(config.primario.slotKey, userProfile)
+                val rocioColor = personaColor(config.secundario.slotKey, userProfile)
 
-                // Fila Santiago
+                // Fila del slot primario
                 Column {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Santiago", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        Text(config.primario.nombre, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                         Text(formatMoney.format(balance.santiagoAportes), fontSize = 13.sp, fontWeight = FontWeight.Bold, color = santiagoColor)
                     }
                     Spacer(modifier = Modifier.height(4.dp))
@@ -238,14 +240,14 @@ fun ReportAportesCard(userProfile: String, balance: BalanceBreakdown, formatMone
                     )
                 }
 
-                // Fila Rocío
+                // Fila del slot secundario
                 Column(modifier = Modifier.padding(top = 8.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Rocío", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        Text(config.secundario.nombre, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                         Text(formatMoney.format(balance.rocioAportes), fontSize = 13.sp, fontWeight = FontWeight.Bold, color = rocioColor)
                     }
                     Spacer(modifier = Modifier.height(4.dp))

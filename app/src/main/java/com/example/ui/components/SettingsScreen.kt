@@ -2,12 +2,15 @@ package com.example.ui.components
 
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -19,8 +22,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.Usuario
 import com.example.ui.AhorroViewModel
-import com.example.ui.theme.personaColor
+import com.example.ui.theme.USER_COLOR_PRESETS
+import com.example.ui.theme.presetOf
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -34,6 +39,7 @@ fun SettingsScreen(
     val folderIdState = viewModel.folderId.collectAsState()
     val useLocalDemoState = viewModel.useLocalDemo.collectAsState()
     val currentUserProfileState = viewModel.currentUserProfile.collectAsState()
+    val usuariosState = viewModel.usuarios.collectAsState()
     val isDarkModeState = viewModel.isDarkMode.collectAsState()
     val isLoadingState = viewModel.isLoading.collectAsState()
     val errorMessageState = viewModel.errorMessage.collectAsState()
@@ -80,47 +86,20 @@ fun SettingsScreen(
             val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
             val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
 
-            // Tarjeta de Selección de Perfil
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.cardColors(containerColor = cardBg),
-                border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder),
-                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    Text(
-                        text = "¿Quién está usando la app?",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        ProfileButton(
-                            modifier = Modifier.weight(1f),
-                            name = "Santiago",
-                            isSelected = currentUserProfileState.value == "Santiago",
-                            color = personaColor("Santiago", currentUserProfileState.value),
-                            onClick = { viewModel.setCurrentUserProfile("Santiago") }
-                        )
-
-                        ProfileButton(
-                            modifier = Modifier.weight(1f),
-                            name = "Rocío",
-                            isSelected = currentUserProfileState.value == "Rocío",
-                            color = personaColor("Rocío", currentUserProfileState.value),
-                            onClick = { viewModel.setCurrentUserProfile("Rocío") }
-                        )
-                    }
-                }
-            }
+            // Tarjeta de Perfil (self): "Sos {nombre}", editar nombre, elegir color, cerrar sesión.
+            val config = usuariosState.value
+            val me = config.byKey(currentUserProfileState.value) ?: config.primario
+            val otherColorId = config.elOtro(me.slotKey).colorId
+            PerfilCard(
+                me = me,
+                otherColorId = otherColorId,
+                isDark = isDark,
+                cardBg = cardBg,
+                cardBorder = cardBorder,
+                onNombreChange = { viewModel.updateMiNombre(it) },
+                onColorChange = { viewModel.updateMiColor(it) },
+                onLogout = { viewModel.logout() }
+            )
 
             // Tarjeta de Modo Oscuro / Claro
             Card(
@@ -341,42 +320,186 @@ fun SettingsScreen(
     }
 }
 
+/**
+ * Tarjeta de perfil propio (reemplaza al viejo selector "¿Quién está usando la app?"): muestra
+ * quién sos, deja editar tu nombre, elegir tu color (grilla de presets, deshabilitando el que usa
+ * el otro para no perder la distinción visual) y cerrar sesión.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ProfileButton(
-    modifier: Modifier,
-    name: String,
-    isSelected: Boolean,
-    color: Color,
-    onClick: () -> Unit
+private fun PerfilCard(
+    me: Usuario,
+    otherColorId: String,
+    isDark: Boolean,
+    cardBg: Color,
+    cardBorder: Color,
+    onNombreChange: (String) -> Unit,
+    onColorChange: (String) -> Unit,
+    onLogout: () -> Unit
 ) {
-    Box(
-        modifier = modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(if (isSelected) color.copy(alpha = 0.15f) else Color.Transparent)
-            .clickable { onClick() }
-            .padding(vertical = 12.dp),
-        contentAlignment = Alignment.Center
+    // El input se re-sincroniza si el nombre cambia desde afuera (p. ej. tras guardar / refrescar).
+    var nombreInput by remember(me.nombre) { mutableStateOf(me.nombre) }
+    val nombreCambiado = nombreInput.isNotBlank() && nombreInput.trim() != me.nombre
+    val miColor = presetOf(me.colorId).resolve(isDark).brand
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = cardBg),
+        border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(androidx.compose.foundation.shape.CircleShape)
-                    .background(if (isSelected) color else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)),
-                contentAlignment = Alignment.Center
-            ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            // Header: "Sos {nombre}"
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(miColor),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = me.nombre.take(1).uppercase(),
+                        color = presetOf(me.colorId).resolve(isDark).on,
+                        fontWeight = FontWeight.Black,
+                        fontSize = 20.sp
+                    )
+                }
+                Column {
+                    Text(
+                        text = "Tu perfil",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                    )
+                    Text(
+                        text = "Sos ${me.nombre}",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 17.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
+
+            // Editar nombre
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(
-                    text = name.take(1),
-                    color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface,
+                    text = "Tu nombre",
+                    fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = nombreInput,
+                        onValueChange = { nombreInput = it },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = MaterialTheme.colorScheme.primary,
+                            unfocusedBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f)
+                        ),
+                        modifier = Modifier.weight(1f)
+                    )
+                    Button(
+                        onClick = { onNombreChange(nombreInput) },
+                        enabled = nombreCambiado,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                        modifier = Modifier.height(52.dp)
+                    ) {
+                        Icon(Icons.Default.Check, contentDescription = "Guardar nombre", modifier = Modifier.size(18.dp))
+                    }
+                }
+            }
+
+            // Elegir color (grilla de presets; el que usa el otro queda deshabilitado)
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "Tu color",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    USER_COLOR_PRESETS.forEach { preset ->
+                        val selected = preset.id == me.colorId
+                        // El color del otro no se puede elegir (mantiene la distinción visual).
+                        val disabled = !selected && preset.id == otherColorId
+                        ColorSwatch(
+                            fill = preset.resolve(isDark).brand,
+                            selected = selected,
+                            disabled = disabled,
+                            onClick = { if (!disabled && !selected) onColorChange(preset.id) }
+                        )
+                    }
+                }
+                Text(
+                    text = "El color del otro usuario aparece deshabilitado para no repetirlo.",
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                 )
             }
-            Text(
-                text = name,
-                fontSize = 13.sp,
-                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                color = if (isSelected) color else MaterialTheme.colorScheme.onSurface
+
+            HorizontalDivider(color = if (isDark) Color(0xFF333833) else Color(0xFFF1F5F9))
+
+            // Cerrar sesión
+            OutlinedButton(
+                onClick = onLogout,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth().height(46.dp)
+            ) {
+                Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Cerrar sesión", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            }
+        }
+    }
+}
+
+/** Muestra circular de color para la grilla de selección. */
+@Composable
+private fun ColorSwatch(
+    fill: Color,
+    selected: Boolean,
+    disabled: Boolean,
+    onClick: () -> Unit
+) {
+    val ring = MaterialTheme.colorScheme.onSurface
+    Box(
+        modifier = Modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .background(if (disabled) fill.copy(alpha = 0.25f) else fill)
+            .then(
+                if (selected) Modifier.border(3.dp, ring, CircleShape)
+                else Modifier
+            )
+            .clickable(enabled = !disabled && !selected) { onClick() },
+        contentAlignment = Alignment.Center
+    ) {
+        if (selected) {
+            Icon(
+                imageVector = Icons.Default.Check,
+                contentDescription = "Color seleccionado",
+                tint = Color.White
+            )
+        } else if (disabled) {
+            Icon(
+                imageVector = Icons.Default.Block,
+                contentDescription = "No disponible",
+                tint = Color.White.copy(alpha = 0.7f),
+                modifier = Modifier.size(18.dp)
             )
         }
     }

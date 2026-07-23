@@ -9,13 +9,18 @@ import com.example.data.CuotaPlan
 import com.example.data.DriveService
 import com.example.data.Movement
 import com.example.data.PreferencesHelper
+import com.example.data.Usuario
+import com.example.data.UsuariosConfig
 import com.google.android.gms.auth.GoogleAuthUtil
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import androidx.exifinterface.media.ExifInterface
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -77,8 +82,34 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     private val _currentUserProfile = MutableStateFlow(prefsHelper.currentUserProfile)
     val currentUserProfile: StateFlow<String> = _currentUserProfile.asStateFlow()
 
+    // --- Usuarios parametrizables ---
+    // Config de los dos usuarios (nombre + color). Arranca en DEFAULT y se hidrata desde cache al
+    // instante + red en segundo plano (mismo patrón que movimientos/planes).
+    private val _usuarios = MutableStateFlow(UsuariosConfig.DEFAULT)
+    val usuarios: StateFlow<UsuariosConfig> = _usuarios.asStateFlow()
+
+    // ¿Ya eligió identidad en este dispositivo? Si no, MainActivity muestra el picker "¿Quién sos?".
+    private val _hasChosenIdentity = MutableStateFlow(prefsHelper.hasChosenIdentity)
+    val hasChosenIdentity: StateFlow<Boolean> = _hasChosenIdentity.asStateFlow()
+
+    // Usuario activo / el otro, derivados de la identidad + la config. Alimentan el tema dinámico.
+    val activeUser: StateFlow<Usuario> = combine(_usuarios, _currentUserProfile) { config, key ->
+        config.byKey(key) ?: config.primario
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, UsuariosConfig.DEFAULT.primario)
+
+    val otherUser: StateFlow<Usuario> = combine(_usuarios, _currentUserProfile) { config, key ->
+        config.elOtro(key)
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, UsuariosConfig.DEFAULT.secundario)
+
     private val _isDarkMode = MutableStateFlow(prefsHelper.isDarkMode)
     val isDarkMode: StateFlow<Boolean> = _isDarkMode.asStateFlow()
+
+    // --- Borradores de formularios (sobreviven cambios de pestaña mientras la app está abierta) ---
+    private val _movementDraft = MutableStateFlow(MovementDraft())
+    val movementDraft: StateFlow<MovementDraft> = _movementDraft.asStateFlow()
+
+    private val _cuotaDraft = MutableStateFlow(CuotaDraft())
+    val cuotaDraft: StateFlow<CuotaDraft> = _cuotaDraft.asStateFlow()
 
     // Estado calculado de balances
     private val _balance = MutableStateFlow(AccountingEngine.compute(emptyList()))
@@ -93,9 +124,12 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
         _folderId.value = prefsHelper.folderId
         _useLocalDemo.value = prefsHelper.useLocalDemo
         _currentUserProfile.value = prefsHelper.currentUserProfile
+        _hasChosenIdentity.value = prefsHelper.hasChosenIdentity
 
         // Punto 2: mostrar el cache al instante y refrescar en segundo plano.
         viewModelScope.launch {
+            // Usuarios: cache al instante para que el tema/identidad arranquen con el color correcto.
+            _usuarios.value = withContext(Dispatchers.IO) { repository.cachedUsuarios() }
             if (_cachedAllMovements.isEmpty()) {
                 val cached = withContext(Dispatchers.IO) { prefsHelper.getSheetsCache() }
                 if (cached.isNotEmpty()) applyMovements(cached)
@@ -188,6 +222,8 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
 
     private suspend fun doRefreshData(): Boolean {
         return try {
+            // Usuarios (nombre/color) en segundo plano; barato y mantiene el tema al día.
+            _usuarios.value = repository.fetchUsuarios(_spreadsheetId.value)
             val rawList = repository.fetchMovements(_spreadsheetId.value)
             applyMovements(rawList)
             // Planes pendientes junto con los movimientos (los pagos son on-demand).
@@ -337,15 +373,21 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     /**
-     * Duplica un movimiento
+     * Duplica un movimiento **a nombre del usuario activo**, como gasto personal. Se usa en el botón
+     * de duplicar de los gastos de transporte: si dos personas viajan juntas, una lo carga y la otra
+     * toca duplicar para registrar fácilmente su propio gasto (no el de la otra persona).
      */
     fun duplicateMovement(movement: Movement, onSuccess: () -> Unit) {
         viewModelScope.launch {
             _isLoading.value = true
             val now = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date())
+            val yo = _currentUserProfile.value
             val duplicate = movement.copy(
                 id = java.util.UUID.randomUUID().toString(),
-                fecha = now
+                fecha = now,
+                responsable = yo,      // pasa a mi cuenta
+                propietario = yo,      // gasto personal mío (sin propiedad cruzada)
+                esComun = false
             )
             
             val success = repository.saveMovement(_spreadsheetId.value, duplicate, null, _folderId.value)
@@ -375,17 +417,57 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     /**
-     * Cambiar de perfil de usuario
+     * Elige la identidad (slot) en este dispositivo. Se recuerda: no se vuelve a preguntar hasta
+     * cerrar sesión. Es lo que dispara el picker "¿Quién sos?" del primer arranque.
      */
-    fun setCurrentUserProfile(profile: String) {
-        prefsHelper.currentUserProfile = profile
-        _currentUserProfile.value = profile
+    fun setIdentity(slotKey: String) {
+        prefsHelper.currentUserProfile = slotKey
+        prefsHelper.hasChosenIdentity = true
+        _currentUserProfile.value = slotKey
+        _hasChosenIdentity.value = true
+    }
+
+    /** Cierra sesión: olvida la identidad → vuelve a la pantalla "¿Quién sos?" (no borra datos). */
+    fun logout() {
+        prefsHelper.hasChosenIdentity = false
+        _hasChosenIdentity.value = false
+    }
+
+    /** Edita MI nombre visible (el del slot activo). Aplica al instante y persiste (red/local). */
+    fun updateMiNombre(nombre: String) = updateMiPerfil { it.copy(nombre = nombre.trim()) }
+
+    /** Elige MI color (preset). Aplica al instante al tema y persiste (red/local). */
+    fun updateMiColor(colorId: String) = updateMiPerfil { it.copy(colorId = colorId) }
+
+    /**
+     * Aplica una edición a MI usuario (el del slot activo) de forma optimista (se ve al instante) y
+     * la persiste en segundo plano. El `slotKey`/`orden` no se tocan (identidad interna estable).
+     */
+    private fun updateMiPerfil(transform: (Usuario) -> Usuario) {
+        val config = _usuarios.value
+        val yo = config.byKey(_currentUserProfile.value) ?: return
+        val actualizado = transform(yo)
+        if (actualizado == yo) return
+        // Actualización optimista del flow (el tema/identidad reaccionan al instante).
+        _usuarios.value =
+            if (config.primario.slotKey.equals(yo.slotKey, ignoreCase = true)) config.copy(primario = actualizado)
+            else config.copy(secundario = actualizado)
+        viewModelScope.launch {
+            val ok = repository.updateUsuario(_spreadsheetId.value, actualizado)
+            if (!ok) _errorMessage.value = "No se pudo guardar tu perfil. Se aplicó localmente."
+        }
     }
 
     fun setIsDarkMode(isDark: Boolean) {
         prefsHelper.isDarkMode = isDark
         _isDarkMode.value = isDark
     }
+
+    // --- Borradores ---
+    fun setMovementDraft(draft: MovementDraft) { _movementDraft.value = draft }
+    fun clearMovementDraft() { _movementDraft.value = MovementDraft() }
+    fun setCuotaDraft(draft: CuotaDraft) { _cuotaDraft.value = draft }
+    fun clearCuotaDraft() { _cuotaDraft.value = CuotaDraft() }
 
     // ---------------------------------------------------------------------------------------------
     // Módulo de cuotas

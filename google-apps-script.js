@@ -1,8 +1,16 @@
 /**
  * Script de Google Apps Script para la sincronización de la App de Finanzas Personales.
  *
- * Versión: 6.0 (Módulo de cuotas)
+ * Versión: 7.0 (Usuarios parametrizables)
  * @description Este script requiere acceso a Google Drive para guardar los tickets.
+ *
+ * Novedades v7.0:
+ *  - Hoja nueva "Usuarios" (ver USERS_SHEET): nombre + color por usuario. Se EXCLUYE de los tres
+ *    recorridos de movimientos (doGet, getPlans, handleLogicalDelete) igual que "Planes".
+ *  - doGet?action=GET_USERS: devuelve las filas de "Usuarios" (o [] si la hoja no existe; el
+ *    cliente cae a su config DEFAULT).
+ *  - doPost con entity:"user" y action:"PUT": edita nombre/colorId de un usuario buscándolo por
+ *    slotKey (col A, inmutable). Siembra la hoja con los dos slots legacy si falta. No hay POST/DELETE.
  *
  * Novedades v6.0:
  *  - Hoja nueva "Planes" para compras en cuotas (ver PLANS_SHEET). Se EXCLUYE del doGet de
@@ -17,6 +25,7 @@
 const monthNames = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
 const defaultFolderId = "1LT_t2a7WBFe6wGjwJ5XuTYsS7gvjr3jU";
 const PLANS_SHEET = "Planes";
+const USERS_SHEET = "Usuarios";
 
 /**
  * Función para forzar la solicitud de permisos de Drive.
@@ -59,14 +68,19 @@ function doGet(e) {
     return getPlans(e);
   }
 
+  // --- Endpoint de usuarios parametrizables ---
+  if (action === 'GET_USERS') {
+    return getUsers(e);
+  }
+
   // --- Movimientos (comportamiento por defecto) ---
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheets = ss.getSheets();
   let allData = [];
 
   sheets.forEach(sheet => {
-    // ⚠️ La hoja de planes NO contiene movimientos: hay que saltarla.
-    if (sheet.getName() === PLANS_SHEET) return;
+    // ⚠️ Las hojas de planes y usuarios NO contienen movimientos: hay que saltarlas.
+    if (sheet.getName() === PLANS_SHEET || sheet.getName() === USERS_SHEET) return;
 
     const data = sheet.getDataRange().getValues();
     if (data.length > 1) {
@@ -113,7 +127,7 @@ function getPlans(e) {
   // 1) paidMap: planId -> Set de cuotaNumero pagadas (derivado de los movimientos).
   const paidMap = {};
   ss.getSheets().forEach(sheet => {
-    if (sheet.getName() === PLANS_SHEET) return; // solo movimientos
+    if (sheet.getName() === PLANS_SHEET || sheet.getName() === USERS_SHEET) return; // solo movimientos
     const data = sheet.getDataRange().getValues();
     for (let i = 1; i < data.length; i++) {
       const row = data[i];
@@ -179,6 +193,11 @@ function doPost(e) {
         return handlePlanDelete(json.id);
       }
       return handlePlanUpsert(action, json.plan);
+    }
+
+    // --- Usuarios parametrizables: solo edición (PUT) de nombre/color por slotKey ---
+    if (json.entity === 'user') {
+      return handleUserUpsert(json.user);
     }
 
     // --- Movimientos ---
@@ -343,12 +362,83 @@ function handlePlanDelete(id) {
   return jsonOutput({ status: "ERROR", message: "ID de plan no encontrado" });
 }
 
+// =================================================================================================
+// Usuarios parametrizables (hoja "Usuarios")
+// =================================================================================================
+
+/**
+ * Devuelve la hoja "Usuarios", creándola y sembrándola con los dos slots legacy si no existe.
+ * La columna A (slotKey) se fuerza a texto: es la clave interna inmutable ("Santiago"/"Rocío").
+ */
+function getUsersSheetSeeded() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(USERS_SHEET);
+  if (!sheet) {
+    sheet = ss.insertSheet(USERS_SHEET);
+    sheet.appendRow(["slotKey", "Nombre", "ColorId", "Orden"]);
+    sheet.getRange(1, 1, 1, 4).setFontWeight("bold").setBackground("#e2e8f0");
+    sheet.setFrozenRows(1);
+    sheet.getRange("A:A").setNumberFormat("@");
+    // Seed: slotKey = nombre legacy y colores actuales -> retrocompatible con los datos existentes.
+    sheet.appendRow(["Santiago", "Santiago", "green", 0]);
+    sheet.appendRow(["Rocío", "Rocío", "blue", 1]);
+  }
+  return sheet;
+}
+
+/**
+ * Lee la hoja "Usuarios". Si no existe, devuelve users:[] (el cliente cae a su config DEFAULT).
+ * No la crea en el GET para no tener efectos secundarios en una lectura.
+ */
+function getUsers(e) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(USERS_SHEET);
+  let users = [];
+  if (sheet) {
+    const data = sheet.getDataRange().getValues();
+    for (let i = 1; i < data.length; i++) {
+      const row = data[i];
+      const slotKey = row[0] ? row[0].toString() : "";
+      if (!slotKey) continue;
+      users.push({
+        slotKey: slotKey,
+        nombre: row[1] ? row[1].toString() : slotKey,
+        colorId: row[2] ? row[2].toString() : "",
+        orden: Number(row[3]) || 0
+      });
+    }
+  }
+  return jsonOutput({ status: "SUCCESS", users: users });
+}
+
+/**
+ * Edita (PUT) un usuario: busca por slotKey (col A, inmutable) y actualiza nombre (B) y colorId (C).
+ * Siembra la hoja con los dos slots legacy si faltaba, de modo que el slotKey siempre se encuentre.
+ * No existe alta/baja de usuarios: siempre son exactamente dos filas fijas.
+ */
+function handleUserUpsert(user) {
+  if (!user || !user.slotKey) {
+    return jsonOutput({ status: "ERROR", message: "Usuario inválido (falta slotKey)" });
+  }
+  const sheet = getUsersSheetSeeded();
+  const data = sheet.getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === String(user.slotKey)) {
+      if (user.nombre !== undefined && user.nombre !== null) sheet.getRange(i + 1, 2).setValue(user.nombre);
+      if (user.colorId !== undefined && user.colorId !== null) sheet.getRange(i + 1, 3).setValue(user.colorId);
+      return jsonOutput({ status: "SUCCESS", message: "Usuario actualizado OK" });
+    }
+  }
+  return jsonOutput({ status: "ERROR", message: "slotKey no encontrado: " + user.slotKey });
+}
+
 function handleLogicalDelete(id) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheets = ss.getSheets();
 
   for (let sheet of sheets) {
-    if (sheet.getName() === PLANS_SHEET) continue; // los planes se borran por su propio endpoint
+    // Planes y usuarios se gestionan por sus propios endpoints, no contienen movimientos.
+    if (sheet.getName() === PLANS_SHEET || sheet.getName() === USERS_SHEET) continue;
     const data = sheet.getDataRange().getValues();
     for (let i = 1; i < data.length; i++) {
       if (data[i][0] == id) {

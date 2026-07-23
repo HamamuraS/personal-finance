@@ -1,6 +1,11 @@
 # Usuarios Parametrizables — Plan de implementación
 
-> Estado: **Propuesta (sin implementar)**. Última actualización: 2026-07-22.
+> Estado: **Fases 1 y 2 implementadas** (2026-07-22). Compila (`assembleDebug` OK) y los tests puros
+> pasan (`UsuariosConfigTest`, `UsuarioSerializationTest`). Fase 3 sigue fuera de alcance. Pendiente
+> operativo: **desplegar la v7.0 del `google-apps-script.js`** en el spreadsheet real para que el
+> modo nube responda `GET_USERS`/`PUT user` (en modo demo ya funciona todo local). Queda como
+> cleanup opcional el helper `rememberCardColors()` de §10.3 (no afecta la feature).
+> Última actualización del plan original: 2026-07-22.
 >
 > Objetivo de este documento: planear cómo dejar de tener "Santiago" y "Rocío" con colores
 > hardcodeados y pasar a **dos usuarios configurables** (nombre + color elegibles), con una
@@ -378,16 +383,27 @@ es el trabajo grande y por eso queda fuera). Riesgo alto; solo si hace falta.
 
 ## 15. Checklist Fase 1
 
-- [ ] `data/Usuario.kt` (+ `UsuariosConfig`) y `ui/theme/UserColorPalette.kt` (presets)
-- [ ] `google-apps-script.js`: `USERS_SHEET`, exclusión en los 3 loops (⚠️), `GET_USERS`, `PUT` user, seed
-- [ ] `SheetsService.kt`: request/response de usuarios
-- [ ] `AhorroRepository.kt`: `fetchUsuarios`, `cachedUsuarios`, `updateUsuario`
-- [ ] `PreferencesHelper.kt`: `KEY_USERS_CACHE`; `currentUserProfile` como slotKey + `hasChosenIdentity`
-- [ ] `AhorroViewModel.kt`: `_usuarios`/`_activeUser`/`_otherUser`, `setIdentity`, `logout`, `updateMiNombre`, `updateMiColor`; carga de cache instantánea
-- [ ] `ui/theme/Theme.kt`: `MyApplicationTheme(activeUser, otherUser)` (reemplaza `isRocio`)
-- [ ] `ui/theme/UserColors.kt`: `personaColor` leído de `UsuariosConfig`
-- [ ] `MainActivity.kt`: alimentar el tema; gate de identidad (picker si `!hasChosenIdentity`)
-- [ ] Pantalla "¿Quién sos?" (nueva) + rediseño de la tarjeta de perfil en `SettingsScreen`
+- [x] `data/Usuario.kt` (+ `UsuariosConfig`) y `ui/theme/UserColorPalette.kt` (presets)
+- [x] `google-apps-script.js`: `USERS_SHEET`, exclusión en los 3 loops (⚠️), `GET_USERS`, `PUT` user, seed (v7.0)
+- [x] `SheetsService.kt`: request/response de usuarios (`user`, `users`, `getUsers`)
+- [x] `AhorroRepository.kt`: `fetchUsuarios`, `cachedUsuarios`, `updateUsuario`
+- [x] `PreferencesHelper.kt`: `KEY_USERS_CACHE`; `currentUserProfile` como slotKey + `hasChosenIdentity`
+- [x] `AhorroViewModel.kt`: `_usuarios`/`activeUser`/`otherUser`, `setIdentity`, `logout`, `updateMiNombre`, `updateMiColor`; carga de cache instantánea
+- [x] `ui/theme/Theme.kt`: `MyApplicationTheme(activeUser, otherUser)` (reemplaza `isRocio`)
+- [x] `ui/theme/UserColors.kt`: `personaColor` por `slotKey` (con `personaThemeRole` puro y testeable).
+      Nota: no toma `UsuariosConfig` porque el tema ya deja el color del activo en `primary` y el del
+      otro en `tertiary`; alcanza con comparar slotKeys. Cumple el objetivo (sin literal "Rocío").
+- [x] `MainActivity.kt`: alimentar el tema; gate de identidad (picker si `!hasChosenIdentity`)
+- [x] Pantalla "¿Quién sos?" (`IdentityPickerScreen`) + rediseño de la tarjeta de perfil (`PerfilCard`) en `SettingsScreen`
+
+## 15b. Fase 2 (hecho, salvo cleanup de card)
+
+- [x] Literales `"Santiago"`/`"Rocío"` fuera de las 5 pantallas: display por `config.nombreDe(...)`,
+      lógica/filtros/`personaColor` por `slotKey`. Filtros de persona unificados (valor=slotKey, label=nombre).
+- [x] Tarjetas sugeridas de cuotas derivadas del nombre (`tarjetasSugeridas(config)`).
+- [ ] **Pendiente (opcional):** helper `rememberCardColors()` en `ui/theme/` para la "receta de card"
+      repetida (§10.3). Es cosmético, ortogonal a la feature y con variantes por pantalla; se deja
+      como cleanup aparte para no inflar el cambio.
 
 ## 16. Archivos afectados (referencia rápida)
 

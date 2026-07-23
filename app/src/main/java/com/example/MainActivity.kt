@@ -24,6 +24,7 @@ import com.example.ui.AhorroViewModel
 import com.example.ui.components.AddMovementScreen
 import com.example.ui.components.CuotasScreen
 import com.example.ui.components.DashboardScreen
+import com.example.ui.components.IdentityPickerScreen
 import com.example.ui.components.ReportsScreen
 import com.example.ui.components.SettingsScreen
 import com.example.ui.theme.MyApplicationTheme
@@ -43,10 +44,23 @@ class MainActivity : ComponentActivity() {
         setContent {
             val userProfile by viewModel.currentUserProfile.collectAsState()
             val isDarkMode by viewModel.isDarkMode.collectAsState()
-            
-            MyApplicationTheme(darkTheme = isDarkMode, isRocio = userProfile == "Rocío") {
+            val usuarios by viewModel.usuarios.collectAsState()
+            val activeUser by viewModel.activeUser.collectAsState()
+            val otherUser by viewModel.otherUser.collectAsState()
+            val hasChosenIdentity by viewModel.hasChosenIdentity.collectAsState()
+
+            MyApplicationTheme(darkTheme = isDarkMode, activeUser = activeUser, otherUser = otherUser) {
+                // Gate de identidad: en el primer arranque (o tras cerrar sesión) se elige quién sos.
+                if (!hasChosenIdentity) {
+                    IdentityPickerScreen(
+                        usuarios = usuarios,
+                        onPick = { viewModel.setIdentity(it) }
+                    )
+                    return@MyApplicationTheme
+                }
+
                 var currentTab by remember { mutableStateOf(ScreenTab.INICIO) }
-                
+
                 val movements by viewModel.movements.collectAsState()
                 val balance by viewModel.balance.collectAsState()
                 val isLoading by viewModel.isLoading.collectAsState()
@@ -109,6 +123,7 @@ class MainActivity : ComponentActivity() {
                             ScreenTab.INICIO -> {
                                 DashboardScreen(
                                     userProfile = userProfile,
+                                    config = usuarios,
                                     balance = balance,
                                     movements = movements,
                                     isLoading = isLoading,
@@ -141,6 +156,7 @@ class MainActivity : ComponentActivity() {
                             ScreenTab.METRICAS -> {
                                 ReportsScreen(
                                     userProfile = userProfile,
+                                    config = usuarios,
                                     balance = balance,
                                     movements = movements,
                                     availableMonths = viewModel.availableMonths.collectAsState().value,

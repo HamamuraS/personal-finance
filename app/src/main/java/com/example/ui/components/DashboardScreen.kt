@@ -22,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -29,6 +30,7 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import com.example.data.CuotaPlan
 import com.example.data.Movement
+import com.example.data.UsuariosConfig
 import com.example.ui.BalanceBreakdown
 import com.example.ui.CuotaRecordatorio
 import com.example.ui.CuotasEngine
@@ -40,6 +42,7 @@ import java.util.Locale
 @Composable
 fun DashboardScreen(
     userProfile: String,
+    config: UsuariosConfig,
     balance: BalanceBreakdown,
     movements: List<Movement>,
     isLoading: Boolean,
@@ -55,10 +58,12 @@ fun DashboardScreen(
     allMovements: List<Movement> = emptyList(),
     onConfirmCuota: (CuotaPlan, Int, String, String, Double?, () -> Unit) -> Unit = { _, _, _, _, _, _ -> }
 ) {
-    // Filtros: persona (responsable) + tipo + categorías (multi-selección)
-    var filterPerson by remember { mutableStateOf("Todos") }   // Todos | Santiago | Rocío
+    // Filtros: búsqueda por descripción + persona (por slotKey del responsable) + tipo + categorías.
+    // filterPerson: "Todos" o un slotKey; el label visible se resuelve con config.nombreDe(...).
+    var filterPerson by remember { mutableStateOf("Todos") }
     var filterTipo by remember { mutableStateOf("Todos") }     // Todos | Gastos | Aportes | Transfer.
     var selectedCategories by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var searchQuery by remember { mutableStateOf("") }
     val formatMoney = remember {
         java.text.DecimalFormat("#,##0.00").apply {
             val symbols = java.text.DecimalFormatSymbols()
@@ -146,7 +151,7 @@ fun DashboardScreen(
             ) {
                 // Tarjeta de Pozo Común
                 item {
-                    PozoComunCard(userProfile = userProfile, balance = balance, formatMoney = formatMoney)
+                    PozoComunCard(userProfile = userProfile, config = config, balance = balance, formatMoney = formatMoney)
                 }
 
                 // Recordatorio: cuotas a pagar del usuario activo hasta el MES ACTUAL real
@@ -180,25 +185,26 @@ fun DashboardScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
+                        // Slot primario ("Santiago" legacy) ↔ balance.santiago*; secundario ↔ rocio*.
                         DesgloseSocioCard(
                             modifier = Modifier.weight(1f),
-                            nombre = "Santiago",
+                            nombre = config.primario.nombre,
                             saldo = balance.santiagoSaldoFinal,
                             enMano = balance.santiagoEnMano,
                             aportes = balance.santiagoAportes,
                             personales = balance.santiagoGastosPersonales,
                             formatMoney = formatMoney,
-                            avatarColor = personaColor("Santiago", userProfile)
+                            avatarColor = personaColor(config.primario.slotKey, userProfile)
                         )
                         DesgloseSocioCard(
                             modifier = Modifier.weight(1f),
-                            nombre = "Rocío",
+                            nombre = config.secundario.nombre,
                             saldo = balance.rocioSaldoFinal,
                             enMano = balance.rocioEnMano,
                             aportes = balance.rocioAportes,
                             personales = balance.rocioGastosPersonales,
                             formatMoney = formatMoney,
-                            avatarColor = personaColor("Rocío", userProfile)
+                            avatarColor = personaColor(config.secundario.slotKey, userProfile)
                         )
                     }
                 }
@@ -213,6 +219,7 @@ fun DashboardScreen(
                     DineroCruzadoCard(
                         externoSantiago = balance.santiagoExterno,
                         currentUserProfile = userProfile,
+                        config = config,
                         formatMoney = formatMoney
                     )
                 }
@@ -241,9 +248,11 @@ fun DashboardScreen(
                     }
                 }
 
-                // Filtrado: persona (responsable) -> tipo -> categorías (multi)
+                // Filtrado: descripción -> persona (responsable) -> tipo -> categorías (multi)
+                val query = searchQuery.trim()
                 val baseFiltered = movements.filter { m ->
-                    (filterPerson == "Todos" || m.responsable.equals(filterPerson, ignoreCase = true)) &&
+                    (query.isEmpty() || m.descripcion.contains(query, ignoreCase = true)) &&
+                        (filterPerson == "Todos" || m.responsable.equals(filterPerson, ignoreCase = true)) &&
                         when (filterTipo) {
                             "Gastos" -> m.tipo.equals("Gasto", ignoreCase = true)
                             "Aportes" -> m.tipo.equals("Aporte", ignoreCase = true)
@@ -264,6 +273,9 @@ fun DashboardScreen(
                     MovementFilters(
                         person = filterPerson,
                         currentUser = userProfile,
+                        config = config,
+                        searchQuery = searchQuery,
+                        onSearchChange = { searchQuery = it },
                         onPersonChange = { filterPerson = it },
                         tipo = filterTipo,
                         onTipoChange = { filterTipo = it },
@@ -312,6 +324,7 @@ fun DashboardScreen(
                             useLocalDemo = useLocalDemo,
                             isCurrentMonth = isCurrentMonth,
                             currentUserProfile = userProfile,
+                            config = config,
                             onDelete = { onDeleteMovement(mov) },
                             onDuplicate = { onDuplicateMovement(mov) }
                         )
@@ -330,6 +343,7 @@ fun SwipeableMovementItem(
     useLocalDemo: Boolean,
     isCurrentMonth: Boolean,
     currentUserProfile: String,
+    config: UsuariosConfig,
     onDelete: () -> Unit,
     onDuplicate: () -> Unit
 ) {
@@ -426,6 +440,7 @@ fun SwipeableMovementItem(
             useLocalDemo = useLocalDemo,
             isCurrentMonth = isCurrentMonth,
             currentUserProfile = currentUserProfile,
+            config = config,
             onDelete = onDelete,
             onDuplicate = onDuplicate
         )
@@ -440,16 +455,28 @@ fun MovementItem(
     useLocalDemo: Boolean,
     isCurrentMonth: Boolean,
     currentUserProfile: String,
+    config: UsuariosConfig,
     onDelete: () -> Unit,
     onDuplicate: () -> Unit
 ) {
     var showDuplicateDialog by remember { mutableStateOf(false) }
+    var showDetail by remember { mutableStateOf(false) }
+
+    if (showDetail) {
+        MovementDetailDialog(
+            movement = movement,
+            config = config,
+            currentUserProfile = currentUserProfile,
+            formatMoney = formatMoney,
+            onDismiss = { showDetail = false }
+        )
+    }
 
     if (showDuplicateDialog) {
         AlertDialog(
             onDismissRequest = { showDuplicateDialog = false },
             title = { Text("¿Duplicar Movimiento?") },
-            text = { Text("Se creará una copia de este gasto con la fecha de hoy.") },
+            text = { Text("Se creará una copia a tu nombre (${config.nombreDe(currentUserProfile)}), como gasto personal y con la fecha de hoy.") },
             confirmButton = {
                 TextButton(onClick = {
                     onDuplicate()
@@ -472,7 +499,8 @@ fun MovementItem(
 
     Card(
         modifier = Modifier
-            .fillMaxWidth(),
+            .fillMaxWidth()
+            .clickable { showDetail = true },   // tocar la tarjeta abre el detalle completo
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(
             containerColor = cardBg
@@ -489,15 +517,11 @@ fun MovementItem(
             // Icono contextual
             val isGasto = movement.tipo.lowercase() == "gasto"
             val isAporte = movement.tipo.lowercase() == "aporte"
-            val isSantiagoAporte = isAporte && movement.responsable.equals("Santiago", ignoreCase = true)
-            val isRocioAporte = isAporte && movement.responsable.equals("Rocío", ignoreCase = true)
 
             // El color del aporte es el de identidad del aportante (estable ante el usuario activo).
-            val aporteColor = when {
-                isSantiagoAporte -> personaColor("Santiago", currentUserProfile)
-                isRocioAporte -> personaColor("Rocío", currentUserProfile)
-                else -> MaterialTheme.colorScheme.tertiary // Fallback para transferencias u otros
-            }
+            // Solo se usa cuando isAporte, y `responsable` siempre es un slotKey.
+            val aporteColor = if (isAporte) personaColor(movement.responsable, currentUserProfile)
+            else MaterialTheme.colorScheme.tertiary // Fallback para transferencias u otros
             
             Box(
                 modifier = Modifier
@@ -566,7 +590,7 @@ fun MovementItem(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    val responsableTag = movement.responsable
+                    val responsableTag = config.nombreDe(movement.responsable)
                     val metodoTag = if (movement.metodoPago.contains("Efectivo", ignoreCase = true)) "💵" else "💳"
                     val subtitulo = if (movement.descripcion.isNotEmpty()) {
                         "$metodoTag $responsableTag • ${movement.descripcion}"
@@ -631,7 +655,7 @@ fun MovementItem(
                                         .padding(horizontal = 4.dp, vertical = 2.dp)
                                 ) {
                                     Text(
-                                        text = "De ${movement.propietario}",
+                                        text = "De ${config.nombreDe(movement.propietario)}",
                                         fontSize = 9.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = propietarioColor
@@ -684,7 +708,7 @@ fun MovementItem(
                                 .padding(horizontal = 4.dp, vertical = 2.dp)
                         ) {
                             Text(
-                                text = "A ${movement.responsable}",
+                                text = "A ${config.nombreDe(movement.responsable)}",
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = responsableColor
@@ -705,8 +729,116 @@ fun MovementItem(
     }
 }
 
+/**
+ * Detalle completo de un movimiento en un diálogo. Se abre al tocar la tarjeta del listado; su razón
+ * principal es poder leer la **descripción entera**, que no entra en la tarjeta compacta.
+ */
 @Composable
-fun PozoComunCard(userProfile: String, balance: BalanceBreakdown, formatMoney: NumberFormat) {
+private fun MovementDetailDialog(
+    movement: Movement,
+    config: UsuariosConfig,
+    currentUserProfile: String,
+    formatMoney: NumberFormat,
+    onDismiss: () -> Unit
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val isAporte = movement.tipo.equals("Aporte", ignoreCase = true)
+    val isGasto = movement.tipo.equals("Gasto", ignoreCase = true)
+    val montoColor = when {
+        isAporte -> personaColor(movement.responsable, currentUserProfile)
+        isGasto && movement.esComun -> MaterialTheme.colorScheme.error
+        isGasto -> MaterialTheme.colorScheme.onSurface
+        else -> MaterialTheme.colorScheme.tertiary
+    }
+    val signo = if (isAporte) "+" else "-"
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(movement.categoria, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "$signo${formatMoney.format(movement.monto)}",
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 24.sp,
+                    color = montoColor
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                DetailRow("Tipo", movement.tipo)
+                DetailRow("Fecha", formatDateMinimal(movement.fecha))
+                DetailRow("Responsable", config.nombreDe(movement.responsable))
+                if (isGasto) {
+                    DetailRow("Distribución", if (movement.esComun) "Común (50/50)" else "Personal")
+                }
+                DetailRow("Propietario", config.nombreDe(movement.propietario))
+                DetailRow("Método de pago", movement.metodoPago)
+                // Descripción completa (el motivo de este popup): texto entero, con saltos de línea.
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        text = "Descripción",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = movement.descripcion.ifBlank { "Sin descripción" },
+                        fontSize = 14.sp,
+                        color = if (movement.descripcion.isBlank())
+                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                        else MaterialTheme.colorScheme.onSurface
+                    )
+                }
+                if (movement.ticketUrl.isNotEmpty()) {
+                    TextButton(
+                        onClick = {
+                            try {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(movement.ticketUrl)))
+                            } catch (e: Exception) { /* sin visor disponible */ }
+                        },
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Icon(Icons.Default.Receipt, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Ver ticket", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Cerrar", fontWeight = FontWeight.Bold) }
+        }
+    )
+}
+
+/** Fila etiqueta/valor para el diálogo de detalle. */
+@Composable
+private fun DetailRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.Top
+    ) {
+        Text(
+            text = label,
+            fontSize = 13.sp,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            text = value,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+            textAlign = TextAlign.End,
+            modifier = Modifier.weight(1f)
+        )
+    }
+}
+
+@Composable
+fun PozoComunCard(userProfile: String, config: UsuariosConfig, balance: BalanceBreakdown, formatMoney: NumberFormat) {
     val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
     val cardBg = if (isDark) Color(0xFF2E332F) else Color(0xFFE8F3E9)
     val cardBorder = if (isDark) Color(0xFF414941) else Color(0xFFDCE5DB)
@@ -748,8 +880,8 @@ fun PozoComunCard(userProfile: String, balance: BalanceBreakdown, formatMoney: N
 
             // Split Bar (Si se dividiera hoy)
             val santiagoRatioUnsafe = if (balance.totalPozo > 0) (balance.santiagoSaldoFinal / balance.totalPozo).coerceIn(0.0, 1.0) else 0.5
-            
-            // Santiago siempre a la izquierda (primary/verde), Rocío a la derecha (tertiary/azul)
+
+            // Slot primario siempre a la izquierda, secundario a la derecha (colores estables).
             val santiagoRatio = santiagoRatioUnsafe
             val rocioRatio = 1.0 - santiagoRatio
 
@@ -760,19 +892,19 @@ fun PozoComunCard(userProfile: String, balance: BalanceBreakdown, formatMoney: N
                     .clip(CircleShape)
                     .background(if (isDark) Color(0xFF5D625C) else Color(0xFFC2CDC1))
             ) {
-                // Barra Santiago (Verde)
+                // Barra del slot primario
                 Box(
                     modifier = Modifier
                         .fillMaxHeight()
                         .weight(if (santiagoRatio > 0) santiagoRatio.toFloat() else 0.001f)
-                        .background(personaColor("Santiago", userProfile))
+                        .background(personaColor(config.primario.slotKey, userProfile))
                 )
-                // Barra Rocío (Azul)
+                // Barra del slot secundario
                 Box(
                     modifier = Modifier
                         .fillMaxHeight()
                         .weight(if (rocioRatio > 0) rocioRatio.toFloat() else 0.001f)
-                        .background(personaColor("Rocío", userProfile))
+                        .background(personaColor(config.secundario.slotKey, userProfile))
                 )
             }
 
@@ -782,12 +914,12 @@ fun PozoComunCard(userProfile: String, balance: BalanceBreakdown, formatMoney: N
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // Columna 1 (Santiago - Verde)
+                // Columna 1 (slot primario)
                 Column {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(personaColor("Santiago", userProfile)))
+                        Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(personaColor(config.primario.slotKey, userProfile)))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Santiago", fontSize = 12.sp, color = labelColor, fontWeight = FontWeight.SemiBold)
+                        Text(config.primario.nombre, fontSize = 12.sp, color = labelColor, fontWeight = FontWeight.SemiBold)
                     }
                     val saldoS = balance.santiagoSaldoFinal
                     val efecS = balance.santiagoEfectivo
@@ -813,12 +945,12 @@ fun PozoComunCard(userProfile: String, balance: BalanceBreakdown, formatMoney: N
                     }
                 }
 
-                // Columna 2 (Rocío - Azul)
+                // Columna 2 (slot secundario)
                 Column(horizontalAlignment = Alignment.End) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Rocío", fontSize = 12.sp, color = labelColor, fontWeight = FontWeight.SemiBold)
+                        Text(config.secundario.nombre, fontSize = 12.sp, color = labelColor, fontWeight = FontWeight.SemiBold)
                         Spacer(modifier = Modifier.width(6.dp))
-                        Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(personaColor("Rocío", userProfile)))
+                        Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(personaColor(config.secundario.slotKey, userProfile)))
                     }
                     val saldoR = balance.rocioSaldoFinal
                     val efecR = balance.rocioEfectivo
@@ -855,7 +987,7 @@ fun PozoComunCard(userProfile: String, balance: BalanceBreakdown, formatMoney: N
  * sentido repetirla en cada tarjeta.
  */
 @Composable
-fun DineroCruzadoCard(externoSantiago: Double, currentUserProfile: String, formatMoney: NumberFormat) {
+fun DineroCruzadoCard(externoSantiago: Double, currentUserProfile: String, config: UsuariosConfig, formatMoney: NumberFormat) {
     // Umbral para ignorar redondeos de centavos
     if (kotlin.math.abs(externoSantiago) < 1.0) return
 
@@ -864,12 +996,15 @@ fun DineroCruzadoCard(externoSantiago: Double, currentUserProfile: String, forma
     val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
     val textMainColor = if (isDark) Color.White else Color(0xFF191C19)
 
-    // Quién tiene plata en la cuenta de quién. El acento representa al dueño (persona concreta),
-    // así que usa su color de identidad estable, no `primary` a secas.
-    val dueno = if (externoSantiago > 0) "Santiago" else "Rocío"
-    val cuentaDe = if (externoSantiago > 0) "Rocío" else "Santiago"
+    // Quién tiene plata en la cuenta de quién. externoSantiago > 0 = el primario tiene plata en la
+    // cuenta del secundario. El acento representa al dueño (persona concreta), así que usa su color
+    // de identidad estable (por slotKey), no `primary` a secas.
+    val duenoKey = if (externoSantiago > 0) config.primario.slotKey else config.secundario.slotKey
+    val cuentaKey = if (externoSantiago > 0) config.secundario.slotKey else config.primario.slotKey
+    val dueno = config.nombreDe(duenoKey)
+    val cuentaDe = config.nombreDe(cuentaKey)
     val monto = kotlin.math.abs(externoSantiago)
-    val acento = personaColor(dueno, currentUserProfile)
+    val acento = personaColor(duenoKey, currentUserProfile)
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -1277,6 +1412,9 @@ fun formatDateMinimal(input: String): String {
 fun MovementFilters(
     person: String,
     currentUser: String,
+    config: UsuariosConfig,
+    searchQuery: String,
+    onSearchChange: (String) -> Unit,
     onPersonChange: (String) -> Unit,
     tipo: String,
     onTipoChange: (String) -> Unit,
@@ -1301,6 +1439,28 @@ fun MovementFilters(
             modifier = Modifier.padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
+            // 0) Búsqueda por descripción
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = onSearchChange,
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("Buscar por descripción", fontSize = 13.sp) },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                trailingIcon = {
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = { onSearchChange("") }) {
+                            Icon(Icons.Default.Close, contentDescription = "Limpiar búsqueda", modifier = Modifier.size(18.dp))
+                        }
+                    }
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                    unfocusedBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f)
+                )
+            )
+
             // 1) Persona (control segmentado)
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(
@@ -1317,21 +1477,23 @@ fun MovementFilters(
                         .padding(4.dp),
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    listOf("Todos", "Santiago", "Rocío").forEach { p ->
-                        val selected = person == p
-                        val accent = if (p == "Todos") MaterialTheme.colorScheme.onSurface
-                        else personaColor(p, currentUser)
+                    // Valor del filtro = "Todos" o un slotKey; la etiqueta visible es el nombre.
+                    listOf("Todos", config.primario.slotKey, config.secundario.slotKey).forEach { key ->
+                        val selected = person == key
+                        val accent = if (key == "Todos") MaterialTheme.colorScheme.onSurface
+                        else personaColor(key, currentUser)
+                        val label = if (key == "Todos") "Todos" else config.nombreDe(key)
                         Box(
                             modifier = Modifier
                                 .weight(1f)
                                 .clip(RoundedCornerShape(9.dp))
                                 .background(if (selected) accent.copy(alpha = 0.15f) else Color.Transparent)
-                                .clickable { onPersonChange(p) }
+                                .clickable { onPersonChange(key) }
                                 .padding(vertical = 9.dp),
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = p,
+                                text = label,
                                 fontSize = 13.sp,
                                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                                 color = if (selected) accent else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),

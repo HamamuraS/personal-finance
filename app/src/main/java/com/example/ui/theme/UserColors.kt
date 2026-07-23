@@ -4,34 +4,39 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
+/** Rol del tema con el que se pinta una persona: su color activo ([PRIMARY]) o el del otro ([TERTIARY]). */
+enum class PersonaThemeRole { PRIMARY, TERTIARY }
+
+/**
+ * Decisión pura (testeable, sin Compose) de con qué rol del tema se pinta una persona.
+ *
+ * [MyApplicationTheme] pone el color del usuario activo en `primary` y el del otro en `tertiary`.
+ * Por eso, para que el color de una persona sea **estable** sin importar quién esté logueado, basta
+ * preguntar "¿este slot es el del usuario activo?": si sí, `primary` (que ya es su color); si no,
+ * `tertiary` (que es el color del otro, o sea de esta persona cuando ella no es la activa).
+ *
+ * Antes esto se decidía comparando contra el literal "Rocío"; ahora se parametriza comparando el
+ * [slotKey] contra el del usuario activo. La lógica es idéntica.
+ */
+fun personaThemeRole(slotKey: String, currentUserKey: String): PersonaThemeRole =
+    if (slotKey.equals(currentUserKey, ignoreCase = true)) PersonaThemeRole.PRIMARY
+    else PersonaThemeRole.TERTIARY
+
 /**
  * Color de identidad de una persona, **estable** sin importar quién sea el usuario activo.
  *
- * [MyApplicationTheme] intercambia `primary` ↔ `tertiary` cuando el usuario activo es Rocío, para
- * que "lo tuyo" siempre caiga en `primary`. En una vista **compartida** (que muestra a ambas
- * personas a la vez) tomar `primary`/`tertiary` a secas pintaría a la otra persona con el color
- * equivocado en cuanto cambia el usuario logueado. Este helper deshace esa inversión para que:
- *   - Santiago == verde (primary base)
- *   - Rocío    == azul  (tertiary base)
- * se mantengan constantes en toda la app, esté logueado quien esté.
- *
  * Regla práctica:
  *   - Si el acento representa a una **persona concreta** en una vista donde puede aparecer
- *     cualquiera de las dos → `personaColor(persona, currentUser)`.
+ *     cualquiera de las dos → `personaColor(slotKey, currentUserKey)`.
  *   - Si representa "vos" / la acción principal → `MaterialTheme.colorScheme.primary` directo
- *     (ya es el color del usuario activo por la inversión del tema).
+ *     (ya es el color del usuario activo por la construcción del tema).
  *
- * NOTA (parametrización futura): hoy la identidad se resuelve por nombre contra "Rocío". Cuando los
- * usuarios sean configurables (ver features/usuarios-parametrizables.md), este helper debería
- * recibir el color de cada usuario desde la config y dejar de comparar strings.
+ * [slotKey] y [currentUserKey] son claves internas de slot ("Santiago"/"Rocío"), no nombres
+ * visibles: el color sigue a la identidad estable, no a la etiqueta editable.
  */
 @Composable
-fun personaColor(persona: String, currentUser: String): Color {
-    val userRocio = currentUser.equals("Rocío", ignoreCase = true)
-    val esRocio = persona.equals("Rocío", ignoreCase = true)
-    return if (esRocio) {
-        if (userRocio) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary
-    } else {
-        if (userRocio) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary
+fun personaColor(slotKey: String, currentUserKey: String): Color =
+    when (personaThemeRole(slotKey, currentUserKey)) {
+        PersonaThemeRole.PRIMARY -> MaterialTheme.colorScheme.primary
+        PersonaThemeRole.TERTIARY -> MaterialTheme.colorScheme.tertiary
     }
-}

@@ -1,15 +1,13 @@
 package com.example.ui.theme
 
-import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
+import com.example.data.Usuario
+import com.example.data.UsuariosConfig
 
 private val DarkColorScheme = darkColorScheme(
     primary = DarkPrimary,
@@ -37,24 +35,35 @@ private val LightColorScheme = lightColorScheme(
     error = LightError
 )
 
+/**
+ * Tema de la app, con el color de marca **parametrizado por usuario**.
+ *
+ * Invariante que se conserva del diseño anterior: el **usuario activo siempre es `primary`** ("tu
+ * interfaz con tu color") y el otro es `tertiary`. Antes esto se lograba con un `isRocio` que
+ * intercambiaba dos colores fijos; ahora se construye el `ColorScheme` desde los colores
+ * **configurados** de cada usuario (ver UserColorPalette.kt). Todo el resto de la UI que usa
+ * `primary`/`tertiary` para "vos vs. el otro" sigue funcionando sin cambios, y `personaColor`
+ * (UserColors.kt) deshace la inversión donde hace falta pintar a una persona concreta.
+ *
+ * Con la config DEFAULT (Santiago verde / Rocío azul) el resultado es idéntico al histórico.
+ */
 @Composable
 fun MyApplicationTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    isRocio: Boolean = false,
+    activeUser: Usuario = UsuariosConfig.DEFAULT.primario,
+    otherUser: Usuario = UsuariosConfig.DEFAULT.secundario,
     content: @Composable () -> Unit,
 ) {
-    val baseColorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
-    
-    // Invertir colores si el usuario es Rocío (Azul pasa a ser Primary, Verde a Tertiary)
-    val colorScheme = if (isRocio) {
-        baseColorScheme.copy(
-            primary = baseColorScheme.tertiary,
-            tertiary = baseColorScheme.primary,
-            onPrimary = baseColorScheme.onPrimary
-        )
-    } else {
-        baseColorScheme
-    }
+    val base = if (darkTheme) DarkColorScheme else LightColorScheme
+    val mine = presetOf(activeUser.colorId).resolve(darkTheme)   // "lo tuyo" → primary
+    val yours = presetOf(otherUser.colorId).resolve(darkTheme)   // el otro   → tertiary
+
+    val colorScheme = base.copy(
+        primary = mine.brand,
+        onPrimary = mine.on,
+        tertiary = yours.brand,
+        onTertiary = yours.on,
+    )
 
     MaterialTheme(
         colorScheme = colorScheme,

@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.Collections
 import androidx.core.content.FileProvider
 import coil.compose.AsyncImage
 import com.example.ui.AhorroViewModel
+import com.example.ui.MovementDraft
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
@@ -112,35 +113,47 @@ fun AddMovementScreen(
     val scrollState = rememberScrollState()
 
     val currentUserProfile by viewModel.currentUserProfile.collectAsState()
+    val usuarios by viewModel.usuarios.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
-    
-    // Estados locales del formulario
-    var monto by remember { mutableStateOf("") }
-    var tipo by remember { mutableStateOf("Gasto") } // "Gasto", "Aporte", "Transferencia"
-    var esComun by remember { mutableStateOf(false) } // personal por defecto
-    val responsable = currentUserProfile // Siempre el usuario actual
-    var metodoPago by remember { mutableStateOf("Billetera Virtual") } // "Efectivo", "Billetera Virtual"
-    var propietario by remember { mutableStateOf(currentUserProfile) }
-    var descripcion by remember { mutableStateOf("") }
-    var ticketUri by remember { mutableStateOf<Uri?>(null) }
-    var tempPhotoUri by remember { mutableStateOf<Uri?>(null) }
 
-    // Fecha por defecto: hoy en formato YYYY-MM-DD HH:mm
-    val currentCalendar = remember { Calendar.getInstance() }
-    val dateFormatter = remember { SimpleDateFormat("yyyy-MM-dd", Locale.US) }
-    val timeFormatter = remember { SimpleDateFormat("HH:mm", Locale.US) }
-    var fecha by remember { mutableStateOf(dateFormatter.format(currentCalendar.time)) }
-    var hora by remember { mutableStateOf(timeFormatter.format(currentCalendar.time)) }
+    // Nombre visible del usuario activo (para textos); la lógica sigue usando el slotKey.
+    val miNombre = usuarios.nombreDe(currentUserProfile)
 
-    // Categorías basadas en Tipo y Comunalidad
+    // Categorías basadas en Tipo (declaradas antes para derivar defaults del borrador)
     val listAportes = listOf("Sueldo", "Transferencias", "Otros")
     val listGastos = listOf(
         "Transporte", "Servicios", "Animales", "Supermercado", "Verdulería",
-        "Farmacia", "Cuidado personal", "Salidas", "Gustos", "Utilería", "Otros"
+        "Farmacia", "Indumentaria", "Cuidado personal", "Salidas", "Gustos", "Utilería", "Otros"
     )
     val listTransferencias = listOf("Ajuste", "Reembolso", "Otros")
+    fun categoriaDefault(t: String): String = when (t) {
+        "Aporte" -> listAportes.first()
+        "Transferencia" -> listTransferencias.first()
+        else -> listGastos.first()
+    }
 
-    var categoria by remember { mutableStateOf("") }
+    // Fechas base
+    val currentCalendar = remember { Calendar.getInstance() }
+    val dateFormatter = remember { SimpleDateFormat("yyyy-MM-dd", Locale.US) }
+    val timeFormatter = remember { SimpleDateFormat("HH:mm", Locale.US) }
+    val hoyIso = remember { dateFormatter.format(currentCalendar.time) }
+    val horaActual = remember { timeFormatter.format(currentCalendar.time) }
+
+    // --- Borrador persistente: el estado local se SIEMBRA del borrador del VM (que sobrevive al
+    // cambio de pestaña) y se VUELCA a él en cada cambio. Campos vacíos usan el default. ---
+    val savedDraft = remember { viewModel.movementDraft.value }
+    var monto by remember { mutableStateOf(savedDraft.monto) }
+    var tipo by remember { mutableStateOf(savedDraft.tipo) } // "Gasto", "Aporte", "Transferencia"
+    var esComun by remember { mutableStateOf(savedDraft.esComun) }
+    val responsable = currentUserProfile // Siempre el usuario actual (slotKey)
+    var metodoPago by remember { mutableStateOf(savedDraft.metodoPago) }
+    var propietario by remember { mutableStateOf(savedDraft.propietario.ifEmpty { currentUserProfile }) }
+    var descripcion by remember { mutableStateOf(savedDraft.descripcion) }
+    var categoria by remember { mutableStateOf(savedDraft.categoria) }
+    var fecha by remember { mutableStateOf(savedDraft.fecha.ifEmpty { hoyIso }) }
+    var hora by remember { mutableStateOf(savedDraft.hora.ifEmpty { horaActual }) }
+    var ticketUri by remember { mutableStateOf(savedDraft.ticketUriString?.let { Uri.parse(it) }) }
+    var tempPhotoUri by remember { mutableStateOf<Uri?>(null) }
 
     val cameraPermissionState = rememberPermissionState(
         android.Manifest.permission.CAMERA
@@ -163,26 +176,51 @@ fun AddMovementScreen(
         }
     }
 
-    // Resetear categoría cuando cambia tipo o esComun
-    LaunchedEffect(tipo, esComun, currentUserProfile) {
-        categoria = when (tipo) {
-            "Aporte" -> "Sueldo"
-            "Transferencia" -> listTransferencias.first()
-            "Gasto" -> listGastos.first()
-            else -> "Otros"
+    // Reset de categoría/propietario SOLO cuando el usuario cambia tipo/comunalidad (no en la primera
+    // composición, para no pisar el borrador restaurado).
+    var resetInicializado by remember { mutableStateOf(false) }
+    LaunchedEffect(tipo, esComun) {
+        if (!resetInicializado) {
+            resetInicializado = true
+            if (categoria.isEmpty()) categoria = categoriaDefault(tipo)
+            return@LaunchedEffect
         }
-        
-        // Predeterminar propietario
-        propietario = when {
-            tipo == "Gasto" && esComun -> "Ambos"
-            else -> currentUserProfile // Aporte, Transferencia (sigue siendo mía) y Gasto personal
-        }
+        categoria = categoriaDefault(tipo)
+        propietario = if (tipo == "Gasto" && esComun) "Ambos" else currentUserProfile
+    }
+
+    // Volcar el estado al borrador del VM para que sobreviva el cambio de pestaña.
+    LaunchedEffect(monto, tipo, esComun, metodoPago, propietario, descripcion, categoria, fecha, ticketUri) {
+        viewModel.setMovementDraft(
+            MovementDraft(
+                monto = monto, tipo = tipo, esComun = esComun, metodoPago = metodoPago,
+                propietario = propietario, descripcion = descripcion, fecha = fecha, hora = hora,
+                categoria = categoria, ticketUriString = ticketUri?.toString()
+            )
+        )
+    }
+
+    // Limpia el formulario (botón "Limpiar" del top bar).
+    fun limpiarFormulario() {
+        monto = ""; tipo = "Gasto"; esComun = false; metodoPago = "Billetera Virtual"
+        descripcion = ""; ticketUri = null; tempPhotoUri = null
+        fecha = hoyIso; hora = horaActual
+        propietario = currentUserProfile
+        categoria = categoriaDefault("Gasto")
+        viewModel.clearMovementDraft()
     }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("Registrar Movimiento", fontWeight = FontWeight.Bold, fontSize = 20.sp) },
+                actions = {
+                    TextButton(onClick = { limpiarFormulario() }) {
+                        Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Limpiar", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background
                 )
@@ -395,7 +433,7 @@ fun AddMovementScreen(
                         ) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                                 Text("Personal", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                                Text("Paga solo $responsable", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f), maxLines = 1)
+                                Text("Paga solo $miNombre", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f), maxLines = 1)
                             }
                         }
                     }
@@ -407,7 +445,7 @@ fun AddMovementScreen(
                 Column {
                     val label = when(tipo) {
                         "Aporte" -> "¿En qué cuenta entra?"
-                        "Transferencia" -> "¿La plata sigue siendo de $currentUserProfile?"
+                        "Transferencia" -> "¿La plata sigue siendo de $miNombre?"
                         else -> "¿Quién debe pagar realmente?"
                     }
                     Text(
@@ -422,8 +460,9 @@ fun AddMovementScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        val otherUser = if (currentUserProfile == "Santiago") "Rocío" else "Santiago"
-                        
+                        val otherUser = usuarios.elOtro(currentUserProfile).slotKey
+                        val otherNombre = usuarios.nombreDe(otherUser)
+
                         // Opción 1: Mío (o sigue siendo mío)
                         val isMine = propietario == currentUserProfile
                         Button(
@@ -452,9 +491,9 @@ fun AddMovementScreen(
                             modifier = Modifier.weight(1f).height(44.dp)
                         ) {
                             val text = when(tipo) {
-                                "Transferencia" -> "No, es de $otherUser"
-                                "Aporte" -> "De $otherUser"
-                                else -> "De $otherUser"
+                                "Transferencia" -> "No, es de $otherNombre"
+                                "Aporte" -> "De $otherNombre"
+                                else -> "De $otherNombre"
                             }
                             Text(text, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }

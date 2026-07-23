@@ -3,8 +3,11 @@ package com.example.ui.theme
 import androidx.compose.ui.graphics.Color
 
 // Geometric Balance Theme Palette
-val GeoGreenPrimary = Color(0xFF386B3F) // Deep Sage Green (Santiago and main actions)
-val GeoBlueTertiary = Color(0xFF4A607A) // Slate Blue / Navy (Rocío)
+// Nota: GeoGreen*/GeoBlue*/GeoDark* ya no están atados a "Santiago"/"Rocío": son la fuente de los
+// dos primeros presets de usuario (ver UserColorPalette.kt). El tema (Theme.kt) arma primary/tertiary
+// desde el preset elegido por cada usuario, no desde estas constantes directamente.
+val GeoGreenPrimary = Color(0xFF386B3F) // Deep Sage Green (preset "green" — slot primario histórico)
+val GeoBlueTertiary = Color(0xFF4A607A) // Slate Blue / Navy (preset "blue" — slot secundario histórico)
 
 val GeoDarkText = Color(0xFF191C19) // Deep obsidian charcoal/near black
 val GeoBackground = Color(0xFFF7FAF6) // Warm sage white/mint-gray
