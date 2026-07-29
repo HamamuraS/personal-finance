@@ -29,6 +29,8 @@ class PreferencesHelper(context: Context) {
         private const val KEY_PLANS_CACHE = "plans_cache"
         private const val KEY_USERS_CACHE = "users_cache"
         private const val KEY_HAS_CHOSEN_IDENTITY = "has_chosen_identity"
+        private const val KEY_LAST_CIERRE_NOTIFICADO = "last_cierre_notificado"
+        private const val KEY_LAST_ATRASO_NOTIFICADO = "last_atraso_notificado"
     }
 
     var isDarkMode: Boolean
@@ -63,6 +65,19 @@ class PreferencesHelper(context: Context) {
     var hasChosenIdentity: Boolean
         get() = prefs.getBoolean(KEY_HAS_CHOSEN_IDENTITY, false)
         set(value) = prefs.edit().putBoolean(KEY_HAS_CHOSEN_IDENTITY, value).apply()
+
+    // --- Notificaciones de cuotas (deduplicación: evita re-notificar el mismo período si el
+    // Worker corre más de una vez, p. ej. por un reintento) ---
+
+    // Último mes (yyyy-MM) para el que ya se notificó el recordatorio de cierre de mes.
+    var lastCierreNotificado: String
+        get() = prefs.getString(KEY_LAST_CIERRE_NOTIFICADO, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_LAST_CIERRE_NOTIFICADO, value).apply()
+
+    // Último lunes (yyyy-MM-dd) para el que ya se notificó el recordatorio de atrasos.
+    var lastAtrasoNotificado: String
+        get() = prefs.getString(KEY_LAST_ATRASO_NOTIFICADO, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_LAST_ATRASO_NOTIFICADO, value).apply()
 
     // Guarda los movimientos para el modo local
     fun saveLocalMovements(movements: List<Movement>) {

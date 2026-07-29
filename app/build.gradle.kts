@@ -6,6 +6,7 @@ plugins {
   alias(libs.plugins.google.devtools.ksp)
   alias(libs.plugins.roborazzi)
   alias(libs.plugins.secrets)
+  alias(libs.plugins.firebase.appdistribution)
 }
 
 android {
@@ -93,6 +94,17 @@ secrets {
   defaultPropertiesFileName = ".env.example"
 }
 
+// Distribución sin costo a testers (ver features/actualizaciones-sin-costo.md, Nivel 1).
+// No requiere google-services.json: el App ID y las credenciales de servicio llegan por variables
+// de entorno (secrets de GitHub Actions en CI; vacíos en un build local, que simplemente no podrá
+// correr `appDistributionUploadRelease` hasta configurarlas).
+firebaseAppDistributionDefault {
+  appId = System.getenv("FIREBASE_APP_ID") ?: ""
+  serviceCredentialsFile = System.getenv("FIREBASE_SERVICE_CREDENTIALS_FILE") ?: ""
+  releaseNotes = System.getenv("FIREBASE_RELEASE_NOTES") ?: "Nueva versión disponible."
+  groups = System.getenv("FIREBASE_TESTER_GROUPS") ?: ""
+}
+
 // Some unused dependencies are commented out below instead of being removed.
 // This makes it easy to add them back in the future if needed.
 dependencies {
@@ -131,6 +143,7 @@ dependencies {
   implementation(libs.google.play.services.auth)
   // implementation(libs.play.services.location)
   implementation(libs.retrofit)
+  implementation(libs.androidx.work.runtime.ktx)
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
   testImplementation(libs.androidx.junit)

@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import com.example.data.notifications.CuotasReminderScheduler
 import com.example.ui.AhorroViewModel
 import com.example.ui.components.AddMovementScreen
 import com.example.ui.components.CuotasScreen
@@ -40,7 +41,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        
+        CuotasReminderScheduler.schedule(applicationContext)
+
         setContent {
             val userProfile by viewModel.currentUserProfile.collectAsState()
             val isDarkMode by viewModel.isDarkMode.collectAsState()

@@ -122,7 +122,7 @@ fun AddMovementScreen(
     // Categorías basadas en Tipo (declaradas antes para derivar defaults del borrador)
     val listAportes = listOf("Sueldo", "Transferencias", "Otros")
     val listGastos = listOf(
-        "Transporte", "Servicios", "Animales", "Supermercado", "Verdulería",
+        "Transporte", "Servicios", "Animales", "Supermercado", "Verdulería", "Alimentos frescos",
         "Farmacia", "Indumentaria", "Cuidado personal", "Salidas", "Gustos", "Utilería", "Otros"
     )
     val listTransferencias = listOf("Ajuste", "Reembolso", "Otros")
@@ -760,9 +760,7 @@ fun AddMovementScreen(
                         metodoPago = metodoPago,
                         ticketUri = ticketUri,
                         onSuccess = {
-                            monto = ""
-                            descripcion = ""
-                            ticketUri = null
+                            limpiarFormulario()
                             onSuccess()
                         }
                     )

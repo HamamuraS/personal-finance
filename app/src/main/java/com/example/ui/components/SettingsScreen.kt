@@ -9,6 +9,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import android.os.Build
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.*
@@ -18,16 +19,24 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.CuotaPlan
+import com.example.data.Movement
 import com.example.data.Usuario
+import com.example.data.notifications.CuotasNotifier
 import com.example.ui.AhorroViewModel
+import com.example.ui.CuotasEngine
 import com.example.ui.theme.USER_COLOR_PRESETS
 import com.example.ui.theme.presetOf
+import com.google.accompanist.permissions.ExperimentalPermissionsApi
+import com.google.accompanist.permissions.isGranted
+import com.google.accompanist.permissions.rememberPermissionState
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalPermissionsApi::class)
 @Composable
 fun SettingsScreen(
     viewModel: AhorroViewModel
@@ -43,6 +52,8 @@ fun SettingsScreen(
     val isDarkModeState = viewModel.isDarkMode.collectAsState()
     val isLoadingState = viewModel.isLoading.collectAsState()
     val errorMessageState = viewModel.errorMessage.collectAsState()
+    val plansState = viewModel.plans.collectAsState()
+    val allMovementsState = viewModel.allMovements.collectAsState()
 
     var scriptInput by remember { mutableStateOf(scriptUrlState.value) }
     var folderInput by remember { mutableStateOf(folderIdState.value) }
@@ -286,6 +297,15 @@ fun SettingsScreen(
                 }
             }
 
+            // Tarjeta de prueba de Notificaciones de Cuotas (ver features/notificaciones-cuotas.md)
+            CuotasNotificationTestCard(
+                cardBg = cardBg,
+                cardBorder = cardBorder,
+                plans = plansState.value,
+                allMovements = allMovementsState.value,
+                currentUserProfile = currentUserProfileState.value
+            )
+
             // Información sobre reglas
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -316,6 +336,98 @@ fun SettingsScreen(
             }
 
             Spacer(modifier = Modifier.height(20.dp))
+        }
+    }
+}
+
+/**
+ * Tarjeta de prueba de las notificaciones de cuotas (ver `features/notificaciones-cuotas.md`).
+ * Dispara [CuotasNotifier] directo con los datos YA CARGADOS en el ViewModel — sin el gating de
+ * fecha (último día del mes / lunes) ni la deduplicación que sí aplica el Worker real — para poder
+ * validar canal, permiso y texto sin esperar al horario programado.
+ */
+@OptIn(ExperimentalPermissionsApi::class)
+@Composable
+private fun CuotasNotificationTestCard(
+    cardBg: Color,
+    cardBorder: Color,
+    plans: List<CuotaPlan>,
+    allMovements: List<Movement>,
+    currentUserProfile: String
+) {
+    val context = LocalContext.current
+    val notifPermissionState = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        rememberPermissionState(android.Manifest.permission.POST_NOTIFICATIONS)
+    } else null
+    val permisoConcedido = notifPermissionState == null || notifPermissionState.status.isGranted
+
+    val mesActual = remember {
+        java.text.SimpleDateFormat("yyyy-MM", java.util.Locale.US).format(java.util.Date())
+    }
+    val misPlanes = remember(plans, currentUserProfile) {
+        plans.filter { it.propietario.equals(currentUserProfile, ignoreCase = true) }
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = cardBg),
+        border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = "Notificaciones de cuotas (prueba)",
+                fontWeight = FontWeight.Bold,
+                fontSize = 15.sp,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = "Usan los datos ya cargados, no reflejan el horario real. El recordatorio automático corre solo (último día del mes y todos los lunes, 9am hora Argentina).",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+            )
+
+            if (!permisoConcedido) {
+                Button(
+                    onClick = { notifPermissionState?.launchPermissionRequest() },
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                    modifier = Modifier.fillMaxWidth().height(40.dp)
+                ) {
+                    Icon(Icons.Default.Notifications, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Habilitar notificaciones", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+            } else {
+                OutlinedButton(
+                    onClick = {
+                        val total = CuotasEngine.cuotasImpagasDelMes(mesActual, misPlanes, allMovements)
+                            .sumOf { (_, cuota) -> cuota.monto }
+                        CuotasNotifier.notificarCierreDeMes(context, total)
+                    },
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth().height(40.dp)
+                ) {
+                    Text("Probar recordatorio de cierre de mes", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        val total = CuotasEngine.recordatoriosDelMes(mesActual, misPlanes, allMovements)
+                            .filter { it.atrasada }
+                            .sumOf { it.cuota.monto }
+                        CuotasNotifier.notificarAtrasos(context, total)
+                    },
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth().height(40.dp)
+                ) {
+                    Text("Probar recordatorio de atrasos", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+            }
         }
     }
 }

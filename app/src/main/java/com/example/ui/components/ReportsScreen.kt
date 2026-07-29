@@ -327,7 +327,10 @@ fun ReportCategoriasCard(
                     Text(label, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
                 }
             } else {
-                sumPorCategoria.take(6).forEach { (catName, amount) ->
+                // Se muestran TODAS las categorías con gasto (antes se truncaba a las primeras 6,
+                // lo que podía esconder silenciosamente categorías con montos menores, dando la
+                // falsa impresión de que ciertos gastos —p.ej. en efectivo— no se estaban sumando).
+                sumPorCategoria.forEach { (catName, amount) ->
                     val percentage = (amount / totalGastos).toFloat()
                     Column(modifier = Modifier.fillMaxWidth()) {
                         Row(

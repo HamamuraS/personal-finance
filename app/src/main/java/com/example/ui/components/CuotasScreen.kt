@@ -45,7 +45,7 @@ import java.util.Locale
 
 // Categorías del gasto que generará cada cuota (mismo set que los gastos en AddMovementScreen).
 private val CATEGORIAS_CUOTAS = listOf(
-    "Transporte", "Servicios", "Animales", "Supermercado", "Verdulería",
+    "Transporte", "Servicios", "Animales", "Supermercado", "Verdulería", "Alimentos frescos",
     "Farmacia", "Indumentaria", "Cuidado personal", "Salidas", "Gustos", "Utilería", "Otros"
 )
 
