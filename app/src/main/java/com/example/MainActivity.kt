@@ -1,5 +1,6 @@
 package com.example
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -38,10 +39,15 @@ class MainActivity : ComponentActivity() {
 
     private val viewModel: AhorroViewModel by viewModels()
 
+    // Pestaña pedida desde afuera (p. ej. al tocar la notificación de cuotas). `onNewIntent` la
+    // actualiza si la Activity ya estaba viva; el `LaunchedEffect` de más abajo la consume.
+    private var pendingOpenTab by mutableStateOf<ScreenTab?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         CuotasReminderScheduler.schedule(applicationContext)
+        pendingOpenTab = tabFromIntent(intent)
 
         setContent {
             val userProfile by viewModel.currentUserProfile.collectAsState()
@@ -61,7 +67,16 @@ class MainActivity : ComponentActivity() {
                     return@MyApplicationTheme
                 }
 
-                var currentTab by remember { mutableStateOf(ScreenTab.INICIO) }
+                var currentTab by remember { mutableStateOf(pendingOpenTab ?: ScreenTab.INICIO) }
+
+                // Si se toca la notificación de cuotas con la Activity ya viva, `onNewIntent`
+                // actualiza `pendingOpenTab` y este efecto salta de pestaña.
+                LaunchedEffect(pendingOpenTab) {
+                    pendingOpenTab?.let {
+                        currentTab = it
+                        pendingOpenTab = null
+                    }
+                }
 
                 val movements by viewModel.movements.collectAsState()
                 val balance by viewModel.balance.collectAsState()
@@ -178,6 +193,21 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        pendingOpenTab = tabFromIntent(intent)
+    }
+
+    companion object {
+        const val EXTRA_OPEN_TAB = "open_tab"
+
+        private fun tabFromIntent(intent: Intent?): ScreenTab? =
+            intent?.getStringExtra(EXTRA_OPEN_TAB)?.let { name ->
+                runCatching { ScreenTab.valueOf(name) }.getOrNull()
+            }
     }
 }
 
