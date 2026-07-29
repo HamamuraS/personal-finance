@@ -1,11 +1,11 @@
 name: Release y distribución a testers
 
-# Se dispara solo con un push a main, o a mano desde la pestaña "Actions" de GitHub
-# (botón "Run workflow"). Ver features/actualizaciones-sin-costo.md y GUIA-ACTUALIZACIONES.md
-# para la explicación paso a paso de qué hace esto y qué secrets hay que cargar antes.
+# Se dispara SOLO a mano, desde la pestaña "Actions" de GitHub (botón "Run workflow").
+# El trigger automático por `push` a main está desactivado a propósito mientras se termina de
+# configurar (ver GUIA-ACTUALIZACIONES.md) — para reactivarlo, descomentar las 2 líneas de abajo.
 on:
-  push:
-    branches: [main]
+  # push:
+  #   branches: [main]
   workflow_dispatch: {}
 
 jobs:
