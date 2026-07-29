@@ -1,0 +1,77 @@
+package com.example.data.notifications
+
+import android.Manifest
+import android.annotation.SuppressLint
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.app.ActivityCompat
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import com.example.R
+import java.text.DecimalFormat
+import java.text.DecimalFormatSymbols
+import java.util.Locale
+
+/**
+ * Muestra los recordatorios de cuotas (cierre de mes / atrasos) como notificaciones nativas.
+ * No decide CUÁNDO notificar (eso es responsabilidad de [com.example.data.notifications.CuotasReminderWorker]
+ * o, para pruebas, de quien llame directamente con datos ya cargados) — solo arma y dispara.
+ */
+object CuotasNotifier {
+    const val CHANNEL_ID = "cuotas_recordatorios"
+    private const val NOTIF_ID_CIERRE = 1001
+    private const val NOTIF_ID_ATRASO = 1002
+
+    fun formatMoney(): DecimalFormat = DecimalFormat("#,##0.00").apply {
+        decimalFormatSymbols = DecimalFormatSymbols(Locale.US).apply {
+            groupingSeparator = '.'
+            decimalSeparator = ','
+        }
+        positivePrefix = "$ "
+    }
+
+    fun hasPermission(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return true
+        return ActivityCompat.checkSelfPermission(
+            context, Manifest.permission.POST_NOTIFICATIONS
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    fun ensureChannel(context: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            "Recordatorios de cuotas",
+            NotificationManager.IMPORTANCE_DEFAULT
+        ).apply { description = "Avisos de cuotas por pagar y atrasadas" }
+        context.getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
+    }
+
+    fun notificarCierreDeMes(context: Context, total: Double) {
+        val texto = "Este mes te quedan ${formatMoney().format(total)} en cuotas por pagar en tus tarjetas 💳"
+        show(context, NOTIF_ID_CIERRE, "Cuotas del mes", texto)
+    }
+
+    fun notificarAtrasos(context: Context, total: Double) {
+        val texto = "Tenés ${formatMoney().format(total)} en cuotas atrasadas de meses anteriores 👀"
+        show(context, NOTIF_ID_ATRASO, "Cuotas atrasadas", texto)
+    }
+
+    @SuppressLint("MissingPermission") // chequeado explícitamente arriba con hasPermission()
+    private fun show(context: Context, notifId: Int, titulo: String, texto: String) {
+        if (!hasPermission(context)) return
+        ensureChannel(context)
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle(titulo)
+            .setContentText(texto)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(texto))
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setAutoCancel(true)
+            .build()
+        NotificationManagerCompat.from(context).notify(notifId, notification)
+    }
+}
