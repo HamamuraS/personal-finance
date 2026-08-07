@@ -245,6 +245,56 @@ class CuotasEngineTest {
     }
 
     // ---------------------------------------------------------------------------------------------
+    // Aviso de cierre de mes y su ventana de recuperación
+    // ---------------------------------------------------------------------------------------------
+
+    @Test
+    fun elAvisoDeCierreSaleElUltimoDiaDelMes() {
+        val a = CuotasEngine.avisoDeCierre("2026-07", diaDelMes = 31, ultimoDiaDelMes = 31, yaAvisado = "")
+        assertTrue(a.corresponde)
+        assertEquals("2026-07", a.mes)
+        assertFalse(a.esRecupero)
+    }
+
+    @Test
+    fun siElWorkerNoCorrioElUltimoDiaElAvisoSeRecuperaAlPrincipioDelMesSiguiente() {
+        // WorkManager no garantiza el horario: la corrida del 31/07 puede caer el 02/08.
+        val a = CuotasEngine.avisoDeCierre("2026-08", diaDelMes = 2, ultimoDiaDelMes = 31, yaAvisado = "")
+        assertTrue(a.corresponde)
+        assertEquals("2026-07", a.mes)   // avisa por JULIO, no por agosto
+        assertTrue(a.esRecupero)
+    }
+
+    @Test
+    fun elRecuperoNoRepiteUnAvisoQueYaSalio() {
+        val a = CuotasEngine.avisoDeCierre("2026-08", diaDelMes = 2, ultimoDiaDelMes = 31, yaAvisado = "2026-07")
+        assertFalse(a.corresponde)
+    }
+
+    @Test
+    fun fueraDeLaVentanaNoSeAvisaElCierre() {
+        val a = CuotasEngine.avisoDeCierre("2026-08", diaDelMes = 10, ultimoDiaDelMes = 31, yaAvisado = "")
+        assertFalse(a.corresponde)
+    }
+
+    @Test
+    fun elRecuperoCruzaElCambioDeAnio() {
+        val a = CuotasEngine.avisoDeCierre("2027-01", diaDelMes = 1, ultimoDiaDelMes = 31, yaAvisado = "")
+        assertTrue(a.corresponde)
+        assertEquals("2026-12", a.mes)
+        assertTrue(a.esRecupero)
+    }
+
+    @Test
+    fun elUltimoDiaNuncaCaeDentroDeLaVentanaDeRecupero() {
+        // Un mes cierra siempre en día >= 28, así que las dos ventanas no se superponen —
+        // incluido febrero, el mes más corto.
+        val febrero = CuotasEngine.avisoDeCierre("2026-02", diaDelMes = 28, ultimoDiaDelMes = 28, yaAvisado = "")
+        assertEquals("2026-02", febrero.mes)
+        assertFalse(febrero.esRecupero)
+    }
+
+    // ---------------------------------------------------------------------------------------------
     // Convivencia con el saldo inicial materializado (filas de apertura, v7.2)
     // ---------------------------------------------------------------------------------------------
 

@@ -1,8 +1,11 @@
 package com.example
 
+import android.Manifest
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
@@ -21,6 +24,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import com.example.data.PreferencesHelper
 import com.example.data.notifications.CuotasReminderScheduler
 import com.example.ui.AhorroViewModel
 import com.example.ui.components.AddMovementScreen
@@ -43,10 +47,30 @@ class MainActivity : ComponentActivity() {
     // actualiza si la Activity ya estaba viva; el `LaunchedEffect` de más abajo la consume.
     private var pendingOpenTab by mutableStateOf<ScreenTab?>(null)
 
+    private val pedirPermisoNotificaciones =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* sin acción */ }
+
+    /**
+     * Pide POST_NOTIFICATIONS en el primer arranque. Sin este permiso los recordatorios de cuotas
+     * se descartan **en silencio** (ver `CuotasNotifier.show`), y antes el único lugar que lo pedía
+     * era un botón escondido en Ajustes: si nadie entraba ahí, las notificaciones no llegaban nunca.
+     *
+     * Se pide una sola vez. Android deja de mostrar el diálogo tras dos rechazos, así que insistir
+     * en cada arranque solo serviría para quemar el pedido; después queda el botón de Ajustes.
+     */
+    private fun pedirPermisoDeNotificacionesUnaVez() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val prefs = PreferencesHelper(applicationContext)
+        if (prefs.notifPermisoPedido) return
+        prefs.notifPermisoPedido = true
+        pedirPermisoNotificaciones.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         CuotasReminderScheduler.schedule(applicationContext)
+        pedirPermisoDeNotificacionesUnaVez()
         pendingOpenTab = tabFromIntent(intent)
 
         setContent {

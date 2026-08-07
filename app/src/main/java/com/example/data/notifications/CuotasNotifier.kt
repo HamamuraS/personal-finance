@@ -54,9 +54,30 @@ object CuotasNotifier {
         context.getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
     }
 
-    fun notificarCierreDeMes(context: Context, total: Double) {
-        val texto = "Este mes te quedan ${formatMoney().format(total)} en cuotas por pagar en tus tarjetas 💳"
-        show(context, NOTIF_ID_CIERRE, "Cuotas del mes", texto)
+    /**
+     * @param mes "yyyy-MM" del resumen que cierra.
+     * @param yaCerro `true` cuando el aviso sale en la ventana de recuperación (el mes ya terminó y
+     *        el worker no llegó a correr el último día). Cambia el texto para que no diga "este mes"
+     *        cuando en realidad se está hablando del anterior.
+     */
+    fun notificarCierreDeMes(context: Context, total: Double, mes: String, yaCerro: Boolean = false) {
+        val monto = formatMoney().format(total)
+        val texto = if (yaCerro) {
+            "Cerró ${mesLabel(mes)} y te quedan $monto en cuotas por pagar en tus tarjetas 💳"
+        } else {
+            "Este mes te quedan $monto en cuotas por pagar en tus tarjetas 💳"
+        }
+        show(context, NOTIF_ID_CIERRE, "Cuotas de ${mesLabel(mes)}", texto)
+    }
+
+    /** "2026-07" -> "julio". Si no es parseable, devuelve la entrada tal cual. */
+    fun mesLabel(mes: String): String {
+        val nombres = listOf(
+            "enero", "febrero", "marzo", "abril", "mayo", "junio",
+            "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"
+        )
+        val n = mes.split("-").getOrNull(1)?.toIntOrNull() ?: return mes
+        return nombres.getOrNull(n - 1) ?: mes
     }
 
     fun notificarAtrasos(context: Context, total: Double) {

@@ -78,6 +78,43 @@ object CuotasEngine {
      */
     fun mesAPagar(mes: String): String = addMonths(mes, -1)
 
+    /** Resultado de [avisoDeCierre]. */
+    data class AvisoDeCierre(
+        val corresponde: Boolean,
+        val mes: String,          // "yyyy-MM" del resumen que cerró
+        val esRecupero: Boolean   // el aviso sale tarde: el mes ya terminó
+    )
+
+    /**
+     * ¿Corresponde hoy el aviso de "cierre de mes", y sobre qué mes?
+     *
+     * Se dispara el último día del mes. Pero WorkManager no garantiza el horario (Doze, ahorro de
+     * batería, teléfono apagado), y si esa única corrida se pierde el aviso se perdía para siempre.
+     * Por eso hay una ventana de recuperación los primeros [diasDeRecupero] días del mes siguiente,
+     * en la que se avisa por el mes que cerró. Un mes cierra siempre en día >= 28, así que las dos
+     * ventanas nunca se superponen.
+     *
+     * @param yaAvisado valor de `lastCierreNotificado`: el ÚLTIMO MES ya avisado. Como se compara
+     *        contra el mes del cierre (y no contra el mes calendario), si el aviso ya salió el
+     *        día 31 el recupero no lo repite.
+     */
+    fun avisoDeCierre(
+        mesActual: String,
+        diaDelMes: Int,
+        ultimoDiaDelMes: Int,
+        yaAvisado: String,
+        diasDeRecupero: Int = 5
+    ): AvisoDeCierre {
+        val esUltimoDia = diaDelMes == ultimoDiaDelMes
+        val esRecupero = !esUltimoDia && diaDelMes <= diasDeRecupero
+        val mes = if (esUltimoDia) mesActual else mesAPagar(mesActual)
+        return AvisoDeCierre(
+            corresponde = (esUltimoDia || esRecupero) && yaAvisado != mes,
+            mes = mes,
+            esRecupero = esRecupero
+        )
+    }
+
     /**
      * Cuotas **impagas** cuyo vencimiento es `<= mes` (incluye **atrasadas** de meses previos).
      * Alimenta los recordatorios: "qué cuotas tengo que pagar a esta altura".

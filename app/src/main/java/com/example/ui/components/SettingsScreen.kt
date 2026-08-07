@@ -397,7 +397,7 @@ private fun CuotasNotificationTestCard(
                     onClick = {
                         val total = CuotasEngine.cuotasImpagasDelMes(mesActual, misPlanes, allMovements)
                             .sumOf { (_, cuota) -> cuota.monto }
-                        CuotasNotifier.notificarCierreDeMes(context, total)
+                        CuotasNotifier.notificarCierreDeMes(context, total, mesActual)
                     },
                     shape = RoundedCornerShape(10.dp),
                     modifier = Modifier.fillMaxWidth().height(40.dp)

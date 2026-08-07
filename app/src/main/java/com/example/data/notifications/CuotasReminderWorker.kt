@@ -19,6 +19,13 @@ import java.util.TimeZone
  *
  * Reutiliza [CuotasEngine] (el mismo motor puro que usa la UI) para no duplicar la lógica de
  * negocio; el estado de "pagada" sigue siendo derivado de los movimientos, nunca duplicado.
+ *
+ * **Recuperación del aviso de cierre.** WorkManager no garantiza el horario: con Doze, ahorro de
+ * batería agresivo o el teléfono apagado, la corrida del día 31 puede caer recién el 1°. Antes eso
+ * perdía el aviso de ese mes para siempre (una sola oportunidad, y el flag de deduplicación impedía
+ * el reintento). Ahora el worker también se despierta los primeros [DIAS_RECUPERO_CIERRE] días del
+ * mes siguiente y, si nunca avisó por el mes que cerró, lo hace ahí. El de atrasos no lo necesita:
+ * los atrasos siguen existiendo el lunes siguiente, así que se auto-cura.
  */
 class CuotasReminderWorker(
     context: Context,
@@ -27,21 +34,32 @@ class CuotasReminderWorker(
 
     companion object {
         val ARGENTINA_TZ: TimeZone = TimeZone.getTimeZone("America/Argentina/Buenos_Aires")
+
+        /** Días del mes siguiente en los que todavía se intenta el aviso de cierre no enviado. */
+        const val DIAS_RECUPERO_CIERRE = 5
     }
 
     override suspend fun doWork(): Result {
         val prefs = PreferencesHelper(applicationContext)
         val hoy = Calendar.getInstance(ARGENTINA_TZ)
-        val esUltimoDiaDelMes = hoy.get(Calendar.DAY_OF_MONTH) == hoy.getActualMaximum(Calendar.DAY_OF_MONTH)
         val esLunes = hoy.get(Calendar.DAY_OF_WEEK) == Calendar.MONDAY
-
-        // Nada que evaluar hoy: no hace falta ni refrescar datos.
-        if (!esUltimoDiaDelMes && !esLunes) return Result.success()
 
         val mesFormat = SimpleDateFormat("yyyy-MM", Locale.US).apply { timeZone = ARGENTINA_TZ }
         val diaFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = ARGENTINA_TZ }
         val mesActual = mesFormat.format(hoy.time)
         val hoyIso = diaFormat.format(hoy.time)
+
+        // Decisión de fechas: pura y testeable (ver CuotasEngineTest).
+        val cierre = CuotasEngine.avisoDeCierre(
+            mesActual = mesActual,
+            diaDelMes = hoy.get(Calendar.DAY_OF_MONTH),
+            ultimoDiaDelMes = hoy.getActualMaximum(Calendar.DAY_OF_MONTH),
+            yaAvisado = prefs.lastCierreNotificado,
+            diasDeRecupero = DIAS_RECUPERO_CIERRE
+        )
+
+        // Nada que evaluar hoy: no hace falta ni refrescar datos.
+        if (!cierre.corresponde && !esLunes) return Result.success()
 
         return try {
             val repo = AhorroRepository(prefs)
@@ -57,12 +75,14 @@ class CuotasReminderWorker(
             }
             val misPlanes = planes.filter { it.propietario.equals(prefs.currentUserProfile, ignoreCase = true) }
 
-            if (esUltimoDiaDelMes && prefs.lastCierreNotificado != mesActual) {
-                val total = CuotasEngine.cuotasImpagasDelMes(mesActual, misPlanes, movimientos)
+            if (cierre.corresponde) {
+                val total = CuotasEngine.cuotasImpagasDelMes(cierre.mes, misPlanes, movimientos)
                     .sumOf { (_, cuota) -> cuota.monto }
                 if (total > 0.0) {
-                    CuotasNotifier.notificarCierreDeMes(applicationContext, total)
-                    prefs.lastCierreNotificado = mesActual
+                    CuotasNotifier.notificarCierreDeMes(
+                        applicationContext, total, cierre.mes, yaCerro = cierre.esRecupero
+                    )
+                    prefs.lastCierreNotificado = cierre.mes
                 }
             }
 
