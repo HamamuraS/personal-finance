@@ -20,7 +20,7 @@ import java.io.FileOutputStream
 class DriveService(private val context: Context) {
 
     private val client = OkHttpClient()
-    private val folderId = "1LT_t2a7WBFe6wGjwJ5XuTYsS7gvjr3jU"
+    private val folderId = AppConfig.DRIVE_FOLDER_ID
     private val driveScope = "oauth2:https://www.googleapis.com/auth/drive.file"
 
     suspend fun uploadTicket(uri: Uri): String? = withContext(Dispatchers.IO) {

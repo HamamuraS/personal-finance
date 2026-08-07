@@ -67,6 +67,18 @@ object CuotasEngine {
         plan.cantidadCuotas > 0 && cuotasPagadas(plan, movimientos) >= plan.cantidadCuotas
 
     /**
+     * Mes cuyo resumen de tarjeta **ya cerró** y por lo tanto es el que toca pagar, visto desde [mes].
+     *
+     * Las tarjetas cierran a fin de mes: durante todo agosto lo que se paga es el resumen de julio;
+     * el de agosto recién cierra el 31. Por eso las pantallas de "cuotas a pagar" no deben ofrecer
+     * las cuotas del mes en curso — incluirlas hacía parecer que había que pagarlas ya.
+     *
+     * El recordatorio de cierre de mes (último día del mes, ver `CuotasReminderWorker`) es otra
+     * cosa: avisa qué está **por cerrar**, y ahí sí corresponde el mes en curso.
+     */
+    fun mesAPagar(mes: String): String = addMonths(mes, -1)
+
+    /**
      * Cuotas **impagas** cuyo vencimiento es `<= mes` (incluye **atrasadas** de meses previos).
      * Alimenta los recordatorios: "qué cuotas tengo que pagar a esta altura".
      * Ordenadas por mes de vencimiento y luego por descripción del plan.

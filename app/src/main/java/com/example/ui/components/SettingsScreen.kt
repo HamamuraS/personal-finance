@@ -43,9 +43,6 @@ fun SettingsScreen(
 ) {
     val scrollState = rememberScrollState()
 
-    // Configuración del Sheets
-    val scriptUrlState = viewModel.spreadsheetId.collectAsState()
-    val folderIdState = viewModel.folderId.collectAsState()
     val useLocalDemoState = viewModel.useLocalDemo.collectAsState()
     val currentUserProfileState = viewModel.currentUserProfile.collectAsState()
     val usuariosState = viewModel.usuarios.collectAsState()
@@ -54,22 +51,11 @@ fun SettingsScreen(
     val errorMessageState = viewModel.errorMessage.collectAsState()
     val plansState = viewModel.plans.collectAsState()
     val allMovementsState = viewModel.allMovements.collectAsState()
+    val selectedMonthState = viewModel.selectedMonth.collectAsState()
+    val tieneSaldoInicialState = viewModel.tieneSaldoInicial.collectAsState()
 
-    var scriptInput by remember { mutableStateOf(scriptUrlState.value) }
-    var folderInput by remember { mutableStateOf(folderIdState.value) }
     var demoToggle by remember { mutableStateOf(useLocalDemoState.value) }
 
-    // Sincronizar inputs si cambian de afuera
-    LaunchedEffect(scriptUrlState.value) {
-        if (scriptInput.isEmpty()) {
-            scriptInput = scriptUrlState.value
-        }
-    }
-    LaunchedEffect(folderIdState.value) {
-        if (folderInput.isEmpty()) {
-            folderInput = folderIdState.value
-        }
-    }
     LaunchedEffect(useLocalDemoState.value) {
         demoToggle = useLocalDemoState.value
     }
@@ -184,7 +170,7 @@ fun SettingsScreen(
                             checked = demoToggle,
                             onCheckedChange = {
                                 demoToggle = it
-                                viewModel.saveSheetsConfig(scriptInput, folderInput, it)
+                                viewModel.setUseLocalDemo(it)
                             },
                             colors = SwitchDefaults.colors(
                                 checkedThumbColor = MaterialTheme.colorScheme.primary,
@@ -195,105 +181,32 @@ fun SettingsScreen(
                 }
             }
 
-            // Tarjeta de Sincronización Web App
-            AnimatedVisibility(
-                visible = !demoToggle,
-                enter = fadeIn() + expandVertically(),
-                exit = fadeOut() + shrinkVertically()
-            ) {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(24.dp),
-                    colors = CardDefaults.cardColors(containerColor = cardBg),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+            // Tarjeta de Saldo inicial del mes (arrastre materializado)
+            SaldoInicialCard(
+                mes = selectedMonthState.value,
+                tieneSaldoInicial = tieneSaldoInicialState.value,
+                isLoading = isLoadingState.value,
+                cardBg = cardBg,
+                cardBorder = cardBorder,
+                onRecalcular = { onDone -> viewModel.recalcularSaldoInicial(onDone) }
+            )
+
+            // Un error de red igual tiene que ser visible: antes vivía dentro de la tarjeta de
+            // sincronización, que ya no existe.
+            errorMessageState.value?.let { msg ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(MaterialTheme.colorScheme.error.copy(alpha = 0.1f))
+                        .padding(12.dp)
                 ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp)
-                    ) {
-                        Text(
-                            text = "Sincronización Permanente en la Nube",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-
-                        // URL de Sincronización
-                        OutlinedTextField(
-                            value = scriptInput,
-                            onValueChange = { scriptInput = it },
-                            label = { Text("URL del Web App (Google Apps Script)", fontSize = 12.sp) },
-                            placeholder = { Text("https://script.google.com/macros/s/.../exec", fontSize = 12.sp) },
-                            shape = RoundedCornerShape(12.dp),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = MaterialTheme.colorScheme.primary,
-                                unfocusedBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f)
-                            ),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        // ID Carpeta Drive
-                        OutlinedTextField(
-                            value = folderInput,
-                            onValueChange = { folderInput = it },
-                            label = { Text("ID Carpeta Google Drive (Tickets)", fontSize = 12.sp) },
-                            placeholder = { Text("ID de la carpeta donde se guardan los tickets", fontSize = 12.sp) },
-                            shape = RoundedCornerShape(12.dp),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = MaterialTheme.colorScheme.primary,
-                                unfocusedBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f)
-                            ),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Text(
-                            text = "Para no tener que renovar autenticación jamás, esta app se conecta de forma directa a un Web App. Pega arriba el enlace generado y el ID de la carpeta de Drive.",
-                            fontSize = 10.sp,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                            lineHeight = 15.sp
-                        )
-
-                        // Mensajes de error o éxito de comunicación
-                        if (errorMessageState.value != null) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(MaterialTheme.colorScheme.error.copy(alpha = 0.1f))
-                                    .padding(8.dp)
-                            ) {
-                                Text(
-                                    text = errorMessageState.value ?: "",
-                                    color = MaterialTheme.colorScheme.error,
-                                    fontSize = 11.sp,
-                                    lineHeight = 15.sp
-                                )
-                            }
-                        }
-
-                        Button(
-                            onClick = {
-                                viewModel.saveSheetsConfig(scriptInput, folderInput, demoToggle)
-                            },
-                            enabled = scriptInput.isNotEmpty() && folderInput.isNotEmpty() && !isLoadingState.value,
-                            shape = RoundedCornerShape(10.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.primary
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(44.dp)
-                        ) {
-                            if (isLoadingState.value) {
-                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White)
-                            } else {
-                                Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Guardar y Sincronizar", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                            }
-                        }
-                    }
+                    Text(
+                        text = msg,
+                        color = MaterialTheme.colorScheme.error,
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp
+                    )
                 }
             }
 
@@ -336,6 +249,83 @@ fun SettingsScreen(
             }
 
             Spacer(modifier = Modifier.height(20.dp))
+        }
+    }
+}
+
+/**
+ * Saldo inicial del mes. Cuando el mes tiene sus filas de apertura escritas, su cálculo deja de
+ * depender de las hojas anteriores (y esas hojas se pueden archivar). Recalcular vuelve a derivar
+ * el arrastre de los meses previos: hay que hacerlo si se corrigió un movimiento viejo.
+ */
+@Composable
+private fun SaldoInicialCard(
+    mes: String,
+    tieneSaldoInicial: Boolean,
+    isLoading: Boolean,
+    cardBg: Color,
+    cardBorder: Color,
+    onRecalcular: ((Boolean, String) -> Unit) -> Unit
+) {
+    var mensaje by remember { mutableStateOf<String?>(null) }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = cardBg),
+        border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = "Saldo inicial del mes",
+                fontWeight = FontWeight.Bold,
+                fontSize = 15.sp,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = if (tieneSaldoInicial) {
+                    "$mes tiene su saldo inicial escrito en la hoja. El cálculo de este mes no " +
+                        "depende de las hojas anteriores."
+                } else {
+                    "$mes todavía no tiene saldo inicial: el arrastre se está derivando de los " +
+                        "meses anteriores, así que esas hojas no se pueden archivar."
+                },
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+            )
+            Text(
+                text = "Recalculalo si corregiste un movimiento de un mes anterior.",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+            )
+            Button(
+                onClick = {
+                    mensaje = null
+                    onRecalcular { _, msg -> mensaje = msg }
+                },
+                enabled = !isLoading && mes.isNotEmpty(),
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Refresh,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(if (tieneSaldoInicial) "Recalcular saldo inicial" else "Escribir saldo inicial")
+            }
+            mensaje?.let {
+                Text(
+                    text = it,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                )
+            }
         }
     }
 }

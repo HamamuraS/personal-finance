@@ -18,8 +18,6 @@ class PreferencesHelper(context: Context) {
     private val usuarioListAdapter = moshi.adapter<List<Usuario>>(usuarioType)
 
     companion object {
-        private const val KEY_SCRIPT_URL = "script_url"
-        private const val KEY_FOLDER_ID = "folder_id"
         private const val KEY_USE_LOCAL_DEMO = "use_local_demo"
         private const val KEY_LOCAL_MOVEMENTS = "local_movements"
         private const val KEY_SHEETS_CACHE = "sheets_cache"
@@ -39,20 +37,16 @@ class PreferencesHelper(context: Context) {
             prefs.edit().putBoolean(KEY_IS_DARK_MODE, value).apply()
         }
 
-    var scriptUrl: String
-        get() = prefs.getString(KEY_SCRIPT_URL, "https://script.google.com/macros/s/AKfycby86a_8z2apl16RHUjqGFfY7T8jbuAyi7LOepDKivkkENauzbIs4JgXUJTKIZhtutwkSA/exec") ?: "https://script.google.com/macros/s/AKfycby86a_8z2apl16RHUjqGFfY7T8jbuAyi7LOepDKivkkENauzbIs4JgXUJTKIZhtutwkSA/exec"
-        set(value) {
-            prefs.edit().putString(KEY_SCRIPT_URL, value.trim()).apply()
-        }
+    // Conexión: viene del APK (ver [AppConfig]), ya no se edita desde Ajustes. Se lee siempre de
+    // la config compilada y no de SharedPreferences, para que un valor viejo guardado en un
+    // teléfono no le gane al que trae la versión instalada.
+    val scriptUrl: String get() = AppConfig.SCRIPT_URL
 
-    var folderId: String
-        get() = prefs.getString(KEY_FOLDER_ID, "1LT_t2a7WBFe6wGjwJ5XuTYsS7gvjr3jU") ?: "1LT_t2a7WBFe6wGjwJ5XuTYsS7gvjr3jU"
-        set(value) {
-            prefs.edit().putString(KEY_FOLDER_ID, value.trim()).apply()
-        }
+    val folderId: String get() = AppConfig.DRIVE_FOLDER_ID
 
+    // Si el build no trae configuración usable, arranca en demo en vez de pegarle a una URL inválida.
     var useLocalDemo: Boolean
-        get() = prefs.getBoolean(KEY_USE_LOCAL_DEMO, true)
+        get() = prefs.getBoolean(KEY_USE_LOCAL_DEMO, !AppConfig.isConfigured)
         set(value) = prefs.edit().putBoolean(KEY_USE_LOCAL_DEMO, value).apply()
 
     // Identidad activa en ESTE dispositivo. Guarda el slotKey del usuario ("Santiago"/"Rocío"):

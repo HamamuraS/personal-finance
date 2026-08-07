@@ -235,12 +235,12 @@ private fun CuotasListContent(
     val pendingFiltered = applyFilters(plans).sortedByDescending { it.fechaCreacion }
     val paidFiltered = applyFilters(paidPlans).sortedByDescending { it.fechaCreacion }
 
-    // "Pagar la tarjeta": cuotas del mes actual impagas, agrupadas por tarjeta. Solo aplica a TUS
-    // planes (no se pueden pagar las cuotas de la otra persona), sin importar el filtro de propietario.
-    // Se muestra una card por tarjeta tuya que aún tenga cuotas del mes sin pagar.
-    val mesActual = currentYyyyMm()
+    // "Pagar la tarjeta": cuotas impagas del último resumen CERRADO (no del mes en curso: la tarjeta
+    // cierra a fin de mes), agrupadas por tarjeta. Solo aplica a TUS planes (no se pueden pagar las
+    // cuotas de la otra persona), sin importar el filtro de propietario.
+    val mesAPagar = CuotasEngine.mesAPagar(currentYyyyMm())
     val misPendientes = plans.filter { it.propietario.equals(currentUser, ignoreCase = true) }
-    val tarjetasAPagar = CuotasEngine.cuotasImpagasDelMes(mesActual, misPendientes, allMovements)
+    val tarjetasAPagar = CuotasEngine.cuotasImpagasDelMes(mesAPagar, misPendientes, allMovements)
         .filter { it.first.tarjeta.isNotBlank() }
         .groupBy { it.first.tarjeta }
         .toList()
@@ -319,11 +319,11 @@ private fun CuotasListContent(
                 )
             }
 
-            // Sugerencias "Pagar la tarjeta" (una por tarjeta con cuotas del mes impagas)
+            // Sugerencias "Pagar la tarjeta" (una por tarjeta con cuotas impagas ya cerradas)
             items(tarjetasAPagar, key = { "pay-${it.first}" }) { (tarjeta, cuotas) ->
                 PagarTarjetaCard(
                     tarjeta = tarjeta,
-                    mes = mesActual,
+                    mes = mesAPagar,
                     cantidad = cuotas.size,
                     total = cuotas.sumOf { it.second.monto },
                     formatMoney = formatMoney,
@@ -1733,9 +1733,10 @@ private fun TarjetaResumenContent(
     onPagar: (cuotas: List<Pair<CuotaPlan, Int>>, metodoPago: String) -> Unit
 ) {
     val formatMoney = remember { cuotasMoneyFormat() }
-    val mesActual = currentYyyyMm()
+    // Mismo criterio que el listado: el último resumen cerrado, no el mes en curso.
+    val mesAPagar = CuotasEngine.mesAPagar(currentYyyyMm())
     // Solo cuotas de MIS planes: no se pagan las de la otra persona.
-    val cuotas = CuotasEngine.cuotasImpagasDelMes(mesActual, plans, allMovements)
+    val cuotas = CuotasEngine.cuotasImpagasDelMes(mesAPagar, plans, allMovements)
         .filter { it.first.tarjeta == tarjeta && it.first.propietario.equals(currentUser, ignoreCase = true) }
         .sortedBy { it.first.descripcion }
 
@@ -1783,7 +1784,7 @@ private fun TarjetaResumenContent(
             ) {
                 item {
                     Text(
-                        text = "Cuotas de ${formatMonthLabel(mesActual)}",
+                        text = "Cuotas de ${formatMonthLabel(mesAPagar)}",
                         fontWeight = FontWeight.Bold,
                         fontSize = 15.sp
                     )

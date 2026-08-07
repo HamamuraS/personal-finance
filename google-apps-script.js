@@ -1,8 +1,16 @@
 /**
  * Script de Google Apps Script para la sincronización de la App de Finanzas Personales.
  *
- * Versión: 7.0 (Usuarios parametrizables)
+ * Versión: 7.2 (Saldo inicial materializado por hoja)
  * @description Este script requiere acceso a Google Drive para guardar los tickets.
+ *
+ * Novedades v7.2:
+ *  - Filas de apertura por hoja (tipo "Apertura", categoría "Saldo inicial"): cada mes lleva su
+ *    propio arrastre desagregado por persona × medio de pago × propietario, así que su saldo deja
+ *    de depender de las hojas anteriores y las viejas se pueden archivar.
+ *  - Funciones de migración para correr a mano desde el editor: previsualizarAperturas(),
+ *    migrarAperturas(), escribirApertura(mes) y borrarLegacySaldoInicial(). Ver el bloque
+ *    "SALDO INICIAL MATERIALIZADO" al final del archivo.
  *
  * Novedades v7.0:
  *  - Hoja nueva "Usuarios" (ver USERS_SHEET): nombre + color por usuario. Se EXCLUYE de los tres
@@ -450,4 +458,480 @@ function handleLogicalDelete(id) {
   }
 
   return jsonOutput({ status: "ERROR", message: "ID no encontrado" });
+}
+
+// =================================================================================================
+// SALDO INICIAL MATERIALIZADO (arrastre por hoja)
+// =================================================================================================
+//
+// Hasta la v7.1 el saldo inicial de un mes se derivaba replayando TODOS los meses anteriores, así
+// que ninguna hoja vieja se podía archivar sin romper los números. Desde la v7.2 cada hoja lleva
+// sus propias filas de apertura (tipo "Apertura", categoría "Saldo inicial") con el stock inicial
+// desagregado por persona x medio de pago x propietario.
+//
+// Las columnas se reusan tal cual: Responsable = de quién es la cuenta física; Propietario = de
+// quién es realmente el dinero (así sobrevive el dinero prestado al cambio de mes); Metodo Pago =
+// Efectivo | Billetera Virtual; Monto puede ser NEGATIVO.
+//
+// FUNCIONES PARA EJECUTAR A MANO DESDE EL EDITOR (en este orden):
+//   1. previsualizarAperturas()      -> no escribe nada, sólo loguea qué quedaría en cada mes.
+//   2. migrarAperturas()             -> escribe/actualiza las filas de apertura de todos los meses.
+//   3. borrarLegacySaldoInicial()    -> borra las filas viejas de arrastre (Aporte "Saldo inicial").
+//
+// Son idempotentes: los ids son determinísticos, así que volver a correrlas pisa las filas en vez
+// de duplicarlas.
+
+const TIPO_APERTURA = "Apertura";
+const CATEGORIA_APERTURA = "Saldo inicial";
+const SANTIAGO = "Santiago";
+const ROCIO = "Rocío";
+const AMBOS = "Ambos";
+const EFECTIVO = "Efectivo";
+const VIRTUAL = "Billetera Virtual";
+
+function esFilaApertura(tipo) {
+  return String(tipo || "").toLowerCase() === TIPO_APERTURA.toLowerCase();
+}
+
+/** Filas de arrastre de versiones <= 7.1: un Aporte "Saldo inicial" por persona. Se ignoran. */
+function esLegacySaldoInicial(tipo, categoria) {
+  return !esFilaApertura(tipo) &&
+    String(categoria || "").toLowerCase() === CATEGORIA_APERTURA.toLowerCase();
+}
+
+function normalizarPropietario(propietario, responsable) {
+  const p = String(propietario || "").trim().toLowerCase();
+  if (p === SANTIAGO.toLowerCase()) return SANTIAGO;
+  if (p === ROCIO.toLowerCase()) return ROCIO;
+  if (p === AMBOS.toLowerCase()) return AMBOS;
+  return String(responsable || "").trim().toLowerCase() === ROCIO.toLowerCase() ? ROCIO : SANTIAGO;
+}
+
+/**
+ * Lee TODOS los movimientos de todas las hojas de meses, conservando en qué hoja y fila está cada
+ * uno. Excluye los eliminados lógicamente.
+ */
+function leerTodosLosMovimientos() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const out = [];
+  ss.getSheets().forEach(function (sheet) {
+    const nombre = sheet.getName();
+    if (nombre === PLANS_SHEET || nombre === USERS_SHEET) return;
+    const data = sheet.getDataRange().getValues();
+    for (let i = 1; i < data.length; i++) {
+      const row = data[i];
+      if (!row[0] && !row[1]) continue;          // fila vacía
+      if (isEliminado(row[10])) continue;
+      out.push({
+        hoja: nombre,
+        fila: i + 1,
+        id: row[0] ? row[0].toString() : "",
+        fecha: toDateTime(row[1]),
+        mes: toYearMonth(row[1]).substring(0, 7),
+        monto: Number(row[2]) || 0,
+        tipo: row[3] ? row[3].toString() : "",
+        categoria: row[4] ? row[4].toString() : "",
+        responsable: row[5] ? row[5].toString() : "",
+        esComun: row[6] === true || row[6] === "true" || row[6] === "VERDADERO",
+        metodoPago: row[8] ? row[8].toString() : VIRTUAL,
+        propietario: row[11] ? row[11].toString() : (row[5] ? row[5].toString() : "")
+      });
+    }
+  });
+  return out;
+}
+
+/**
+ * Aplica una lista de movimientos sobre un estado y devuelve el estado resultante. Port exacto de
+ * `AccountingEngine.compute` (app/src/main/java/com/example/ui/AccountingEngine.kt) restringido al
+ * stock: los flujos del periodo (aportes/gastos) no hacen falta acá.
+ */
+function aplicarMovimientos(movs, estado) {
+  let sEfec = estado.sEfec, sVirt = estado.sVirt;
+  let rEfec = estado.rEfec, rVirt = estado.rVirt;
+  let netSR = estado.netSR;
+
+  const ordenados = movs.slice().sort(function (a, b) {
+    if (a.fecha === b.fecha) return a.id < b.id ? -1 : 1;
+    return a.fecha < b.fecha ? -1 : 1;
+  });
+
+  ordenados.forEach(function (m) {
+    if (esFilaApertura(m.tipo) || esLegacySaldoInicial(m.tipo, m.categoria)) return;
+    const respS = String(m.responsable).toLowerCase() === SANTIAGO.toLowerCase();
+    const respR = String(m.responsable).toLowerCase() === ROCIO.toLowerCase();
+    if (!respS && !respR) return;
+
+    const prop = normalizarPropietario(m.propietario, m.responsable);
+    const propS = prop === SANTIAGO, propR = prop === ROCIO, propAmbos = prop === AMBOS;
+    const efec = String(m.metodoPago).toLowerCase() === EFECTIVO.toLowerCase();
+    const monto = m.monto;
+
+    switch (String(m.tipo).toLowerCase()) {
+      case "aporte":
+        if (respS) { if (efec) sEfec += monto; else sVirt += monto; }
+        else { if (efec) rEfec += monto; else rVirt += monto; }
+        if (propAmbos) { const h = monto / 2; netSR += respS ? -h : h; }
+        else if (propS) { if (respR) netSR += monto; }
+        else if (propR) { if (respS) netSR -= monto; }
+        break;
+
+      case "gasto": {
+        const comun = m.esComun || propAmbos;
+        if (respS) { if (efec) sEfec -= monto; else sVirt -= monto; }
+        else { if (efec) rEfec -= monto; else rVirt -= monto; }
+        if (comun) { const h = monto / 2; netSR += respS ? h : -h; }
+        else if (propS) { if (respR) netSR -= monto; }
+        else if (propR) { if (respS) netSR += monto; }
+        break;
+      }
+
+      case "transferencia":
+        if (respS) {
+          if (efec) { sEfec -= monto; rEfec += monto; } else { sVirt -= monto; rVirt += monto; }
+          if (propS) netSR += monto;
+          else if (propR) netSR += Math.min(monto, Math.max(0, -netSR)); // devolución
+        } else {
+          if (efec) { rEfec -= monto; sEfec += monto; } else { rVirt -= monto; sVirt += monto; }
+          if (propR) netSR -= monto;
+          else if (propS) netSR -= Math.min(monto, Math.max(0, netSR)); // devolución
+        }
+        break;
+    }
+  });
+
+  return { sEfec: sEfec, sVirt: sVirt, rEfec: rEfec, rVirt: rVirt, netSR: netSR };
+}
+
+/**
+ * Serializa un estado a las filas de apertura de un mes. Inversa de leerlas.
+ * La propiedad cruzada se ancla al bucket VIRTUAL de quien tiene el dinero físicamente (el neto no
+ * depende del medio de pago, pero fijarlo mantiene la generación determinística).
+ */
+function filasDeApertura(mes, estado) {
+  const net = estado.netSR;
+  const sVirtDeRocio = net < 0 ? -net : 0;
+  const rVirtDeSantiago = net > 0 ? net : 0;
+
+  const filas = [
+    [SANTIAGO, SANTIAGO, EFECTIVO, estado.sEfec],
+    [SANTIAGO, SANTIAGO, VIRTUAL, estado.sVirt - sVirtDeRocio],
+    [ROCIO, ROCIO, EFECTIVO, estado.rEfec],
+    [ROCIO, ROCIO, VIRTUAL, estado.rVirt - rVirtDeSantiago]
+  ];
+  if (sVirtDeRocio !== 0) filas.push([SANTIAGO, ROCIO, VIRTUAL, sVirtDeRocio]);
+  if (rVirtDeSantiago !== 0) filas.push([ROCIO, SANTIAGO, VIRTUAL, rVirtDeSantiago]);
+
+  return filas.map(function (f) {
+    const responsable = f[0], propietario = f[1], metodo = f[2], monto = f[3];
+    const quien = responsable === ROCIO ? "r" : "s";
+    const deQuien = propietario === ROCIO ? "r" : "s";
+    const medio = metodo === EFECTIVO ? "efec" : "virt";
+    const deOtro = propietario !== responsable ? " (de " + propietario + ")" : "";
+    return {
+      id: "apertura-" + mes + "-" + quien + "-" + deQuien + "-" + medio,
+      fecha: mes + "-01 00:00",
+      monto: monto,
+      tipo: TIPO_APERTURA,
+      categoria: CATEGORIA_APERTURA,
+      responsable: responsable,
+      esComun: false,
+      descripcion: "Saldo inicial " + mes + " - " + responsable + " - " + metodo + deOtro,
+      metodoPago: metodo,
+      propietario: propietario
+    };
+  });
+}
+
+/** "2026-08" -> "Agosto 2026". Devuelve null si el mes no es parseable. */
+function nombreHojaDeMes(mes) {
+  const partes = String(mes).split("-");
+  if (partes.length < 2) return null;
+  const idx = parseInt(partes[1], 10) - 1;
+  if (isNaN(idx) || idx < 0 || idx > 11) return null;
+  return monthNames[idx] + " " + partes[0];
+}
+
+/**
+ * Reconstruye el estado a partir de filas de apertura ya escritas. Inversa de [filasDeApertura];
+ * port de `AccountingEngine.openingFromRows`.
+ */
+function estadoDesdeFilasDeApertura(filas) {
+  let sEfec = 0, sVirt = 0, rEfec = 0, rVirt = 0, netSR = 0;
+  filas.forEach(function (m) {
+    const respS = String(m.responsable).toLowerCase() === SANTIAGO.toLowerCase();
+    const respR = String(m.responsable).toLowerCase() === ROCIO.toLowerCase();
+    if (!respS && !respR) return;
+    const efec = String(m.metodoPago).toLowerCase() === EFECTIVO.toLowerCase();
+
+    if (respS) { if (efec) sEfec += m.monto; else sVirt += m.monto; }
+    else { if (efec) rEfec += m.monto; else rVirt += m.monto; }
+
+    const prop = normalizarPropietario(m.propietario, m.responsable);
+    if (prop === SANTIAGO) { if (respR) netSR += m.monto; }
+    else if (prop === ROCIO) { if (respS) netSR -= m.monto; }
+    else { const h = m.monto / 2; netSR += respS ? -h : h; } // Ambos
+  });
+  return { sEfec: sEfec, sVirt: sVirt, rEfec: rEfec, rVirt: rVirt, netSR: netSR };
+}
+
+/** Filas de apertura ya escritas en un mes (vacío si no tiene). */
+function filasAperturaEscritasDe(movimientos, mes) {
+  return movimientos.filter(function (m) { return m.mes === mes && esFilaApertura(m.tipo); });
+}
+
+/**
+ * Pliega el historial mes a mes y devuelve { mes: estadoInicialDeEseMes }.
+ *
+ * El primer mes disponible se SIEMBRA con su propia fila de apertura si la tiene: una vez que se
+ * archivan las hojas viejas, esa fila es la única fuente de verdad del arrastre y arrancar de cero
+ * borraría todo el patrimonio acumulado. De ahí en adelante se encadenan valores recalculados (no
+ * los guardados), así que corregir un movimiento viejo se propaga a todos los meses siguientes.
+ */
+function calcularAperturasPorMes(movimientos) {
+  const meses = {};
+  movimientos.forEach(function (m) { if (m.mes) meses[m.mes] = true; });
+  const ordenados = Object.keys(meses).sort();
+  if (!ordenados.length) return {};
+
+  let estado = estadoDesdeFilasDeApertura(filasAperturaEscritasDe(movimientos, ordenados[0]));
+  const aperturas = {};
+  ordenados.forEach(function (mes, i) {
+    if (i > 0) aperturas[mes] = estado;
+    estado = aplicarMovimientos(movimientos.filter(function (m) { return m.mes === mes; }), estado);
+  });
+  return aperturas;
+}
+
+/** "$ 1.234,56" con separadores, para poder comparar de un vistazo contra el homebanking. */
+function fmtPlata(n) {
+  const neg = n < 0;
+  const partes = Math.abs(n).toFixed(2).split(".");
+  const entero = partes[0].replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return (neg ? "-$ " : "$ ") + entero + "," + partes[1];
+}
+
+/** Bloque de texto con el estado de una persona: físico, cruzado y patrimonial. */
+function describirPersona(nombre, efec, virt, cruzado) {
+  const fisico = efec + virt;
+  return "  " + nombre + "\n" +
+    "     efectivo ............ " + fmtPlata(efec) + "\n" +
+    "     en cuenta ........... " + fmtPlata(virt) + "\n" +
+    "     EN SU PODER (físico)  " + fmtPlata(fisico) + "   <- conciliar contra el banco\n" +
+    "     " + (cruzado >= 0 ? "le deben ..........." : "debe ...............") + " " + fmtPlata(cruzado) + "\n" +
+    "     LE CORRESPONDE ...... " + fmtPlata(fisico + cruzado);
+}
+
+/**
+ * PASO 1 - No escribe nada. Para cada mes loguea con qué ARRANCA y con qué CIERRA.
+ *
+ * Ojo: la fila de apertura guarda el arranque del mes, no el estado de hoy. El número que hay que
+ * comparar contra el homebanking es el CIERRE del último mes.
+ */
+function previsualizarAperturas() {
+  const movs = leerTodosLosMovimientos();
+
+  const meses = {};
+  movs.forEach(function (m) { if (m.mes) meses[m.mes] = true; });
+  const ordenados = Object.keys(meses).sort();
+
+  Logger.log("Movimientos leídos: " + movs.length + " | meses: " + ordenados.join(", "));
+
+  // Mismo criterio que calcularAperturasPorMes: el primer mes se siembra con su apertura escrita,
+  // porque los meses anteriores pueden estar archivados.
+  let estado = estadoDesdeFilasDeApertura(filasAperturaEscritasDe(movs, ordenados[0]));
+  ordenados.forEach(function (mes, i) {
+    const apertura = estado;
+    const cierre = aplicarMovimientos(movs.filter(function (m) { return m.mes === mes; }), apertura);
+    const ultimo = (i === ordenados.length - 1);
+
+    let txt = "=== " + mes + " (" + nombreHojaDeMes(mes) + ") ===\n";
+    if (i === 0) {
+      txt += "  [ARRANCA] mes más viejo disponible; su apertura es el ancla y no se recalcula\n" +
+        describirPersona("Santiago", apertura.sEfec, apertura.sVirt, apertura.netSR) + "\n" +
+        describirPersona("Rocío", apertura.rEfec, apertura.rVirt, -apertura.netSR) + "\n";
+    } else {
+      txt += "  [ARRANCA EL " + mes + "-01]  -> " + filasDeApertura(mes, apertura).length + " filas de apertura\n" +
+        describirPersona("Santiago", apertura.sEfec, apertura.sVirt, apertura.netSR) + "\n" +
+        describirPersona("Rocío", apertura.rEfec, apertura.rVirt, -apertura.netSR) + "\n";
+    }
+    txt += "  [CIERRA]" + (ultimo ? "  <<< ESTADO DE HOY >>>" : "") + "\n" +
+      describirPersona("Santiago", cierre.sEfec, cierre.sVirt, cierre.netSR) + "\n" +
+      describirPersona("Rocío", cierre.rEfec, cierre.rVirt, -cierre.netSR);
+    Logger.log(txt);
+
+    estado = cierre;
+  });
+
+  Logger.log(
+    "Nada fue escrito.\n" +
+    "Compará el bloque [CIERRA] del último mes contra tu homebanking y tu billetera:\n" +
+    "  - 'EN SU PODER' es la plata que existe físicamente. Si no coincide, faltan cargar movimientos.\n" +
+    "  - 'LE CORRESPONDE' ya descuenta lo prestado. NO es lo que dice el banco.\n" +
+    "Si el físico cierra, corré migrarAperturas()."
+  );
+}
+
+// -------------------------------------------------------------------------------------------------
+// Automatización: trigger diario que mantiene las aperturas al día
+// -------------------------------------------------------------------------------------------------
+
+const TRIGGER_APERTURAS = "actualizarAperturas";
+
+/**
+ * Corré esto UNA vez desde el editor para automatizar todo. Deja un trigger diario (~4 AM) que
+ * mantiene las aperturas al día solo. Es idempotente: volver a correrlo no duplica el trigger.
+ */
+function instalarTriggerDeAperturas() {
+  desinstalarTriggerDeAperturas();
+  ScriptApp.newTrigger(TRIGGER_APERTURAS).timeBased().atHour(4).everyDays(1).create();
+  Logger.log("Trigger diario instalado (~4 AM): " + TRIGGER_APERTURAS + "().");
+  Logger.log("Verificalo en el editor, panel izquierdo, ícono del reloj (Activadores).");
+}
+
+/** Quita el trigger diario. El saldo inicial vuelve a depender del botón de Ajustes. */
+function desinstalarTriggerDeAperturas() {
+  let n = 0;
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === TRIGGER_APERTURAS) { ScriptApp.deleteTrigger(t); n++; }
+  });
+  Logger.log("Triggers quitados: " + n);
+}
+
+/**
+ * Lo que corre el trigger. Recalcula TODAS las aperturas (no solo la del mes nuevo) y se asegura de
+ * que el mes calendario actual tenga la suya, creando la hoja si hace falta.
+ *
+ * Recalcular todo a diario en vez de escribir una sola vez el día 1 es a propósito: los movimientos
+ * se cargan con atraso. Si el 3 de septiembre agregás un gasto con fecha 31 de agosto, la apertura
+ * de septiembre queda vieja; al día siguiente el trigger la corrige sola. Escribir una única vez
+ * dejaría ese error congelado para siempre.
+ */
+function actualizarAperturas() {
+  const movs = leerTodosLosMovimientos();
+  const aperturas = calcularAperturasPorMes(movs);
+  let total = 0;
+  Object.keys(aperturas).sort().forEach(function (mes) {
+    total += escribirAperturaDeMes(mes, aperturas[mes]);
+  });
+
+  // El mes calendario actual puede no tener movimientos todavía (típico los primeros días).
+  // Le escribimos igual su apertura para que la hoja nazca con el arrastre puesto.
+  const mesActual = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM");
+  if (!aperturas[mesActual] && !filasAperturaEscritasDe(movs, mesActual).length) {
+    const previos = movs.filter(function (m) { return m.mes && m.mes < mesActual; });
+    if (previos.length) {
+      total += escribirAperturaDeMes(mesActual, calcularAperturaDe(previos, mesActual));
+    }
+  }
+
+  Logger.log("Aperturas actualizadas: " + total + " filas.");
+  return total;
+}
+
+/** PASO 2 - Escribe/actualiza las filas de apertura de TODOS los meses (menos el primero). */
+function migrarAperturas() {
+  const aperturas = calcularAperturasPorMes(leerTodosLosMovimientos());
+  let total = 0;
+  Object.keys(aperturas).sort().forEach(function (mes) {
+    total += escribirAperturaDeMes(mes, aperturas[mes]);
+  });
+  Logger.log("Listo: " + total + " filas de apertura escritas/actualizadas.");
+  Logger.log("Revisá los saldos en la app y después corré borrarLegacySaldoInicial().");
+}
+
+/**
+ * Recalcula y reescribe la apertura de UN mes puntual. Ej: escribirApertura("2026-09").
+ *
+ * Resuelve el arrastre igual que `AccountingEngine.openingFor`: se apoya en la apertura escrita más
+ * reciente que sea anterior al mes pedido y replaya desde ahí. Por eso sigue funcionando después de
+ * archivar hojas viejas (replayar desde cero daría un patrimonio truncado).
+ */
+function escribirApertura(mes) {
+  const previos = leerTodosLosMovimientos().filter(function (m) { return m.mes && m.mes < mes; });
+  const estado = calcularAperturaDe(previos, mes);
+  const n = escribirAperturaDeMes(mes, estado);
+  Logger.log("Apertura de " + mes + ": " + n + " filas.");
+}
+
+/** Estado con el que arranca [mes], derivado de los movimientos anteriores a él. */
+function calcularAperturaDe(movimientosPrevios, mes) {
+  const aperturas = calcularAperturasPorMes(movimientosPrevios);
+  const meses = {};
+  movimientosPrevios.forEach(function (m) { if (m.mes) meses[m.mes] = true; });
+  const ordenados = Object.keys(meses).sort();
+  if (!ordenados.length) return { sEfec: 0, sVirt: 0, rEfec: 0, rVirt: 0, netSR: 0 };
+
+  // El arrastre de `mes` es el cierre del último mes previo = su apertura + sus movimientos.
+  const ultimo = ordenados[ordenados.length - 1];
+  const aperturaUltimo = aperturas[ultimo] ||
+    estadoDesdeFilasDeApertura(filasAperturaEscritasDe(movimientosPrevios, ultimo));
+  return aplicarMovimientos(
+    movimientosPrevios.filter(function (m) { return m.mes === ultimo; }),
+    aperturaUltimo
+  );
+}
+
+/** Upsert por id de las filas de apertura de un mes. Devuelve cuántas filas tocó. */
+function escribirAperturaDeMes(mes, estado) {
+  const nombre = nombreHojaDeMes(mes);
+  if (!nombre) { Logger.log("Mes inválido, se omite: " + mes); return 0; }
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(nombre);
+  if (!sheet) {
+    sheet = ss.insertSheet(nombre);
+    sheet.appendRow(["ID", "Fecha", "Monto", "Tipo", "Categoría", "Responsable", "Es Común", "Descripción", "Metodo Pago", "Ticket URL", "Eliminado", "Propietario", "Plan ID", "Cuota N°"]);
+    sheet.getRange(1, 1, 1, 14).setFontWeight("bold").setBackground("#e2e8f0");
+    sheet.setFrozenRows(1);
+  }
+
+  // Índice id -> nº de fila, para pisar en vez de duplicar.
+  const data = sheet.getDataRange().getValues();
+  const filaPorId = {};
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][0]) filaPorId[data[i][0].toString()] = i + 1;
+  }
+
+  const filas = filasDeApertura(mes, estado);
+  filas.forEach(function (f) {
+    const valores = [[
+      f.id, f.fecha, f.monto, f.tipo, f.categoria, f.responsable, f.esComun,
+      f.descripcion, f.metodoPago, "", false, f.propietario, "", 0
+    ]];
+    const existente = filaPorId[f.id];
+    if (existente) {
+      sheet.getRange(existente, 2).setNumberFormat("@");
+      sheet.getRange(existente, 1, 1, 14).setValues(valores);
+    } else {
+      sheet.appendRow(valores[0]);
+      // La fecha va como texto para que Sheets no la convierta en Date.
+      sheet.getRange(sheet.getLastRow(), 2).setNumberFormat("@").setValue(f.fecha);
+    }
+  });
+
+  Logger.log(nombre + ": " + filas.length + " filas de apertura.");
+  return filas.length;
+}
+
+/**
+ * PASO 3 - Borra físicamente las filas de arrastre viejas (Aporte con categoría "Saldo inicial").
+ * La app ya las ignora, así que esto es sólo limpieza. Corrélo DESPUÉS de validar los saldos.
+ */
+function borrarLegacySaldoInicial() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let borradas = 0;
+  ss.getSheets().forEach(function (sheet) {
+    const nombre = sheet.getName();
+    if (nombre === PLANS_SHEET || nombre === USERS_SHEET) return;
+    const data = sheet.getDataRange().getValues();
+    // De abajo hacia arriba: borrar una fila corre los índices de las de abajo.
+    for (let i = data.length - 1; i >= 1; i--) {
+      if (esLegacySaldoInicial(data[i][3], data[i][4])) {
+        sheet.deleteRow(i + 1);
+        borradas++;
+      }
+    }
+  });
+  Logger.log("Filas legacy de 'Saldo inicial' borradas: " + borradas);
 }

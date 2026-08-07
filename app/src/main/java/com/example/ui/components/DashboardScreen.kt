@@ -154,11 +154,11 @@ fun DashboardScreen(
                     PozoComunCard(userProfile = userProfile, config = config, balance = balance, formatMoney = formatMoney)
                 }
 
-                // Recordatorio: cuotas a pagar del usuario activo hasta el MES ACTUAL real
-                // (incluye atrasadas), independiente del mes que se esté visualizando. Así el pago
-                // rápido nunca ofrece cuotas futuras (consistente con el detalle del plan).
+                // Recordatorio: cuotas a pagar del usuario activo (incluye atrasadas), independiente
+                // del mes que se esté visualizando. Se corta en el último resumen CERRADO, no en el
+                // mes en curso: la tarjeta cierra a fin de mes, así que en agosto se paga julio.
                 val mesActualReal = java.text.SimpleDateFormat("yyyy-MM", java.util.Locale.US).format(java.util.Date())
-                val recordatoriosCuotas = CuotasEngine.recordatoriosDelMes(mesActualReal, plans, allMovements)
+                val recordatoriosCuotas = CuotasEngine.recordatoriosDelMes(CuotasEngine.mesAPagar(mesActualReal), plans, allMovements)
                     .filter { it.plan.propietario.equals(userProfile, ignoreCase = true) }
                 if (recordatoriosCuotas.isNotEmpty()) {
                     item {
@@ -932,7 +932,8 @@ fun PozoComunCard(userProfile: String, config: UsuariosConfig, balance: BalanceB
                         color = textMainColor
                     )
                     
-                    // Desglose
+                    // Desglose. 💵 y 💳 son el dinero FÍSICO (lo que se concilia contra el banco);
+                    // 🤝 es la posición cruzada. Las tres líneas suman el titular de arriba.
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
                         Text("💵", fontSize = 10.sp)
                         Spacer(modifier = Modifier.width(4.dp))
@@ -942,6 +943,19 @@ fun PozoComunCard(userProfile: String, config: UsuariosConfig, balance: BalanceB
                         Text("💳", fontSize = 10.sp)
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(formatMoney.format(virtS), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = textMainColor.copy(alpha = 0.7f))
+                    }
+                    if (kotlin.math.abs(balance.santiagoExterno) >= 1.0) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("🤝", fontSize = 10.sp)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                formatMoney.format(balance.santiagoExterno),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (balance.santiagoExterno < 0) MaterialTheme.colorScheme.error
+                                        else personaColor(config.primario.slotKey, userProfile)
+                            )
+                        }
                     }
                 }
 
@@ -963,7 +977,7 @@ fun PozoComunCard(userProfile: String, config: UsuariosConfig, balance: BalanceB
                         color = textMainColor
                     )
 
-                    // Desglose
+                    // Desglose (espejado). Mismo criterio que la columna izquierda.
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
                         Text(formatMoney.format(efecR), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = textMainColor.copy(alpha = 0.7f))
                         Spacer(modifier = Modifier.width(4.dp))
@@ -973,6 +987,19 @@ fun PozoComunCard(userProfile: String, config: UsuariosConfig, balance: BalanceB
                         Text(formatMoney.format(virtR), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = textMainColor.copy(alpha = 0.7f))
                         Spacer(modifier = Modifier.width(4.dp))
                         Text("💳", fontSize = 10.sp)
+                    }
+                    if (kotlin.math.abs(balance.rocioExterno) >= 1.0) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                formatMoney.format(balance.rocioExterno),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (balance.rocioExterno < 0) MaterialTheme.colorScheme.error
+                                        else personaColor(config.secundario.slotKey, userProfile)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("🤝", fontSize = 10.sp)
+                        }
                     }
                 }
             }
@@ -1057,6 +1084,15 @@ fun DineroCruzadoCard(externoSantiago: Double, currentUserProfile: String, confi
     }
 }
 
+/**
+ * Tarjeta de saldo individual.
+ *
+ *  - "Le corresponde" = lo que realmente es suyo (patrimonial).
+ *  - "En su poder"    = el dinero físico en sus cuentas, conciliable contra el homebanking.
+ *
+ * La diferencia entre ambas es la posición cruzada, que se explica una sola vez en
+ * [DineroCruzadoCard] (y línea 🤝 del pozo) en vez de repetirse por tarjeta.
+ */
 @Composable
 fun DesgloseSocioCard(
     modifier: Modifier,
@@ -1072,6 +1108,7 @@ fun DesgloseSocioCard(
     val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
     val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
     val textMainColor = if (isDark) Color.White else Color(0xFF191C19)
+    val rojo = MaterialTheme.colorScheme.error
 
     Card(
         modifier = modifier,
@@ -1115,10 +1152,10 @@ fun DesgloseSocioCard(
                 )
             }
 
-            // Balance Total
+            // Lo que realmente es suyo (físico ± lo cruzado). Es el número que importa.
             Column {
                 Text(
-                    text = "Saldo Total",
+                    text = "Le corresponde",
                     fontSize = 11.sp,
                     color = textMainColor.copy(alpha = 0.5f)
                 )
@@ -1126,16 +1163,17 @@ fun DesgloseSocioCard(
                     text = formatMoney.format(saldo),
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold,
-                    color = textMainColor,
+                    color = if (saldo < 0) rojo else textMainColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
 
-            // Saldo físico en sus propias cuentas (efectivo + virtual)
+            // Saldo físico en sus propias cuentas (efectivo + virtual). Es el que se concilia
+            // contra el homebanking / la billetera real.
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
-                    text = "En sus cuentas",
+                    text = "En su poder",
                     fontSize = 11.sp,
                     color = textMainColor.copy(alpha = 0.5f),
                     fontWeight = FontWeight.Medium

@@ -78,10 +78,31 @@ object AccountingEngine {
     private const val SANTIAGO = "Santiago"
     private const val ROCIO = "Rocío"
     private const val AMBOS = "Ambos"
+    private const val EFECTIVO = "Efectivo"
+    private const val VIRTUAL = "Billetera Virtual"
+
+    /**
+     * Tipo reservado de las filas de apertura: materializan el arrastre del mes anterior dentro de
+     * la propia hoja del mes. No son un flujo (no suman a aportes/gastos del periodo), son *stock*.
+     */
+    const val TIPO_APERTURA = "Apertura"
+
+    /** Categoría reservada de las filas de apertura. Nunca es elegible por el usuario. */
+    const val CATEGORIA_APERTURA = "Saldo inicial"
+
+    fun isOpeningRow(m: Movement): Boolean = m.tipo.equals(TIPO_APERTURA, ignoreCase = true)
+
+    /**
+     * Filas de arrastre automático que inyectaban las versiones <= 7.1: un único `Aporte` por
+     * persona, siempre como "Billetera Virtual" y sin propietario, así que perdían el efectivo y la
+     * propiedad cruzada. Se ignoran (el arrastre correcto son las filas [TIPO_APERTURA]).
+     */
+    fun isLegacyCarryover(m: Movement): Boolean =
+        !isOpeningRow(m) && m.categoria.equals(CATEGORIA_APERTURA, ignoreCase = true)
 
     /** Deriva el arrastre inicial a partir del estado final de una lista de movimientos. */
-    fun opening(list: List<Movement>): OpeningBalance {
-        val b = compute(list)
+    fun opening(list: List<Movement>, base: OpeningBalance = OpeningBalance()): OpeningBalance {
+        val b = compute(list, base)
         return OpeningBalance(
             santiagoEfectivo = b.santiagoEfectivo,
             santiagoVirtual = b.santiagoVirtual,
@@ -90,6 +111,116 @@ object AccountingEngine {
             netSantiagoEnRocio = b.santiagoExterno
         )
     }
+
+    /**
+     * Reconstruye el stock inicial a partir de las filas de apertura de un mes. Cada fila aporta a
+     * un bucket físico (responsable × método) y, si el propietario no es el responsable, al neto de
+     * propiedad cruzada — misma semántica que un "Aporte", pero sin contar como flujo del periodo.
+     */
+    fun openingFromRows(rows: List<Movement>): OpeningBalance {
+        var sEfec = 0.0
+        var sVirt = 0.0
+        var rEfec = 0.0
+        var rVirt = 0.0
+        var netSR = 0.0
+
+        for (m in rows) {
+            val respS = m.responsable.equals(SANTIAGO, ignoreCase = true)
+            val respR = m.responsable.equals(ROCIO, ignoreCase = true)
+            if (!respS && !respR) continue
+            val efec = m.metodoPago.equals(EFECTIVO, ignoreCase = true)
+
+            if (respS) { if (efec) sEfec += m.monto else sVirt += m.monto }
+            else { if (efec) rEfec += m.monto else rVirt += m.monto }
+
+            when (normalizePropietario(m)) {
+                SANTIAGO -> if (respR) netSR += m.monto
+                ROCIO -> if (respS) netSR -= m.monto
+                else -> { // Ambos: mitad de cada uno
+                    val half = m.monto / 2.0
+                    if (respS) netSR -= half else netSR += half
+                }
+            }
+        }
+        return OpeningBalance(sEfec, sVirt, rEfec, rVirt, netSR)
+    }
+
+    /**
+     * Serializa un [OpeningBalance] a las filas que se escriben en la hoja del mes. Inversa exacta
+     * de [openingFromRows].
+     *
+     * La propiedad cruzada se ancla al bucket **virtual** de quien tiene el dinero físicamente: da
+     * igual a qué método se impute (el neto no depende del medio de pago), pero fijarlo mantiene la
+     * generación determinística. Los ids también son determinísticos para que regenerar la apertura
+     * pise las filas anteriores en vez de duplicarlas.
+     *
+     * @param month "yyyy-MM"
+     */
+    fun openingRowsFor(month: String, o: OpeningBalance): List<Movement> {
+        val net = o.netSantiagoEnRocio
+        // net > 0: Santiago tiene plata en la cuenta de Rocío -> sale del virtual de Rocío.
+        // net < 0: Rocío tiene plata en la cuenta de Santiago -> sale del virtual de Santiago.
+        val sVirtDeRocio = if (net < 0) -net else 0.0
+        val rVirtDeSantiago = if (net > 0) net else 0.0
+
+        return listOfNotNull(
+            openingRow(month, SANTIAGO, SANTIAGO, EFECTIVO, o.santiagoEfectivo),
+            openingRow(month, SANTIAGO, SANTIAGO, VIRTUAL, o.santiagoVirtual - sVirtDeRocio),
+            if (sVirtDeRocio != 0.0) openingRow(month, SANTIAGO, ROCIO, VIRTUAL, sVirtDeRocio) else null,
+            openingRow(month, ROCIO, ROCIO, EFECTIVO, o.rocioEfectivo),
+            openingRow(month, ROCIO, ROCIO, VIRTUAL, o.rocioVirtual - rVirtDeSantiago),
+            if (rVirtDeSantiago != 0.0) openingRow(month, ROCIO, SANTIAGO, VIRTUAL, rVirtDeSantiago) else null
+        )
+    }
+
+    private fun openingRow(
+        month: String,
+        responsable: String,
+        propietario: String,
+        metodo: String,
+        monto: Double
+    ): Movement {
+        val quien = if (responsable == ROCIO) "r" else "s"
+        val deQuien = if (propietario == ROCIO) "r" else "s"
+        val medio = if (metodo == EFECTIVO) "efec" else "virt"
+        val deOtro = if (propietario != responsable) " (de $propietario)" else ""
+        return Movement(
+            id = "apertura-$month-$quien-$deQuien-$medio",
+            fecha = "$month-01 00:00",
+            monto = monto,
+            tipo = TIPO_APERTURA,
+            categoria = CATEGORIA_APERTURA,
+            responsable = responsable,
+            esComun = false,
+            propietario = propietario,
+            descripcion = "Saldo inicial $month · $responsable · $metodo$deOtro",
+            metodoPago = metodo
+        )
+    }
+
+    /**
+     * Resuelve el stock inicial del mes [month] a partir de *toda* la lista de movimientos.
+     *
+     * Orden de preferencia:
+     *  1. El mes tiene filas de apertura -> se usan tal cual. **No mira ningún mes anterior**, así
+     *     que las hojas viejas se pueden purgar sin romper nada.
+     *  2. No las tiene -> se replaya desde la apertura disponible más reciente que sea anterior.
+     *  3. No hay ninguna apertura -> se replaya todo el historial desde cero (modo <= 7.1).
+     */
+    fun openingFor(all: List<Movement>, month: String): OpeningBalance {
+        val usable = all.filter { !isLegacyCarryover(it) && monthOf(it).isNotEmpty() }
+        val anchors = usable.filter { isOpeningRow(it) }.groupBy { monthOf(it) }
+
+        anchors[month]?.let { return openingFromRows(it) }
+
+        val anchorMonth = anchors.keys.filter { it < month }.maxOrNull()
+        val base = anchorMonth?.let { openingFromRows(anchors.getValue(it)) } ?: OpeningBalance()
+        val desde = anchorMonth ?: ""
+        val replay = usable.filter { !isOpeningRow(it) && monthOf(it) >= desde && monthOf(it) < month }
+        return opening(replay, base)
+    }
+
+    private fun monthOf(m: Movement): String = if (m.fecha.length >= 7) m.fecha.substring(0, 7) else ""
 
     fun compute(list: List<Movement>, opening: OpeningBalance = OpeningBalance()): BalanceBreakdown {
         // El saldo de devolución en las transferencias depende del estado acumulado, así que
@@ -117,6 +248,8 @@ object AccountingEngine {
         var totalGastos = 0.0
 
         for (m in ordered) {
+            // Las filas de apertura son stock, no flujo: entran por [opening], nunca por acá.
+            if (isOpeningRow(m) || isLegacyCarryover(m)) continue
             val respS = m.responsable.equals(SANTIAGO, ignoreCase = true)
             val respR = m.responsable.equals(ROCIO, ignoreCase = true)
             if (!respS && !respR) continue

@@ -196,6 +196,53 @@ class CuotasEngineTest {
         assertTrue(CuotasEngine.totalTarjetaPorMes("2026-08", listOf(p), emptyList()).isEmpty())
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // Mes a pagar (la tarjeta cierra a fin de mes)
+    // ---------------------------------------------------------------------------------------------
+
+    @Test
+    fun mesAPagarEsElResumenAnterior() {
+        assertEquals("2026-07", CuotasEngine.mesAPagar("2026-08"))
+        assertEquals("2025-12", CuotasEngine.mesAPagar("2026-01")) // salto de año
+    }
+
+    @Test
+    fun elResumenAPagarNoIncluyeLasCuotasDelMesEnCurso() {
+        // Caso real: Rocío tenía cuotas en julio y en agosto. Estando a principios de agosto, lo que
+        // se paga es el resumen de julio; el de agosto recién cierra el 31.
+        val julio = plan(id = "p-jul", descripcion = "Sillón", fechaPrimeraCuota = "2026-07", cantidadCuotas = 6)
+        val agosto = plan(id = "p-ago", descripcion = "Celular", fechaPrimeraCuota = "2026-08", cantidadCuotas = 6)
+        val planes = listOf(julio, agosto)
+        val mesAPagar = CuotasEngine.mesAPagar("2026-08")
+
+        val aPagar = CuotasEngine.cuotasImpagasDelMes(mesAPagar, planes, emptyList())
+        assertEquals(1, aPagar.size)
+        assertEquals("p-jul", aPagar.single().first.id)
+
+        // El recordatorio del dashboard tampoco lo suma.
+        val recordatorios = CuotasEngine.recordatoriosDelMes(mesAPagar, planes, emptyList())
+        assertEquals(1, recordatorios.size)
+        assertEquals("2026-07", recordatorios.single().cuota.mesVencimiento)
+        assertFalse(recordatorios.single().atrasada) // es el resumen en curso, no un atraso
+
+        // El aviso de cierre (último día del mes) es otra cosa y SÍ mira el mes en curso: ahí caen
+        // la 2ª cuota del plan de julio y la 1ª del de agosto.
+        assertEquals(2, CuotasEngine.cuotasImpagasDelMes("2026-08", planes, emptyList()).size)
+    }
+
+    @Test
+    fun lasCuotasViejasImpagasSiguenApareciendoComoAtrasadas() {
+        // Cortar en el resumen cerrado no debe esconder deuda vieja.
+        val junio = plan(id = "p-jun", fechaPrimeraCuota = "2026-06", cantidadCuotas = 6)
+        val recordatorios = CuotasEngine.recordatoriosDelMes(
+            CuotasEngine.mesAPagar("2026-08"), listOf(junio), emptyList()
+        )
+        // Cuotas de junio y julio: la de junio atrasada, la de julio es el resumen a pagar.
+        assertEquals(2, recordatorios.size)
+        assertTrue(recordatorios.first { it.cuota.mesVencimiento == "2026-06" }.atrasada)
+        assertFalse(recordatorios.first { it.cuota.mesVencimiento == "2026-07" }.atrasada)
+    }
+
     @Test
     fun pagarUnaCuotaGeneraGastoPersonalSinPropiedadCruzada() {
         // El pago de una cuota es un gasto personal (responsable == propietario): no debe generar

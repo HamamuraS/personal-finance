@@ -69,12 +69,10 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
-    // Configuración
+    // Conexión: fija en el APK (ver [com.example.data.AppConfig]). Ya no se edita desde Ajustes.
     private val _spreadsheetId = MutableStateFlow(prefsHelper.scriptUrl)
-    val spreadsheetId: StateFlow<String> = _spreadsheetId.asStateFlow()
 
     private val _folderId = MutableStateFlow(prefsHelper.folderId)
-    val folderId: StateFlow<String> = _folderId.asStateFlow()
 
     private val _useLocalDemo = MutableStateFlow(prefsHelper.useLocalDemo)
     val useLocalDemo: StateFlow<Boolean> = _useLocalDemo.asStateFlow()
@@ -148,28 +146,70 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
         if (m.fecha.length >= 7) m.fecha.substring(0, 7) else ""
 
     /**
-     * Los aportes automáticos de arrastre ("Saldo inicial") de versiones anteriores se ignoran:
-     * el arrastre ahora se calcula plegando los meses previos (ver [updateFilteredData]), así que
-     * conservarlos duplicaría el saldo. Filtrarlos también repara los datos históricos existentes.
+     * ¿El mes seleccionado tiene su saldo inicial materializado? Si es `false`, el arrastre se está
+     * derivando replayando meses anteriores y esas hojas todavía no se pueden purgar.
      */
-    private fun isLegacyCarryover(m: Movement): Boolean =
-        m.categoria.equals("Saldo inicial", ignoreCase = true)
+    private val _tieneSaldoInicial = MutableStateFlow(false)
+    val tieneSaldoInicial: StateFlow<Boolean> = _tieneSaldoInicial.asStateFlow()
 
     fun updateFilteredData() {
         val currentSel = _selectedMonth.value
         val actualCurrent = java.text.SimpleDateFormat("yyyy-MM", java.util.Locale.US).format(java.util.Date())
         _isCurrentMonth.value = (currentSel == actualCurrent)
 
-        // Movimientos reales (sin las filas legacy de arrastre automático)
-        val relevant = _cachedAllMovements.filter { !isLegacyCarryover(it) && monthOf(it).isNotEmpty() }
+        // Movimientos reales (sin las filas legacy de arrastre automático de versiones <= 7.1)
+        val relevant = _cachedAllMovements.filter {
+            !AccountingEngine.isLegacyCarryover(it) && monthOf(it).isNotEmpty()
+        }
 
-        // Arrastre: estado final de todos los meses anteriores al seleccionado.
-        val prior = relevant.filter { monthOf(it) < currentSel }
-        val opening = AccountingEngine.opening(prior)
+        // Arrastre: filas de apertura del mes si existen; si no, replay desde la apertura anterior.
+        val opening = AccountingEngine.openingFor(relevant, currentSel)
 
-        val filtered = relevant.filter { monthOf(it) == currentSel }
+        val delMes = relevant.filter { monthOf(it) == currentSel }
+        _tieneSaldoInicial.value = delMes.any { AccountingEngine.isOpeningRow(it) }
+
+        // La apertura es stock: no se lista como movimiento ni suma a los flujos del periodo.
+        val filtered = delMes.filter { !AccountingEngine.isOpeningRow(it) }
         _movements.value = filtered
         _balance.value = AccountingEngine.compute(filtered, opening)
+    }
+
+    /**
+     * Materializa el saldo inicial del mes seleccionado: calcula el arrastre replayando los meses
+     * anteriores y escribe las filas [AccountingEngine.TIPO_APERTURA] en la hoja del mes.
+     *
+     * Es idempotente (los ids son determinísticos, así que se pisan las filas anteriores) y se
+     * puede volver a correr cuando se corrige un movimiento viejo. Una vez que un mes tiene su
+     * apertura, los meses anteriores dejan de intervenir en su cálculo y se pueden purgar.
+     */
+    fun recalcularSaldoInicial(onResult: (Boolean, String) -> Unit) {
+        val mes = _selectedMonth.value
+        if (mes.isEmpty()) {
+            onResult(false, "No hay un mes seleccionado.")
+            return
+        }
+        viewModelScope.launch {
+            _isLoading.value = true
+            _errorMessage.value = null
+
+            // El arrastre se deriva SIEMPRE de los meses anteriores, ignorando la apertura que el
+            // mes pueda tener ya escrita (si no, recalcular sería un no-op).
+            val relevant = _cachedAllMovements.filter {
+                !AccountingEngine.isLegacyCarryover(it) && monthOf(it).isNotEmpty() && monthOf(it) != mes
+            }
+            val opening = AccountingEngine.openingFor(relevant, mes)
+            val filas = AccountingEngine.openingRowsFor(mes, opening)
+
+            val ok = filas.all { repository.saveMovement(_spreadsheetId.value, it, action = "PUT") }
+            if (ok) {
+                doRefreshData()
+                onResult(true, "Saldo inicial de $mes actualizado (${filas.size} filas).")
+            } else {
+                _errorMessage.value = "No se pudo escribir el saldo inicial de $mes."
+                onResult(false, "No se pudo escribir el saldo inicial de $mes.")
+            }
+            _isLoading.value = false
+        }
     }
 
     fun setSelectedMonth(month: String) {
@@ -402,17 +442,12 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     /**
-     * Guarda la configuración
+     * Alterna entre el Modo Local (Demo) y la sincronización con la planilla. La URL del Web App y
+     * la carpeta de Drive vienen fijas en el APK, así que no hay nada más que configurar.
      */
-    fun saveSheetsConfig(newSheetIdOrUrl: String, newFolderId: String, useDemo: Boolean) {
-        prefsHelper.scriptUrl = newSheetIdOrUrl
-        prefsHelper.folderId = newFolderId
+    fun setUseLocalDemo(useDemo: Boolean) {
         prefsHelper.useLocalDemo = useDemo
-        
-        _spreadsheetId.value = newSheetIdOrUrl
-        _folderId.value = newFolderId
         _useLocalDemo.value = useDemo
-        
         refreshData()
     }
 

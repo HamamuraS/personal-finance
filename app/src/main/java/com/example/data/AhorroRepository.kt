@@ -70,14 +70,21 @@ class AhorroRepository(private val prefsHelper: PreferencesHelper) {
     /**
      * Agrega un nuevo movimiento al Web App.
      */
+    /**
+     * @param action "POST" para alta. "PUT" es un *upsert*: el Web App busca por id y reemplaza la
+     *        fila si existe, o la agrega si no. Lo usan las filas de apertura, cuyos ids son
+     *        determinísticos, para que recalcular el saldo inicial no duplique filas.
+     */
     suspend fun saveMovement(
-        webAppUrl: String, 
-        movement: Movement, 
+        webAppUrl: String,
+        movement: Movement,
         imageInfo: ImageInfo? = null,
-        folderId: String? = null
+        folderId: String? = null,
+        action: String = "POST"
     ): Boolean {
         if (prefsHelper.useLocalDemo) {
             val current = prefsHelper.getLocalMovements().toMutableList()
+            current.removeAll { it.id == movement.id }
             current.add(0, movement)
             prefsHelper.saveLocalMovements(current)
             return true
@@ -91,12 +98,12 @@ class AhorroRepository(private val prefsHelper: PreferencesHelper) {
         Log.d("AHORRO_DEBUG", "ENVIANDO A: $webAppUrl")
         return try {
             val req = WebAppRequest(
-                action = "POST",
+                action = action,
                 body = movement,
                 imageInfo = imageInfo,
                 folderId = folderId
             )
-            
+
             val response = sheetsService.addMovement(webAppUrl, req)
             Log.d("AHORRO_DEBUG", "CODIGO RESPUESTA: ${response.code()}")
             Log.d("AHORRO_DEBUG", "CUERPO: ${response.body()}")
@@ -104,7 +111,8 @@ class AhorroRepository(private val prefsHelper: PreferencesHelper) {
             
             if (response.isSuccessful && response.body()?.status == "SUCCESS") {
                 val cached = prefsHelper.getSheetsCache().toMutableList()
-                cached.add(movement)
+                val idx = cached.indexOfFirst { it.id == movement.id }
+                if (idx != -1) cached[idx] = movement else cached.add(movement)
                 prefsHelper.saveSheetsCache(cached)
                 true
             } else {

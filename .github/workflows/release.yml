@@ -34,6 +34,26 @@ jobs:
           FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
         run: echo "$FIREBASE_SERVICE_ACCOUNT_JSON" > "${{ github.workspace }}/firebase-service-account.json"
 
+      # La URL del Web App y la carpeta de Drive se hornean en el APK (ver AppConfig.kt). No están
+      # versionadas — el repo es público y esa URL da acceso de lectura/escritura a la planilla —
+      # así que en CI vienen de los secrets del repo.
+      - name: Generar el .env con la configuración de conexión
+        env:
+          SCRIPT_URL: ${{ secrets.SCRIPT_URL }}
+          DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+        run: |
+          if [ -z "$SCRIPT_URL" ] || [ -z "$DRIVE_FOLDER_ID" ]; then
+            echo "Faltan los secrets SCRIPT_URL y/o DRIVE_FOLDER_ID."
+            echo "El APK saldría en Modo Local (Demo) y sin sincronizar. Cargalos en"
+            echo "Settings > Secrets and variables > Actions y volvé a correr el workflow."
+            exit 1
+          fi
+          {
+            echo "GEMINI_API_KEY=MY_GEMINI_API_KEY"
+            echo "SCRIPT_URL=$SCRIPT_URL"
+            echo "DRIVE_FOLDER_ID=$DRIVE_FOLDER_ID"
+          } > "${{ github.workspace }}/.env"
+
       - name: Compilar el APK de release y subirlo a Firebase App Distribution
         env:
           KEYSTORE_PATH: ${{ github.workspace }}/release-upload-key.jks

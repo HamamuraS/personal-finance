@@ -230,4 +230,125 @@ class AccountingLogicTest {
         assertEquals(asc.santiagoExterno, desc.santiagoExterno, delta)
         assertEquals(asc.santiagoSaldoFinal, desc.santiagoSaldoFinal, delta)
     }
+
+    // ---------------------------------------------------------------------------------------------
+    // Saldo inicial materializado (filas de apertura)
+    // ---------------------------------------------------------------------------------------------
+
+    private fun assertOpeningEquals(esperado: OpeningBalance, real: OpeningBalance) {
+        assertEquals(esperado.santiagoEfectivo, real.santiagoEfectivo, delta)
+        assertEquals(esperado.santiagoVirtual, real.santiagoVirtual, delta)
+        assertEquals(esperado.rocioEfectivo, real.rocioEfectivo, delta)
+        assertEquals(esperado.rocioVirtual, real.rocioVirtual, delta)
+        assertEquals(esperado.netSantiagoEnRocio, real.netSantiagoEnRocio, delta)
+    }
+
+    @Test
+    fun lasFilasDeAperturaHacenRoundTripExacto() {
+        // Los tres signos posibles de la propiedad cruzada.
+        val casos = listOf(
+            OpeningBalance(60450.0, 2529770.23, 10500.0, 25117.96, 0.0),
+            OpeningBalance(55450.0, 3540917.09, 11400.0, 57455.96, 60000.0),   // Santiago en Rocío
+            OpeningBalance(1000.0, 200000.0, 500.0, 3000.0, -45000.0)          // Rocío en Santiago
+        )
+        for (o in casos) {
+            val filas = AccountingEngine.openingRowsFor("2026-09", o)
+            assertOpeningEquals(o, AccountingEngine.openingFromRows(filas))
+        }
+    }
+
+    @Test
+    fun laAperturaConservaElPrestamoCruzado() {
+        // El caso real: Santiago le prestó 60k a Rocío y quedaron estacionados en su cuenta.
+        // Rocío tiene 69.955,96 físicos pero solo 9.955,96 son suyos.
+        val cierre = OpeningBalance(
+            santiagoEfectivo = 55450.0, santiagoVirtual = 3540917.09,
+            rocioEfectivo = 12500.0, rocioVirtual = 57455.96,
+            netSantiagoEnRocio = 60000.0
+        )
+        val filas = AccountingEngine.openingRowsFor("2026-09", cierre)
+
+        // Se necesita una fila extra para el dinero de Santiago que está en la cuenta de Rocío.
+        assertEquals(5, filas.size)
+        val cruzada = filas.single { it.responsable == "Rocío" && it.propietario == "Santiago" }
+        assertEquals(60000.0, cruzada.monto, delta)
+
+        // Septiembre arranca solo con esas filas: el préstamo sobrevive al cambio de mes.
+        val b = AccountingEngine.compute(emptyList(), AccountingEngine.openingFromRows(filas))
+        assertEquals(69955.96, b.rocioEnMano, delta)
+        assertEquals(-60000.0, b.rocioExterno, delta)
+        assertEquals(9955.96, b.rocioSaldoFinal, delta)
+        assertEquals(60000.0, b.sEnRocio, delta)
+    }
+
+    @Test
+    fun conAperturaSePuedenPurgarLosMesesAnteriores() {
+        val junio = listOf(
+            Movement(fecha = "2026-06-05", monto = 500000.0, tipo = "Aporte", categoria = "Sueldo",
+                responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Billetera Virtual"),
+            Movement(fecha = "2026-06-10", monto = 80000.0, tipo = "Transferencia", categoria = "Otros",
+                responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Billetera Virtual"),
+            Movement(fecha = "2026-06-20", monto = 30000.0, tipo = "Gasto", categoria = "Super",
+                responsable = "Rocío", propietario = "Rocío", esComun = false, metodoPago = "Billetera Virtual")
+        )
+        val julio = listOf(
+            Movement(fecha = "2026-07-03", monto = 12000.0, tipo = "Gasto", categoria = "Gustos",
+                responsable = "Rocío", propietario = "Rocío", esComun = false, metodoPago = "Efectivo")
+        )
+
+        // Sin apertura: julio se deriva replayando junio (comportamiento <= 7.1).
+        val derivada = AccountingEngine.openingFor(junio + julio, "2026-07")
+        assertEquals(80000.0, derivada.netSantiagoEnRocio, delta)
+
+        // Materializamos la apertura de julio y borramos junio entero.
+        val apertura = AccountingEngine.openingRowsFor("2026-07", derivada)
+        val soloJulio = AccountingEngine.openingFor(julio + apertura, "2026-07")
+        assertOpeningEquals(derivada, soloJulio)
+
+        // Y agosto, que no tiene apertura propia, se ancla en la de julio sin ver junio.
+        val agosto = listOf(
+            Movement(fecha = "2026-08-02", monto = 5000.0, tipo = "Gasto", categoria = "Gustos",
+                responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Efectivo")
+        )
+        assertOpeningEquals(
+            AccountingEngine.openingFor(junio + julio + agosto, "2026-08"),
+            AccountingEngine.openingFor(julio + apertura + agosto, "2026-08")
+        )
+    }
+
+    @Test
+    fun laAperturaNoSumaALosFlujosDelMes() {
+        val apertura = AccountingEngine.openingRowsFor(
+            "2026-09", OpeningBalance(0.0, 300000.0, 0.0, 50000.0, 0.0)
+        )
+        val gasto = Movement(fecha = "2026-09-04", monto = 7000.0, tipo = "Gasto", categoria = "Gustos",
+            responsable = "Rocío", propietario = "Rocío", esComun = false, metodoPago = "Billetera Virtual")
+
+        // Aunque las filas de apertura se cuelen en la lista del mes, compute() las ignora.
+        val b = AccountingEngine.compute(apertura + gasto, AccountingEngine.openingFromRows(apertura))
+        assertEquals(0.0, b.totalAportesMes, delta)
+        assertEquals(7000.0, b.totalGastosMes, delta)
+        assertEquals(343000.0, b.totalPozo, delta)
+    }
+
+    @Test
+    fun lasFilasLegacyDeSaldoInicialSiguenIgnorandose() {
+        // Versiones <= 7.1 inyectaban un Aporte "Saldo inicial" por persona. Conservarlas duplicaría.
+        val legacy = Movement(fecha = "2026-07-01", monto = 608175.29, tipo = "Aporte",
+            categoria = "Saldo inicial", responsable = "Santiago", propietario = "Santiago",
+            esComun = false, metodoPago = "Billetera Virtual")
+        val gasto = Movement(fecha = "2026-07-05", monto = 1000.0, tipo = "Gasto", categoria = "Gustos",
+            responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Billetera Virtual")
+
+        assertEquals(true, AccountingEngine.isLegacyCarryover(legacy))
+        assertEquals(false, AccountingEngine.isOpeningRow(legacy))
+
+        val b = AccountingEngine.compute(listOf(legacy, gasto))
+        assertEquals(-1000.0, b.santiagoSaldoFinal, delta)
+        assertEquals(0.0, b.totalAportesMes, delta)
+
+        // Y no cuentan como ancla: openingFor sigue replayando.
+        val o = AccountingEngine.openingFor(listOf(legacy, gasto), "2026-08")
+        assertEquals(-1000.0, o.santiagoVirtual, delta)
+    }
 }
