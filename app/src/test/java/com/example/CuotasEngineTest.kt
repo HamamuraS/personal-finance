@@ -4,6 +4,7 @@ import com.example.data.CuotaPlan
 import com.example.data.Movement
 import com.example.ui.AccountingEngine
 import com.example.ui.CuotasEngine
+import com.example.ui.OpeningBalance
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -241,6 +242,49 @@ class CuotasEngineTest {
         assertEquals(2, recordatorios.size)
         assertTrue(recordatorios.first { it.cuota.mesVencimiento == "2026-06" }.atrasada)
         assertFalse(recordatorios.first { it.cuota.mesVencimiento == "2026-07" }.atrasada)
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Convivencia con el saldo inicial materializado (filas de apertura, v7.2)
+    // ---------------------------------------------------------------------------------------------
+
+    @Test
+    fun lasFilasDeAperturaNoAfectanElModuloDeCuotas() {
+        // La pantalla de cuotas recibe `allMovements` SIN filtrar, así que las filas de apertura
+        // llegan hasta acá. No deben contarse como pagos: van con planId="" y cuotaNumero=0.
+        val apertura = AccountingEngine.openingRowsFor(
+            "2026-08", OpeningBalance(60450.0, 2529770.23, 10500.0, 25117.96, 60000.0)
+        )
+        assertTrue(apertura.all { it.planId.isEmpty() && it.cuotaNumero == 0 })
+
+        val p = plan(id = "p", cantidadCuotas = 6, fechaPrimeraCuota = "2026-07")
+        val pagoReal = pago("p", 1)
+
+        val sinApertura = CuotasEngine.cronograma(p, listOf(pagoReal))
+        val conApertura = CuotasEngine.cronograma(p, listOf(pagoReal) + apertura)
+        assertEquals(sinApertura, conApertura)
+        assertEquals(1, CuotasEngine.cuotasPagadas(p, listOf(pagoReal) + apertura))
+
+        // Y tampoco se cuelan en los recordatorios ni en el total por tarjeta.
+        assertEquals(
+            CuotasEngine.recordatoriosDelMes("2026-08", listOf(p), listOf(pagoReal)).size,
+            CuotasEngine.recordatoriosDelMes("2026-08", listOf(p), listOf(pagoReal) + apertura).size
+        )
+        assertEquals(
+            CuotasEngine.totalTarjetaPorMes("2026-08", listOf(p), listOf(pagoReal)),
+            CuotasEngine.totalTarjetaPorMes("2026-08", listOf(p), listOf(pagoReal) + apertura)
+        )
+    }
+
+    @Test
+    fun unPlanConIdVacioTampocoLevantaLasFilasDeApertura() {
+        // Caso patológico: si una fila de la hoja "Planes" quedara sin ID, `planId == plan.id` daría
+        // true contra las aperturas (ambos ""). El guard de cuotaNumero > 0 lo impide igual.
+        val apertura = AccountingEngine.openingRowsFor("2026-08", OpeningBalance(1.0, 2.0, 3.0, 4.0, 0.0))
+        val roto = plan(id = "", cantidadCuotas = 6, fechaPrimeraCuota = "2026-07")
+
+        assertEquals(0, CuotasEngine.cuotasPagadas(roto, apertura))
+        assertTrue(CuotasEngine.cronograma(roto, apertura).none { it.pagada })
     }
 
     @Test
