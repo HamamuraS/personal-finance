@@ -6,6 +6,11 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- La subida de movimientos se encola como trabajo expedited para que corra con la app
+         cerrada. En Android 11 y anteriores WorkManager lo implementa como servicio en primer
+         plano, que necesita estos permisos (en 12+ va como job expedited y no se usan). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application
@@ -28,6 +33,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Tipo del servicio en primer plano que usa WorkManager para el trabajo expedited.
+             Desde Android 14 declararlo es obligatorio o el servicio no puede arrancar. -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

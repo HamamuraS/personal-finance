@@ -32,6 +32,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.CuotaPlan
+import com.example.data.Categorias
 import com.example.data.Movement
 import com.example.data.UsuariosConfig
 import com.example.ui.AhorroViewModel
@@ -43,11 +44,9 @@ import java.text.NumberFormat
 import java.util.Calendar
 import java.util.Locale
 
-// Categorías del gasto que generará cada cuota (mismo set que los gastos en AddMovementScreen).
-private val CATEGORIAS_CUOTAS = listOf(
-    "Transporte", "Servicios", "Animales", "Supermercado", "Verdulería", "Alimentos frescos",
-    "Farmacia", "Indumentaria", "Cuidado personal", "Salidas", "Gustos", "Utilería", "Otros"
-)
+// Categorías del gasto que generará cada cuota. Mismo set que los gastos del alta de movimientos:
+// ambos leen el catálogo compartido [Categorias], así que no se pueden desincronizar.
+private val CATEGORIAS_CUOTAS = Categorias.CUOTAS
 
 // Tarjetas sugeridas (selección por chip). Se derivan de los nombres actuales de los usuarios:
 // con la config por defecto dan "Visa Santiago"/"BBVA Rocío"/"Ualá Rocío" (idénticas a antes), y si

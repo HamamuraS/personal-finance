@@ -379,6 +379,36 @@ object AccountingEngine {
         )
     }
 
+    /**
+     * Normaliza el propietario de [m] a uno de: "Santiago", "Rocío", "Ambos".
+     *
+     * Es la **única** definición de "de quién es este movimiento" en la app. Fuera del motor la usan
+     * Métricas y el filtro por persona de Inicio: antes agrupaban por `responsable` (de qué cuenta
+     * salió la plata), que no es lo mismo y hacía que un gasto de Rocío pagado desde la cuenta de
+     * Santiago apareciera como gasto de Santiago.
+     */
+    fun propietarioDe(m: Movement): String = normalizePropietario(m)
+
+    /**
+     * Porción de un **gasto** que le corresponde patrimonialmente a [slotKey], con el mismo criterio
+     * que [compute]: los gastos personales van enteros al propietario y los comunes (o con
+     * propietario "Ambos") se parten 50/50. Así la suma de las dos personas siempre da el total.
+     */
+    fun porcionDelGasto(m: Movement, slotKey: String): Double {
+        val prop = normalizePropietario(m)
+        if (m.esComun || prop == AMBOS) return m.monto / 2.0
+        return if (prop.equals(slotKey, ignoreCase = true)) m.monto else 0.0
+    }
+
+    /**
+     * ¿[m] "es de" [slotKey]? Criterio de pertenencia patrimonial para filtrar listados. Los
+     * movimientos comunes / de "Ambos" pertenecen a las **dos** personas, así que matchean siempre.
+     */
+    fun perteneceA(m: Movement, slotKey: String): Boolean {
+        val prop = normalizePropietario(m)
+        return prop == AMBOS || m.esComun || prop.equals(slotKey, ignoreCase = true)
+    }
+
     /** Normaliza el propietario a uno de: "Santiago", "Rocío", "Ambos". Fallback: el responsable. */
     private fun normalizePropietario(m: Movement): String {
         val p = m.propietario.trim()

@@ -9,6 +9,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -31,12 +32,27 @@ import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import com.example.data.CuotaPlan
 import com.example.data.Movement
 import com.example.data.UsuariosConfig
+import com.example.ui.AccountingEngine
 import com.example.ui.BalanceBreakdown
+import com.example.ui.DashboardFilters
 import com.example.ui.CuotaRecordatorio
 import com.example.ui.CuotasEngine
 import com.example.ui.theme.personaColor
 import java.text.NumberFormat
 import java.util.Locale
+
+/**
+ * Posición del panel de filtros dentro del `LazyColumn` de Inicio.
+ *
+ * `LazyListState` solo entiende de índices, así que hay que contar los `item` que van antes:
+ * pozo común, [opcional] recordatorio de cuotas, título "Saldos Individuales", fila de socios,
+ * gastos comunes, dinero cruzado y el título "Movimientos Recientes".
+ *
+ * Está separado y con nombre para que se vea que existe: agregar o sacar una tarjeta del
+ * encabezado obliga a tocar esta cuenta.
+ */
+private fun indiceDeFiltros(hayRecordatorioDeCuotas: Boolean): Int =
+    if (hayRecordatorioDeCuotas) 7 else 6
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -56,14 +72,42 @@ fun DashboardScreen(
     onMonthSelected: (String) -> Unit,
     plans: List<CuotaPlan> = emptyList(),
     allMovements: List<Movement> = emptyList(),
-    onConfirmCuota: (CuotaPlan, Int, String, String, Double?, () -> Unit) -> Unit = { _, _, _, _, _, _ -> }
+    onConfirmCuota: (CuotaPlan, Int, String, String, Double?, () -> Unit) -> Unit = { _, _, _, _, _, _ -> },
+    // Filtros: búsqueda por descripción + persona + tipo + categorías. Viven en el ViewModel (ver
+    // [DashboardFilters]) para sobrevivir el cambio de pestaña y para que Métricas pueda aplicarlos.
+    filters: DashboardFilters = DashboardFilters(),
+    onFiltersChange: (DashboardFilters) -> Unit = {},
+    // Altas encoladas que la planilla todavía no confirmó, con su cantidad de intentos fallidos:
+    // se listan igual (fila optimista) pero marcadas, para que se vea que el guardado sigue en
+    // curso — o que falló y se está reintentando.
+    pendingStates: Map<String, Int> = emptyMap(),
+    /**
+     * Señal de un solo uso: al llegar desde Métricas hay que abrir la pantalla directo a la altura
+     * de los filtros, porque lo que se vino a ver es el listado filtrado y no los saldos. Se
+     * consume con [onScrollAFiltrosConsumido] para no volver a saltar cada vez que se entra a
+     * Inicio a mano.
+     */
+    scrollAFiltros: Boolean = false,
+    onScrollAFiltrosConsumido: () -> Unit = {}
 ) {
-    // Filtros: búsqueda por descripción + persona (por slotKey del responsable) + tipo + categorías.
-    // filterPerson: "Todos" o un slotKey; el label visible se resuelve con config.nombreDe(...).
-    var filterPerson by remember { mutableStateOf("Todos") }
-    var filterTipo by remember { mutableStateOf("Todos") }     // Todos | Gastos | Aportes | Transfer.
-    var selectedCategories by remember { mutableStateOf<Set<String>>(emptySet()) }
-    var searchQuery by remember { mutableStateOf("") }
+    // Se calcula acá arriba, y no dentro del LazyColumn, porque de esta tarjeta depende el índice
+    // del panel de filtros (ver [indiceDeFiltros]).
+    val mesActualReal = java.text.SimpleDateFormat("yyyy-MM", java.util.Locale.US).format(java.util.Date())
+    val recordatoriosCuotas = CuotasEngine
+        .recordatoriosDelMes(CuotasEngine.mesAPagar(mesActualReal), plans, allMovements)
+        .filter { it.plan.propietario.equals(userProfile, ignoreCase = true) }
+
+    val listState = rememberLazyListState()
+    LaunchedEffect(scrollAFiltros) {
+        if (!scrollAFiltros) return@LaunchedEffect
+        listState.scrollToItem(indiceDeFiltros(hayRecordatorioDeCuotas = recordatoriosCuotas.isNotEmpty()))
+        onScrollAFiltrosConsumido()
+    }
+
+    val filterPerson = filters.persona
+    val filterTipo = filters.tipo
+    val selectedCategories = filters.categorias
+    val searchQuery = filters.query
     val formatMoney = remember {
         java.text.DecimalFormat("#,##0.00").apply {
             val symbols = java.text.DecimalFormatSymbols()
@@ -143,12 +187,16 @@ fun DashboardScreen(
                 .padding(innerPadding)
         ) {
             LazyColumn(
+                state = listState,
                 modifier = Modifier
                     .fillMaxSize()
                     .background(MaterialTheme.colorScheme.background),
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
+                // ¡OJO! Si se agrega o saca un `item` de acá arriba, hay que actualizar
+                // [indiceDeFiltros] o el salto desde Métricas cae en la tarjeta equivocada.
+
                 // Tarjeta de Pozo Común
                 item {
                     PozoComunCard(userProfile = userProfile, config = config, balance = balance, formatMoney = formatMoney)
@@ -157,9 +205,6 @@ fun DashboardScreen(
                 // Recordatorio: cuotas a pagar del usuario activo (incluye atrasadas), independiente
                 // del mes que se esté visualizando. Se corta en el último resumen CERRADO, no en el
                 // mes en curso: la tarjeta cierra a fin de mes, así que en agosto se paga julio.
-                val mesActualReal = java.text.SimpleDateFormat("yyyy-MM", java.util.Locale.US).format(java.util.Date())
-                val recordatoriosCuotas = CuotasEngine.recordatoriosDelMes(CuotasEngine.mesAPagar(mesActualReal), plans, allMovements)
-                    .filter { it.plan.propietario.equals(userProfile, ignoreCase = true) }
                 if (recordatoriosCuotas.isNotEmpty()) {
                     item {
                         CuotasRecordatorioCard(
@@ -248,11 +293,15 @@ fun DashboardScreen(
                     }
                 }
 
-                // Filtrado: descripción -> persona (responsable) -> tipo -> categorías (multi)
+                // Filtrado: descripción -> persona (propietario) -> tipo -> categorías (multi).
+                // La persona se resuelve con [AccountingEngine.perteneceA]: de quién ES el movimiento,
+                // no de qué cuenta salió. Un gasto de Rocío pagado desde la cuenta de Santiago cae
+                // bajo Rocío, igual que en las tarjetas de saldos y en Métricas. Los comunes /
+                // "Ambos" pertenecen a los dos, así que aparecen filtre quien filtre.
                 val query = searchQuery.trim()
                 val baseFiltered = movements.filter { m ->
                     (query.isEmpty() || m.descripcion.contains(query, ignoreCase = true)) &&
-                        (filterPerson == "Todos" || m.responsable.equals(filterPerson, ignoreCase = true)) &&
+                        (filterPerson == DashboardFilters.TODOS || AccountingEngine.perteneceA(m, filterPerson)) &&
                         when (filterTipo) {
                             "Gastos" -> m.tipo.equals("Gasto", ignoreCase = true)
                             "Aportes" -> m.tipo.equals("Aporte", ignoreCase = true)
@@ -275,20 +324,21 @@ fun DashboardScreen(
                         currentUser = userProfile,
                         config = config,
                         searchQuery = searchQuery,
-                        onSearchChange = { searchQuery = it },
-                        onPersonChange = { filterPerson = it },
+                        onSearchChange = { onFiltersChange(filters.copy(query = it)) },
+                        onPersonChange = { onFiltersChange(filters.copy(persona = it)) },
                         tipo = filterTipo,
-                        onTipoChange = { filterTipo = it },
+                        onTipoChange = { onFiltersChange(filters.copy(tipo = it)) },
                         availableCategories = availableCategories,
                         selectedCategories = effectiveCategories,
                         onToggleCategory = { cat ->
-                            selectedCategories = if (selectedCategories.contains(cat)) {
+                            val nuevas = if (selectedCategories.contains(cat)) {
                                 selectedCategories - cat
                             } else {
                                 selectedCategories + cat
                             }
+                            onFiltersChange(filters.copy(categorias = nuevas))
                         },
-                        onClearCategories = { selectedCategories = emptySet() }
+                        onClearCategories = { onFiltersChange(filters.copy(categorias = emptySet())) }
                     )
                 }
 
@@ -326,7 +376,8 @@ fun DashboardScreen(
                             currentUserProfile = userProfile,
                             config = config,
                             onDelete = { onDeleteMovement(mov) },
-                            onDuplicate = { onDuplicateMovement(mov) }
+                            onDuplicate = { onDuplicateMovement(mov) },
+                            intentosPendientes = pendingStates[mov.id]
                         )
                     }
                 }
@@ -345,7 +396,9 @@ fun SwipeableMovementItem(
     currentUserProfile: String,
     config: UsuariosConfig,
     onDelete: () -> Unit,
-    onDuplicate: () -> Unit
+    onDuplicate: () -> Unit,
+    /** null = ya está en la planilla. 0 = subiendo. > 0 = falló y se está reintentando. */
+    intentosPendientes: Int? = null
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var showDeleteDialog by remember { mutableStateOf(false) }
@@ -442,7 +495,8 @@ fun SwipeableMovementItem(
             currentUserProfile = currentUserProfile,
             config = config,
             onDelete = onDelete,
-            onDuplicate = onDuplicate
+            onDuplicate = onDuplicate,
+            intentosPendientes = intentosPendientes
         )
     }
 }
@@ -457,7 +511,9 @@ fun MovementItem(
     currentUserProfile: String,
     config: UsuariosConfig,
     onDelete: () -> Unit,
-    onDuplicate: () -> Unit
+    onDuplicate: () -> Unit,
+    /** null = ya está en la planilla. 0 = subiendo. > 0 = falló y se está reintentando. */
+    intentosPendientes: Int? = null
 ) {
     var showDuplicateDialog by remember { mutableStateOf(false) }
     var showDetail by remember { mutableStateOf(false) }
@@ -592,10 +648,18 @@ fun MovementItem(
                 ) {
                     val responsableTag = config.nombreDe(movement.responsable)
                     val metodoTag = if (movement.metodoPago.contains("Efectivo", ignoreCase = true)) "💵" else "💳"
+                    // La fila optimista se marca: encolada pero sin confirmar. Si ya hubo
+                    // intentos fallidos se dice, porque la notificación de error puede no haber
+                    // llegado nunca (se descarta si el permiso de notificaciones está denegado).
+                    val pendienteTag = when {
+                        intentosPendientes == null -> ""
+                        intentosPendientes > 0 -> "⚠️ Sin guardar, reintentando • "
+                        else -> "⏳ Guardando… • "
+                    }
                     val subtitulo = if (movement.descripcion.isNotEmpty()) {
-                        "$metodoTag $responsableTag • ${movement.descripcion}"
+                        "$pendienteTag$metodoTag $responsableTag • ${movement.descripcion}"
                     } else {
-                        "$metodoTag $responsableTag"
+                        "$pendienteTag$metodoTag $responsableTag"
                     }
                     Text(
                         text = subtitulo,

@@ -25,7 +25,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import com.example.data.PreferencesHelper
-import com.example.data.notifications.CuotasReminderScheduler
+import com.example.data.notifications.BackgroundSyncScheduler
 import com.example.ui.AhorroViewModel
 import com.example.ui.components.AddMovementScreen
 import com.example.ui.components.CuotasScreen
@@ -69,7 +69,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        CuotasReminderScheduler.schedule(applicationContext)
+        BackgroundSyncScheduler.schedule(applicationContext)
         pedirPermisoDeNotificacionesUnaVez()
         pendingOpenTab = tabFromIntent(intent)
 
@@ -110,6 +110,9 @@ class MainActivity : ComponentActivity() {
                 val plans by viewModel.plans.collectAsState()
                 val allMovements by viewModel.allMovements.collectAsState()
                 val selectedMonth by viewModel.selectedMonth.collectAsState()
+                val dashboardFilters by viewModel.dashboardFilters.collectAsState()
+                val pendingStates by viewModel.pendingStates.collectAsState()
+                val scrollAFiltros by viewModel.scrollAFiltros.collectAsState()
 
                 LaunchedEffect(isCurrentMonth) {
                     if (!isCurrentMonth && currentTab == ScreenTab.NUEVO) {
@@ -180,7 +183,12 @@ class MainActivity : ComponentActivity() {
                                     allMovements = allMovements,
                                     onConfirmCuota = { plan, numero, fecha, metodo, monto, onSuccess ->
                                         viewModel.confirmarCuota(plan, numero, fecha, metodo, monto, onSuccess = onSuccess)
-                                    }
+                                    },
+                                    filters = dashboardFilters,
+                                    onFiltersChange = { viewModel.setDashboardFilters(it) },
+                                    pendingStates = pendingStates,
+                                    scrollAFiltros = scrollAFiltros,
+                                    onScrollAFiltrosConsumido = { viewModel.consumirScrollAFiltros() }
                                 )
                             }
                             ScreenTab.NUEVO -> {
@@ -204,7 +212,13 @@ class MainActivity : ComponentActivity() {
                                     selectedMonth = selectedMonth,
                                     onMonthSelected = { viewModel.setSelectedMonth(it) },
                                     plans = plans,
-                                    allMovements = allMovements
+                                    allMovements = allMovements,
+                                    // Tocar una categoría en Métricas = "quiero ver el detalle":
+                                    // deja el filtro puesto y salta a Inicio. Sin cambios de UI.
+                                    onVerDetalle = { persona, categoria ->
+                                        viewModel.verDetalleDeGastos(persona, categoria)
+                                        currentTab = ScreenTab.INICIO
+                                    }
                                 )
                             }
                             ScreenTab.AJUSTES -> {

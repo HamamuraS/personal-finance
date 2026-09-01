@@ -52,6 +52,9 @@ class AhorroRepository(private val prefsHelper: PreferencesHelper) {
                 if (value?.status == "SUCCESS") {
                     val rows = value.data ?: emptyList()
                     prefsHelper.saveSheetsCache(rows)
+                    // Único punto donde consta que la red respondió de verdad: acá se renueva la
+                    // ventana de frescura que evita el fetch automático en cada arranque.
+                    prefsHelper.lastFetchAt = System.currentTimeMillis()
                     rows
                 } else {
                     Log.e("AhorroRepository", "WebApp returned error: ${value?.message}")
@@ -240,6 +243,7 @@ class AhorroRepository(private val prefsHelper: PreferencesHelper) {
         return prefsHelper.getPlansCache()
             .map { normalizePlan(it) }
             .sortedByDescending { it.fechaCreacion }
+            .distinctBy { it.id }
     }
 
     /**
@@ -267,9 +271,12 @@ class AhorroRepository(private val prefsHelper: PreferencesHelper) {
             val response = sheetsService.getPlans(requestUrl)
 
             if (response.isSuccessful && response.body()?.status == "SUCCESS") {
+                // distinctBy: la pantalla de Cuotas usa el id como key de la lista, así que un
+                // plan duplicado en la planilla la haría crashear en vez de mostrarse dos veces.
                 val plans = (response.body()?.plans ?: emptyList())
                     .map { normalizePlan(it) }
                     .sortedByDescending { it.fechaCreacion }
+                    .distinctBy { it.id }
                 if (!soloPagos) prefsHelper.savePlansCache(plans)
                 plans
             } else {

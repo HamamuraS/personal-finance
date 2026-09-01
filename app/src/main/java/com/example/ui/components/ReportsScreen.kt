@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.sp
 import com.example.data.CuotaPlan
 import com.example.data.Movement
 import com.example.data.UsuariosConfig
+import com.example.ui.AccountingEngine
 import com.example.ui.BalanceBreakdown
 import com.example.ui.CuotasEngine
 import com.example.ui.theme.personaColor
@@ -43,7 +44,12 @@ fun ReportsScreen(
     selectedMonth: String,
     onMonthSelected: (String) -> Unit,
     plans: List<CuotaPlan> = emptyList(),
-    allMovements: List<Movement> = emptyList()
+    allMovements: List<Movement> = emptyList(),
+    /**
+     * Tocar una línea de categoría lleva a Inicio con el filtro ya aplicado (gastos + persona +
+     * categoría). `persona` es el slotKey del dueño del gasto, o null en la tarjeta combinada.
+     */
+    onVerDetalle: (persona: String?, categoria: String) -> Unit = { _, _ -> }
 ) {
     // Total que caerá en cada tarjeta en el mes seleccionado (cuotas pagadas + impagas).
     val tarjetaTotals = CuotasEngine.totalTarjetaPorMes(selectedMonth, plans, allMovements)
@@ -145,6 +151,8 @@ fun ReportsScreen(
                 }
 
                 if (movements.isNotEmpty()) {
+                    val gastos = movements.filter { it.tipo.equals("Gasto", ignoreCase = true) }
+
                     // Tarjeta 1: Aportes por socio
                     item {
                         ReportAportesCard(userProfile = userProfile, config = config, balance = balance, formatMoney = formatMoney)
@@ -154,9 +162,10 @@ fun ReportsScreen(
                     item {
                         ReportCategoriasCard(
                             title = "Gastos Totales (Combinados)",
-                            movements = movements.filter { it.tipo.lowercase() == "gasto" },
+                            sumPorCategoria = sumPorCategoria(gastos) { it.monto },
                             formatMoney = formatMoney,
-                            accentColor = MaterialTheme.colorScheme.primary
+                            accentColor = MaterialTheme.colorScheme.primary,
+                            onCategoriaClick = { onVerDetalle(null, it) }
                         )
                     }
 
@@ -164,9 +173,12 @@ fun ReportsScreen(
                     item {
                         ReportCategoriasCard(
                             title = "Gastos de ${config.primario.nombre}",
-                            movements = movements.filter { it.tipo.lowercase() == "gasto" && it.responsable.equals(config.primario.slotKey, ignoreCase = true) },
+                            sumPorCategoria = sumPorCategoria(gastos) {
+                                AccountingEngine.porcionDelGasto(it, config.primario.slotKey)
+                            },
                             formatMoney = formatMoney,
-                            accentColor = personaColor(config.primario.slotKey, userProfile)
+                            accentColor = personaColor(config.primario.slotKey, userProfile),
+                            onCategoriaClick = { onVerDetalle(config.primario.slotKey, it) }
                         )
                     }
 
@@ -174,9 +186,12 @@ fun ReportsScreen(
                     item {
                         ReportCategoriasCard(
                             title = "Gastos de ${config.secundario.nombre}",
-                            movements = movements.filter { it.tipo.lowercase() == "gasto" && it.responsable.equals(config.secundario.slotKey, ignoreCase = true) },
+                            sumPorCategoria = sumPorCategoria(gastos) {
+                                AccountingEngine.porcionDelGasto(it, config.secundario.slotKey)
+                            },
                             formatMoney = formatMoney,
-                            accentColor = personaColor(config.secundario.slotKey, userProfile)
+                            accentColor = personaColor(config.secundario.slotKey, userProfile),
+                            onCategoriaClick = { onVerDetalle(config.secundario.slotKey, it) }
                         )
                     }
                 }
@@ -279,12 +294,29 @@ fun ReportAportesCard(userProfile: String, config: UsuariosConfig, balance: Bala
     }
 }
 
+/**
+ * Suma los gastos por categoría aplicando [porcion] a cada movimiento, que es lo que decide **cuánto
+ * de ese gasto** entra en esta tarjeta (todo, la mitad si es común, o nada si es de la otra persona).
+ * Descarta solo las categorías que quedan exactamente en cero (la persona no participó del gasto):
+ * un total negativo —un reembolso cargado como gasto— se sigue listando, como antes.
+ */
+private fun sumPorCategoria(
+    gastos: List<Movement>,
+    porcion: (Movement) -> Double
+): List<Pair<String, Double>> =
+    gastos.groupBy { it.categoria }
+        .mapValues { (_, list) -> list.sumOf(porcion) }
+        .filterValues { it != 0.0 }
+        .toList()
+        .sortedByDescending { it.second }
+
 @Composable
 fun ReportCategoriasCard(
     title: String,
-    movements: List<Movement>,
+    sumPorCategoria: List<Pair<String, Double>>,
     formatMoney: NumberFormat,
-    accentColor: Color
+    accentColor: Color,
+    onCategoriaClick: (String) -> Unit = {}
 ) {
     val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
     val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
@@ -308,12 +340,7 @@ fun ReportCategoriasCard(
                 color = MaterialTheme.colorScheme.onSurface
             )
 
-            // Ya vienen filtrados por tipo (gasto) y responsable desde el llamador
-            val sumPorCategoria = movements.groupBy { it.categoria }
-                .mapValues { (_, list) -> list.sumOf { it.monto } }
-                .toList()
-                .sortedByDescending { it.second }
-
+            // Los montos ya vienen atribuidos por el llamador (ver [sumPorCategoria]).
             val totalGastos = sumPorCategoria.sumOf { it.second }
 
             if (totalGastos == 0.0) {
@@ -332,7 +359,11 @@ fun ReportCategoriasCard(
                 // falsa impresión de que ciertos gastos —p.ej. en efectivo— no se estaban sumando).
                 sumPorCategoria.forEach { (catName, amount) ->
                     val percentage = (amount / totalGastos).toFloat()
-                    Column(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onCategoriaClick(catName) }
+                    ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,

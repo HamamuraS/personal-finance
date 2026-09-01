@@ -16,6 +16,8 @@ class PreferencesHelper(context: Context) {
     private val planListAdapter = moshi.adapter<List<CuotaPlan>>(planType)
     private val usuarioType = Types.newParameterizedType(List::class.java, Usuario::class.java)
     private val usuarioListAdapter = moshi.adapter<List<Usuario>>(usuarioType)
+    private val pendingType = Types.newParameterizedType(List::class.java, PendingMovement::class.java)
+    private val pendingListAdapter = moshi.adapter<List<PendingMovement>>(pendingType)
 
     companion object {
         private const val KEY_USE_LOCAL_DEMO = "use_local_demo"
@@ -30,6 +32,17 @@ class PreferencesHelper(context: Context) {
         private const val KEY_NOTIF_PERMISO_PEDIDO = "notif_permiso_pedido"
         private const val KEY_LAST_CIERRE_NOTIFICADO = "last_cierre_notificado"
         private const val KEY_LAST_ATRASO_NOTIFICADO = "last_atraso_notificado"
+        private const val KEY_LAST_FETCH_AT = "last_fetch_at"
+        private const val KEY_PENDING_MOVEMENTS = "pending_movements"
+
+        /** Ventana de frescura del cache: no se refresca solo hasta que pasen 6 horas. */
+        const val FETCH_TTL_MILLIS = 6L * 60 * 60 * 1000
+
+        /**
+         * Candado de la cola de pendientes, compartido por **todas** las instancias: el ViewModel,
+         * el worker de subida, el de sync y la Activity construyen cada uno la suya.
+         */
+        private val COLA_LOCK = Any()
     }
 
     var isDarkMode: Boolean
@@ -80,6 +93,34 @@ class PreferencesHelper(context: Context) {
     var lastAtrasoNotificado: String
         get() = prefs.getString(KEY_LAST_ATRASO_NOTIFICADO, "") ?: ""
         set(value) = prefs.edit().putString(KEY_LAST_ATRASO_NOTIFICADO, value).apply()
+
+    // --- Frescura del cache ---
+
+    /**
+     * Momento (epoch millis) del último fetch de red que **realmente funcionó**. Lo estampa
+     * [AhorroRepository.fetchMovements] en la rama de éxito, que es el único lugar donde se sabe
+     * que la respuesta vino del server: `fetchMovements` devuelve el cache indistinguiblemente
+     * cuando la red falla, así que marcarlo desde el ViewModel daría por fresco un fetch fallido y
+     * dejaría la app 6 horas con datos viejos.
+     *
+     * Como todos los caminos que traen datos pasan por ahí (refresh manual, alta de movimiento,
+     * pago de cuota, ABM de planes y los workers de segundo plano), todos renuevan la ventana.
+     */
+    var lastFetchAt: Long
+        get() = prefs.getLong(KEY_LAST_FETCH_AT, 0L)
+        set(value) = prefs.edit().putLong(KEY_LAST_FETCH_AT, value).apply()
+
+    /**
+     * ¿Pasó la ventana de frescura? En el primer arranque (sin cache) siempre es `true`.
+     *
+     * Un `lastFetchAt` en el futuro (el reloj del teléfono saltó hacia adelante y después se
+     * corrigió) también cuenta como vencido: si no, la app se quedaría sin refrescar sola hasta
+     * que el reloj alcanzara esa marca.
+     */
+    fun necesitaFetchAutomatico(ahora: Long = System.currentTimeMillis()): Boolean {
+        val transcurrido = ahora - lastFetchAt
+        return transcurrido >= FETCH_TTL_MILLIS || transcurrido < 0
+    }
 
     // Guarda los movimientos para el modo local
     fun saveLocalMovements(movements: List<Movement>) {
@@ -178,6 +219,89 @@ class PreferencesHelper(context: Context) {
             usuarioListAdapter.fromJson(json) ?: emptyList()
         } catch (e: Exception) {
             emptyList()
+        }
+    }
+
+    // --- Cola de movimientos pendientes de subir (ver [PendingMovement]) ---
+    //
+    // Toda mutación es read-modify-write, y el ViewModel y los workers la tocan desde hilos
+    // distintos. El lock vive en el `companion object` **a propósito**: cada uno construye su
+    // propio `PreferencesHelper` (el VM, el Worker de subida, el de sync, la Activity), así que un
+    // `@Synchronized` de instancia no excluiría nada — cada quien tomaría su propio candado. Con
+    // uno solo para toda la clase, un alta nueva no puede pisar el vaciado que está haciendo el
+    // worker (ni al revés), que era la forma de perder un movimiento ya dado por registrado.
+
+    fun getPendingMovements(): List<PendingMovement> {
+        synchronized(COLA_LOCK) {
+            val json = prefs.getString(KEY_PENDING_MOVEMENTS, null) ?: return emptyList()
+            return try {
+                pendingListAdapter.fromJson(json) ?: emptyList()
+            } catch (e: Exception) {
+                emptyList()
+            }
+        }
+    }
+
+    private fun writePendingMovements(pendientes: List<PendingMovement>) {
+        try {
+            // commit() y no apply(): si el proceso muere justo después de encolar, un movimiento
+            // que el usuario ya dio por registrado no puede perderse en el buffer de escritura.
+            prefs.edit().putString(KEY_PENDING_MOVEMENTS, pendingListAdapter.toJson(pendientes)).commit()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    fun savePendingMovements(pendientes: List<PendingMovement>) = synchronized(COLA_LOCK) {
+        writePendingMovements(pendientes)
+    }
+
+    /** Alta (o reemplazo, si ya estaba) de un pendiente por id de movimiento. */
+    fun upsertPendingMovement(pendiente: PendingMovement) = synchronized(COLA_LOCK) {
+        val actuales = getPendingMovements().toMutableList()
+        val idx = actuales.indexOfFirst { it.movement.id == pendiente.movement.id }
+        if (idx != -1) actuales[idx] = pendiente else actuales.add(pendiente)
+        writePendingMovements(actuales)
+    }
+
+    /**
+     * Aplica [transform] a un pendiente **solo si sigue en la cola**. Devuelve `false` si ya no
+     * está — o sea, si se subió mientras tanto.
+     *
+     * Es la diferencia entre actualizar y resucitar: un `upsert` a secas vuelve a encolar un
+     * movimiento ya escrito en la planilla, y como el alta es un `append`, terminaba duplicado.
+     */
+    fun updatePendingMovement(
+        movementId: String,
+        transform: (PendingMovement) -> PendingMovement
+    ): Boolean {
+        synchronized(COLA_LOCK) {
+            val actuales = getPendingMovements().toMutableList()
+            val idx = actuales.indexOfFirst { it.movement.id == movementId }
+            if (idx == -1) return false
+            actuales[idx] = transform(actuales[idx])
+            writePendingMovements(actuales)
+            return true
+        }
+    }
+
+    /** Saca un pendiente de la cola. Se llama cuando la planilla confirmó la escritura, o cuando
+     *  el usuario borra la fila antes de que se llegara a subir. */
+    fun removePendingMovement(movementId: String) = synchronized(COLA_LOCK) {
+        writePendingMovements(getPendingMovements().filterNot { it.movement.id == movementId })
+    }
+
+    /**
+     * Destraba los pendientes que quedaron esperando una compresión de ticket que ya no existe.
+     * Se llama al arrancar: si el proceso murió en el medio, esa compresión no se puede retomar
+     * (la URI de la galería/cámara ya no es accesible), así que el movimiento se sube sin foto en
+     * vez de quedar atascado para siempre.
+     */
+    fun liberarPendientesEsperandoTicket() {
+        synchronized(COLA_LOCK) {
+            val actuales = getPendingMovements()
+            if (actuales.none { it.esperandoTicket }) return
+            writePendingMovements(actuales.map { it.copy(esperandoTicket = false) })
         }
     }
 

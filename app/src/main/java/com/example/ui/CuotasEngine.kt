@@ -73,7 +73,7 @@ object CuotasEngine {
      * el de agosto recién cierra el 31. Por eso las pantallas de "cuotas a pagar" no deben ofrecer
      * las cuotas del mes en curso — incluirlas hacía parecer que había que pagarlas ya.
      *
-     * El recordatorio de cierre de mes (último día del mes, ver `CuotasReminderWorker`) es otra
+     * El recordatorio de cierre de mes (último día del mes, ver `BackgroundSyncWorker`) es otra
      * cosa: avisa qué está **por cerrar**, y ahí sí corresponde el mes en curso.
      */
     fun mesAPagar(mes: String): String = addMonths(mes, -1)

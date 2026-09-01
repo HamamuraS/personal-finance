@@ -8,9 +8,12 @@ import com.example.data.AhorroRepository
 import com.example.data.CuotaPlan
 import com.example.data.DriveService
 import com.example.data.Movement
+import com.example.data.PendingMovement
 import com.example.data.PreferencesHelper
 import com.example.data.Usuario
 import com.example.data.UsuariosConfig
+import com.example.data.upload.MovementUploadScheduler
+import androidx.work.WorkManager
 import com.google.android.gms.auth.GoogleAuthUtil
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import androidx.exifinterface.media.ExifInterface
@@ -20,6 +23,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -49,6 +53,21 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _isLoadingPaid = MutableStateFlow(false)
     val isLoadingPaidPlans: StateFlow<Boolean> = _isLoadingPaid.asStateFlow()
+
+    // Altas encoladas que todavía no confirmó la planilla. Alimentan la fila optimista de Inicio y
+    // sobreviven al cierre de la app (se persisten; ver [PendingMovement]).
+    private val _pendingMovements = MutableStateFlow<List<PendingMovement>>(emptyList())
+    val pendingMovements: StateFlow<List<PendingMovement>> = _pendingMovements.asStateFlow()
+
+    /**
+     * Movimientos sin confirmar, indexados por id con su cantidad de intentos fallidos. La UI los
+     * marca distinto según el caso: 0 = subiendo, > 0 = falló y se está reintentando. Sin esto, un
+     * alta que la planilla rechaza queda con el relojito para siempre y sin ningún aviso (la
+     * notificación de error se descarta en silencio si no hay permiso de notificaciones).
+     */
+    val pendingStates: StateFlow<Map<String, Int>> = _pendingMovements
+        .map { list -> list.associate { it.movement.id to it.intentos } }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
     private val _availableMonths = MutableStateFlow<List<String>>(emptyList())
     val availableMonths: StateFlow<List<String>> = _availableMonths.asStateFlow()
@@ -109,12 +128,55 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     private val _cuotaDraft = MutableStateFlow(CuotaDraft())
     val cuotaDraft: StateFlow<CuotaDraft> = _cuotaDraft.asStateFlow()
 
+    // Filtros del historial de Inicio. Acá arriba (y no en el composable) para que sobrevivan al
+    // cambio de pestaña y para que Métricas pueda aplicarlos al saltar a Inicio.
+    private val _dashboardFilters = MutableStateFlow(DashboardFilters())
+    val dashboardFilters: StateFlow<DashboardFilters> = _dashboardFilters.asStateFlow()
+
+    // Señal de un solo uso para que Inicio abra a la altura de los filtros al venir de Métricas.
+    // La consume la pantalla (ver [consumirScrollAFiltros]): si fuera un estado permanente, entrar
+    // a Inicio a mano también saltaría el encabezado.
+    private val _scrollAFiltros = MutableStateFlow(false)
+    val scrollAFiltros: StateFlow<Boolean> = _scrollAFiltros.asStateFlow()
+
     // Estado calculado de balances
     private val _balance = MutableStateFlow(AccountingEngine.compute(emptyList()))
     val balance: StateFlow<BalanceBreakdown> = _balance.asStateFlow()
 
     init {
+        observarSubidas()
         loadConfigAndData()
+    }
+
+    /**
+     * Sigue el estado del worker de subida para reflejar en la UI cuándo un pendiente se confirmó.
+     * Cuando la cola termina, el worker ya releyó la planilla, así que alcanza con tomar el cache
+     * en vez de disparar otro fetch.
+     */
+    private fun observarSubidas() {
+        val workManager = WorkManager.getInstance(getApplication())
+        viewModelScope.launch {
+            workManager.getWorkInfosForUniqueWorkFlow(MovementUploadScheduler.WORK_NAME)
+                .collect { infos ->
+                    refrescarPendientes()
+                    if (infos.isNotEmpty() && infos.all { it.state.isFinished }) {
+                        val datos = withContext(Dispatchers.IO) {
+                            if (prefsHelper.useLocalDemo) {
+                                prefsHelper.getLocalMovements().filter { !it.eliminado }
+                            } else {
+                                prefsHelper.getSheetsCache()
+                            }
+                        }
+                        if (datos.isNotEmpty()) applyMovements(datos)
+                    }
+                }
+        }
+    }
+
+    /** Relee la cola persistida y recalcula la vista (la fila optimista entra por acá). */
+    private fun refrescarPendientes() {
+        _pendingMovements.value = prefsHelper.getPendingMovements()
+        updateFilteredData()
     }
 
     fun loadConfigAndData() {
@@ -138,7 +200,22 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
                 val cachedPlans = withContext(Dispatchers.IO) { repository.cachedPendingPlans() }
                 if (cachedPlans.isNotEmpty()) _plans.value = cachedPlans
             }
-            refreshData()
+            // Una compresión de ticket en curso no sobrevive al proceso: los pendientes que
+            // quedaron esperándola se destraban y se suben (sin foto) en vez de quedar atascados.
+            withContext(Dispatchers.IO) { prefsHelper.liberarPendientesEsperandoTicket() }
+            refrescarPendientes()
+
+            // Altas que quedaron sin subir de una sesión anterior: se reintentan al arrancar.
+            if (_pendingMovements.value.isNotEmpty()) {
+                MovementUploadScheduler.enqueue(getApplication(), requiereRed = !_useLocalDemo.value)
+            }
+
+            // Fetch automático con ventana de frescura: si el último fetch exitoso fue hace menos
+            // de 6 h, se arranca contra el cache y no se toca la red. Antes se refrescaba en cada
+            // arranque y eso era justo lo que trababa la carga de los movimientos. El refresh
+            // manual, el alta de un movimiento y el sync de segundo plano siguen actualizando
+            // igual — y renuevan la ventana.
+            if (prefsHelper.necesitaFetchAutomatico()) refreshData()
         }
     }
 
@@ -157,10 +234,20 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
         val actualCurrent = java.text.SimpleDateFormat("yyyy-MM", java.util.Locale.US).format(java.util.Date())
         _isCurrentMonth.value = (currentSel == actualCurrent)
 
-        // Movimientos reales (sin las filas legacy de arrastre automático de versiones <= 7.1)
-        val relevant = _cachedAllMovements.filter {
-            !AccountingEngine.isLegacyCarryover(it) && monthOf(it).isNotEmpty()
-        }
+        // Altas encoladas que la planilla todavía no confirmó: se muestran y se computan como
+        // cualquier otro movimiento (fila optimista). El de-duplicado por id evita contarlas dos
+        // veces en la ventana entre que el server confirma y la cola se vacía.
+        val pendientes = _pendingMovements.value
+            .map { it.movement }
+            .filter { p -> _cachedAllMovements.none { it.id == p.id } }
+
+        // Movimientos reales (sin las filas legacy de arrastre automático de versiones <= 7.1).
+        // Se reordena después de mezclar: `_cachedAllMovements` ya viene ordenado, pero concatenar
+        // los pendientes al final los mandaba al pie del historial — justo la fila que se quiere
+        // mostrar recién registrada quedaba fuera de pantalla.
+        val relevant = (_cachedAllMovements + pendientes)
+            .filter { !AccountingEngine.isLegacyCarryover(it) && monthOf(it).isNotEmpty() }
+            .sortedWith(compareByDescending<Movement> { it.fecha }.thenByDescending { it.id })
 
         // Arrastre: filas de apertura del mes si existen; si no, replay desde la apertura anterior.
         val opening = AccountingEngine.openingFor(relevant, currentSel)
@@ -286,8 +373,24 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
      * y balances. Se usa tanto para el cache instantáneo como para la carga de red.
      */
     private fun applyMovements(rawList: List<Movement>) {
-        val list = rawList.map { it.copy(fecha = normalizeFechaToString(it.fecha)) }
-        val sortedList = list.sortedWith(compareByDescending<Movement> { it.fecha }.thenByDescending { it.id })
+        val list = rawList.mapIndexed { index, m ->
+            // Una fila con la columna ID vacía llega con id "" y todas colisionarían entre sí:
+            // se les da una clave sintética en vez de dejar que se pisen.
+            m.copy(
+                id = m.id.ifBlank { "sin-id-$index" },
+                fecha = normalizeFechaToString(m.fecha)
+            )
+        }
+        // `distinctBy` es una red de seguridad, no la solución: el id es la key del listado de
+        // Inicio y dos filas con el mismo id hacían crashear la app entera al abrirla. La causa
+        // (reintentos que apendeaban de nuevo) se arregló subiendo con PUT en la cola, pero una
+        // planilla que ya arrastra duplicados —o una fila copiada a mano— no puede voltear la app.
+        val sortedList = list
+            .sortedWith(compareByDescending<Movement> { it.fecha }.thenByDescending { it.id })
+            .distinctBy { it.id }
+        if (sortedList.size != list.size) {
+            Log.w("AhorroViewModel", "Se ignoraron ${list.size - sortedList.size} filas con id duplicado")
+        }
         _cachedAllMovements = sortedList
         _allMovements.value = sortedList
 
@@ -309,9 +412,17 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     /**
-     * Agrega un nuevo movimiento
+     * Encola un movimiento nuevo y **devuelve el control al instante**.
+     *
+     * Antes esto era una escritura bloqueante: la pantalla quedaba trabada con el spinner en el
+     * botón hasta que el Apps Script respondía. Ahora el alta se persiste en la cola de pendientes
+     * (con lo cual Inicio ya la muestra como fila optimista) y la escritura la hace
+     * [com.example.data.upload.MovementUploadWorker] en segundo plano, sobreviviendo a que el
+     * usuario cierre o minimice la app. Al terminar, el worker notifica.
+     *
+     * [onEncolado] corre de forma sincrónica: es lo que dispara la vuelta a Inicio.
      */
-    fun addMovement(
+    fun encolarMovimiento(
         fecha: String,
         monto: Double,
         tipo: String,
@@ -322,77 +433,88 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
         descripcion: String,
         metodoPago: String,
         ticketUri: android.net.Uri? = null,
-        onSuccess: () -> Unit
+        onEncolado: () -> Unit
     ) {
+        val nuevo = Movement(
+            fecha = fecha,
+            monto = monto,
+            tipo = tipo,
+            categoria = categoria,
+            responsable = responsable,
+            esComun = if (tipo == "Gasto") esComun else false,
+            propietario = propietario,
+            descripcion = descripcion,
+            metodoPago = metodoPago,
+            ticketUrl = "" // El script lo llenará si hay imagen
+        )
+
+        _errorMessage.value = null
+        // Se limpia el filtro del historial: si venía uno puesto (propio o traído desde Métricas),
+        // el movimiento recién cargado podía quedar escondido justo al volver a Inicio a verlo.
+        _dashboardFilters.value = DashboardFilters()
+
+        // La cola se persiste antes que nada: si el proceso muere en el próximo milisegundo, el
+        // movimiento ya está a salvo y se sube en el siguiente arranque. Con foto queda marcado
+        // como `esperandoTicket` para que ningún drenado se lo lleve a medio comprimir.
+        prefsHelper.upsertPendingMovement(
+            PendingMovement(nuevo, esperandoTicket = ticketUri != null)
+        )
+        refrescarPendientes()
+        onEncolado()
+
         viewModelScope.launch {
-            _isLoading.value = true
-            _errorMessage.value = null
-            
-            var imageInfo: com.example.data.ImageInfo? = null
-            
+            // La compresión del ticket va después de mostrar la fila: no tiene sentido demorar el
+            // feedback por una imagen.
             if (ticketUri != null) {
-                try {
-                    Log.d("AhorroViewModel", "Comprimiendo imagen de URI: $ticketUri")
-                    val inputStream = getApplication<Application>().contentResolver.openInputStream(ticketUri)
-                    val bitmap = android.graphics.BitmapFactory.decodeStream(inputStream)
-                    
-                    if (bitmap != null) {
-                        // Corregir orientación basada en EXIF
-                        val rotatedBitmap = try {
-                            val exifInputStream = getApplication<Application>().contentResolver.openInputStream(ticketUri)
-                            if (exifInputStream != null) {
-                                val exif = ExifInterface(exifInputStream)
-                                val orientation = exif.getAttributeInt(
-                                    ExifInterface.TAG_ORIENTATION,
-                                    ExifInterface.ORIENTATION_NORMAL
-                                )
-                                rotateBitmapIfRequired(bitmap, orientation)
-                            } else bitmap
-                        } catch (e: Exception) {
-                            Log.e("AhorroViewModel", "Error leyendo EXIF", e)
-                            bitmap
-                        }
-
-                        val outputStream = java.io.ByteArrayOutputStream()
-                        // Comprimir a JPEG con 70% de calidad
-                        rotatedBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 70, outputStream)
-                        val bytes = outputStream.toByteArray()
-                        
-                        Log.d("AhorroViewModel", "Imagen comprimida. Tamaño final: ${bytes.size} bytes")
-                        val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
-                        imageInfo = com.example.data.ImageInfo(base64 = base64)
-                    }
-                } catch (e: Exception) {
-                    Log.e("AhorroViewModel", "Error comprimiendo imagen", e)
+                val ticketPath = withContext(Dispatchers.IO) { comprimirTicket(ticketUri, nuevo.id) }
+                // Update condicional, nunca upsert: si el movimiento ya no está en la cola es que
+                // se subió mientras comprimíamos, y volver a insertarlo lo escribiría dos veces.
+                prefsHelper.updatePendingMovement(nuevo.id) {
+                    it.copy(ticketPath = ticketPath, esperandoTicket = false)
                 }
+                refrescarPendientes()
             }
+            MovementUploadScheduler.enqueue(getApplication(), requiereRed = !_useLocalDemo.value)
+        }
+    }
 
-            val newMovement = Movement(
-                fecha = fecha,
-                monto = monto,
-                tipo = tipo,
-                categoria = categoria,
-                responsable = responsable,
-                esComun = if (tipo == "Gasto") esComun else false,
-                propietario = propietario,
-                descripcion = descripcion,
-                metodoPago = metodoPago,
-                ticketUrl = "" // El script lo llenará si hay imagen
-            )
+    /**
+     * Comprime el ticket a JPEG (70 %, corrigiendo la orientación EXIF) y lo deja en `cacheDir`.
+     * Devuelve la ruta, o "" si no se pudo. Va a disco y no dentro de la cola porque el base64 de
+     * una foto supera de largo el límite de 10 KB del `Data` de WorkManager.
+     */
+    private fun comprimirTicket(ticketUri: android.net.Uri, movementId: String): String {
+        return try {
+            val app = getApplication<Application>()
+            val bitmap = app.contentResolver.openInputStream(ticketUri).use {
+                android.graphics.BitmapFactory.decodeStream(it)
+            } ?: return ""
 
-            try {
-                val success = repository.saveMovement(_spreadsheetId.value, newMovement, imageInfo, _folderId.value)
-                if (success) {
-                    doRefreshData()
-                    onSuccess()
-                } else {
-                    _errorMessage.value = "No se pudo sincronizar el movimiento. Asegúrese de que la URL de Web App es válida."
+            val rotado = try {
+                app.contentResolver.openInputStream(ticketUri).use { exifStream ->
+                    if (exifStream != null) {
+                        val orientation = ExifInterface(exifStream).getAttributeInt(
+                            ExifInterface.TAG_ORIENTATION,
+                            ExifInterface.ORIENTATION_NORMAL
+                        )
+                        rotateBitmapIfRequired(bitmap, orientation)
+                    } else bitmap
                 }
             } catch (e: Exception) {
-                _errorMessage.value = "Error al guardar: ${e.localizedMessage}"
-            } finally {
-                _isLoading.value = false
+                Log.e("AhorroViewModel", "Error leyendo EXIF", e)
+                bitmap
             }
+
+            val carpeta = java.io.File(app.cacheDir, "pending_tickets").apply { mkdirs() }
+            val destino = java.io.File(carpeta, "$movementId.jpg")
+            destino.outputStream().use { out ->
+                rotado.compress(android.graphics.Bitmap.CompressFormat.JPEG, 70, out)
+            }
+            Log.d("AhorroViewModel", "Ticket comprimido en ${destino.path} (${destino.length()} bytes)")
+            destino.path
+        } catch (e: Exception) {
+            Log.e("AhorroViewModel", "Error comprimiendo imagen", e)
+            ""
         }
     }
 
@@ -400,6 +522,19 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
      * Elimina un movimiento (baja lógica)
      */
     fun deleteMovement(movement: Movement) {
+        // Si todavía está en la cola, la planilla nunca lo vio: alcanza con sacarlo de ahí. Mandar
+        // el DELETE contra una fila inexistente no hacía nada y el worker terminaba subiendo igual
+        // el movimiento que el usuario acababa de borrar.
+        if (_pendingMovements.value.any { it.movement.id == movement.id }) {
+            val pendiente = _pendingMovements.value.first { it.movement.id == movement.id }
+            if (pendiente.ticketPath.isNotEmpty()) {
+                runCatching { java.io.File(pendiente.ticketPath).delete() }
+            }
+            prefsHelper.removePendingMovement(movement.id)
+            refrescarPendientes()
+            return
+        }
+
         viewModelScope.launch {
             _isLoading.value = true
             val success = repository.deleteMovement(_spreadsheetId.value, movement)
@@ -497,6 +632,27 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
         prefsHelper.isDarkMode = isDark
         _isDarkMode.value = isDark
     }
+
+    // --- Filtros de Inicio ---
+    fun setDashboardFilters(filters: DashboardFilters) { _dashboardFilters.value = filters }
+
+    /**
+     * Deja Inicio filtrado en los gastos de una categoría (y opcionalmente de una persona). Lo llama
+     * Métricas al tocar una línea: es el atajo para ir del "cuánto" al "en qué". [persona] es un
+     * slotKey, o null para la tarjeta de gastos combinados.
+     */
+    fun verDetalleDeGastos(persona: String?, categoria: String) {
+        _dashboardFilters.value = DashboardFilters(
+            persona = persona ?: DashboardFilters.TODOS,
+            tipo = DashboardFilters.GASTOS,
+            categorias = setOf(categoria)
+        )
+        // Lo que se vino a ver es el listado, no los saldos: Inicio arranca en los filtros.
+        _scrollAFiltros.value = true
+    }
+
+    /** La consume Inicio una vez que efectivamente scrolleó. */
+    fun consumirScrollAFiltros() { _scrollAFiltros.value = false }
 
     // --- Borradores ---
     fun setMovementDraft(draft: MovementDraft) { _movementDraft.value = draft }

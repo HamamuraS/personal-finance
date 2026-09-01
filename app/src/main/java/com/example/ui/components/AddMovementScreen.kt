@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Collections
 import androidx.core.content.FileProvider
 import coil.compose.AsyncImage
+import com.example.data.Categorias
 import com.example.ui.AhorroViewModel
 import com.example.ui.MovementDraft
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
@@ -114,23 +115,16 @@ fun AddMovementScreen(
 
     val currentUserProfile by viewModel.currentUserProfile.collectAsState()
     val usuarios by viewModel.usuarios.collectAsState()
-    val isLoading by viewModel.isLoading.collectAsState()
 
     // Nombre visible del usuario activo (para textos); la lógica sigue usando el slotKey.
     val miNombre = usuarios.nombreDe(currentUserProfile)
 
-    // Categorías basadas en Tipo (declaradas antes para derivar defaults del borrador)
-    val listAportes = listOf("Sueldo", "Transferencias", "Otros")
-    val listGastos = listOf(
-        "Transporte", "Servicios", "Animales", "Supermercado", "Verdulería", "Alimentos frescos",
-        "Farmacia", "Indumentaria", "Cuidado personal", "Salidas", "Gustos", "Utilería", "Otros"
-    )
-    val listTransferencias = listOf("Ajuste", "Reembolso", "Otros")
-    fun categoriaDefault(t: String): String = when (t) {
-        "Aporte" -> listAportes.first()
-        "Transferencia" -> listTransferencias.first()
-        else -> listGastos.first()
-    }
+    // Categorías basadas en Tipo (declaradas antes para derivar defaults del borrador).
+    // El catálogo vive en [Categorias]: es el mismo que usa el alta de cuotas.
+    val listAportes = Categorias.APORTES
+    val listGastos = Categorias.GASTOS
+    val listTransferencias = Categorias.TRANSFERENCIAS
+    fun categoriaDefault(t: String): String = Categorias.defaultDeTipo(t)
 
     // Fechas base
     val currentCalendar = remember { Calendar.getInstance() }
@@ -742,13 +736,16 @@ fun AddMovementScreen(
             val useLocalDemo by viewModel.useLocalDemo.collectAsState()
             Button(
                 onClick = {
-                    if (isLoading) return@Button
                     val doubleMonto = monto.toDoubleOrNull() ?: 0.0
                     if (doubleMonto <= 0.0) {
                         return@Button
                     }
 
-                    viewModel.addMovement(
+                    // El alta es asincrónica: se encola, aparece al instante en Inicio como fila
+                    // pendiente y se escribe en la planilla en segundo plano (con una notificación
+                    // al terminar). Por eso el botón ya no espera ni muestra spinner: `onEncolado`
+                    // se ejecuta en el acto.
+                    viewModel.encolarMovimiento(
                         fecha = "$fecha $hora",
                         monto = doubleMonto,
                         tipo = tipo,
@@ -759,13 +756,13 @@ fun AddMovementScreen(
                         descripcion = descripcion,
                         metodoPago = metodoPago,
                         ticketUri = ticketUri,
-                        onSuccess = {
+                        onEncolado = {
                             limpiarFormulario()
                             onSuccess()
                         }
                     )
                 },
-                enabled = monto.isNotEmpty() && monto.toDoubleOrNull() != null && (monto.toDoubleOrNull() ?: 0.0) > 0 && !isLoading,
+                enabled = monto.isNotEmpty() && monto.toDoubleOrNull() != null && (monto.toDoubleOrNull() ?: 0.0) > 0,
                 shape = RoundedCornerShape(16.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.primary
@@ -774,17 +771,9 @@ fun AddMovementScreen(
                     .fillMaxWidth()
                     .height(52.dp)
             ) {
-                if (isLoading) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(24.dp),
-                        color = MaterialTheme.colorScheme.onPrimary,
-                        strokeWidth = 2.dp
-                    )
-                } else {
-                    Icon(Icons.Default.Check, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Registrar en " + if (useLocalDemo) "Base Local" else "Nube", fontWeight = FontWeight.ExtraBold, fontSize = 15.sp)
-                }
+                Icon(Icons.Default.Check, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Registrar en " + if (useLocalDemo) "Base Local" else "Nube", fontWeight = FontWeight.ExtraBold, fontSize = 15.sp)
             }
         }
     }

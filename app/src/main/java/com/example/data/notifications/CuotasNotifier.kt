@@ -21,7 +21,7 @@ import java.util.Locale
 
 /**
  * Muestra los recordatorios de cuotas (cierre de mes / atrasos) como notificaciones nativas.
- * No decide CUÁNDO notificar (eso es responsabilidad de [com.example.data.notifications.CuotasReminderWorker]
+ * No decide CUÁNDO notificar (eso es responsabilidad de [com.example.data.notifications.BackgroundSyncWorker]
  * o, para pruebas, de quien llame directamente con datos ya cargados) — solo arma y dispara.
  */
 object CuotasNotifier {
