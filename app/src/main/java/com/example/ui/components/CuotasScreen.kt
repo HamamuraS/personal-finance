@@ -172,6 +172,7 @@ fun CuotasScreen(viewModel: AhorroViewModel) {
                 config = config,
                 isLoading = isLoading,
                 draft = cuotaDraft,
+                historialCategorias = allMovements.filterNot { it.eliminado }.map { it.categoria },
                 onDraftChange = { viewModel.setCuotaDraft(it) },
                 onClearDraft = { viewModel.clearCuotaDraft() },
                 onBack = { route = CuotasRoute.List },
@@ -358,14 +359,14 @@ private fun CuotasListContent(
                         Icon(
                             Icons.Default.CheckCircle,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
+                            tint = com.example.ui.theme.appTextMuted,
                             modifier = Modifier.size(18.dp)
                         )
                         Text(
                             text = "Pagados",
                             fontWeight = FontWeight.Bold,
                             fontSize = 14.sp,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
@@ -386,7 +387,7 @@ private fun CuotasListContent(
                         Text(
                             text = "No hay planes pagados para este filtro",
                             fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(vertical = 8.dp)
                         )
                     }
@@ -420,13 +421,13 @@ private fun EmptyPlansHint(showPaid: Boolean, hasPaid: Boolean) {
                 imageVector = Icons.Default.CreditCard,
                 contentDescription = null,
                 modifier = Modifier.size(48.dp),
-                tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.15f)
+                tint = com.example.ui.theme.appTextMuted
             )
             Spacer(modifier = Modifier.height(10.dp))
             Text(
                 text = if (showPaid && hasPaid) "No hay planes pendientes para este filtro"
                 else "No hay compras en cuotas pendientes",
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Medium,
                 textAlign = TextAlign.Center
@@ -434,7 +435,7 @@ private fun EmptyPlansHint(showPaid: Boolean, hasPaid: Boolean) {
             Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = "Tocá \"Nueva compra\" para agregar una",
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.35f),
+                color = com.example.ui.theme.appTextMuted,
                 fontSize = 12.sp,
                 textAlign = TextAlign.Center
             )
@@ -452,10 +453,10 @@ private fun PlanCard(
     attenuated: Boolean,
     onClick: () -> Unit
 ) {
-    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
-    val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
-    val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
-    val textMain = if (isDark) Color.White else Color(0xFF191C19)
+    val isDark = com.example.ui.theme.LocalIsDarkTheme.current
+    val cardBg = MaterialTheme.colorScheme.surface
+    val cardBorder = MaterialTheme.colorScheme.outlineVariant
+    val textMain = MaterialTheme.colorScheme.onSurface
     val alpha = if (attenuated) 0.55f else 1f
 
     val ownerColor = personaColor(plan.propietario, currentUser)
@@ -541,9 +542,9 @@ private fun PlanCard(
                     ) {
                         MiniTag(text = config.nombreDe(plan.propietario), color = ownerColor)
                         if (plan.tarjeta.isNotBlank()) {
-                            MiniTag(text = plan.tarjeta, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f), soft = true)
+                            MiniTag(text = plan.tarjeta, color = MaterialTheme.colorScheme.onSurfaceVariant, soft = true)
                         }
-                        MiniTag(text = plan.categoria, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f), soft = true)
+                        MiniTag(text = plan.categoria, color = MaterialTheme.colorScheme.onSurfaceVariant, soft = true)
                     }
                 }
                 Column(horizontalAlignment = Alignment.End) {
@@ -607,7 +608,7 @@ private fun MiniTag(text: String, color: Color, soft: Boolean = false) {
             text = text,
             fontSize = 10.sp,
             fontWeight = FontWeight.Bold,
-            color = if (soft) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f) else color,
+            color = if (soft) MaterialTheme.colorScheme.onSurfaceVariant else color,
             maxLines = 1
         )
     }
@@ -628,9 +629,8 @@ private fun CuotasFilters(
     showPaid: Boolean,
     onToggleShowPaid: (Boolean) -> Unit
 ) {
-    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
-    val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
-    val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
+    val cardBg = MaterialTheme.colorScheme.surface
+    val cardBorder = MaterialTheme.colorScheme.outlineVariant
     val trackBg = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
 
     Card(
@@ -650,7 +650,7 @@ private fun CuotasFilters(
                     text = "Propietario",
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Row(
                     modifier = Modifier
@@ -679,7 +679,7 @@ private fun CuotasFilters(
                                 text = label,
                                 fontSize = 13.sp,
                                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                color = if (selected) accent else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                color = if (selected) accent else MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1
                             )
                         }
@@ -705,14 +705,14 @@ private fun CuotasFilters(
                                 imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
                                 contentDescription = null,
                                 modifier = Modifier.size(18.dp),
-                                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
                                 text = if (selectedCategories.isEmpty()) "Categorías" else "Categorías (${selectedCategories.size})",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                         if (selectedCategories.isNotEmpty()) {
@@ -758,7 +758,7 @@ private fun CuotasFilters(
                                     border = FilterChipDefaults.filterChipBorder(
                                         enabled = true,
                                         selected = selected,
-                                        borderColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.15f)
+                                        borderColor = MaterialTheme.colorScheme.outlineVariant
                                     )
                                 )
                             }
@@ -780,7 +780,7 @@ private fun CuotasFilters(
                     Text(
                         text = "Planes ya completados",
                         fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
                 Switch(checked = showPaid, onCheckedChange = onToggleShowPaid)
@@ -893,9 +893,8 @@ private fun PlanDetailContent(
             ) {
                 // Encabezado / resumen
                 item {
-                    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
-                    val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
-                    val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
+                    val cardBg = MaterialTheme.colorScheme.surface
+                    val cardBorder = MaterialTheme.colorScheme.outlineVariant
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(24.dp),
@@ -913,7 +912,7 @@ private fun PlanDetailContent(
                                 Text(
                                     text = "Solo lectura: es un plan de ${config.nombreDe(plan.propietario)}.",
                                     fontSize = 11.sp,
-                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                             Spacer(modifier = Modifier.height(4.dp))
@@ -957,7 +956,7 @@ private fun PlanDetailContent(
 @Composable
 private fun DetailStat(label: String, value: String, modifier: Modifier = Modifier, alignEnd: Boolean = false) {
     Column(modifier = modifier, horizontalAlignment = if (alignEnd) Alignment.End else Alignment.Start) {
-        Text(label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+        Text(label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(
             value,
             fontSize = 15.sp,
@@ -982,12 +981,11 @@ private fun CuotaRow(
     val esFutura = !cuota.pagada && cuota.mesVencimiento > mesActual
     val pagable = !cuota.pagada && !esFutura   // vence este mes o está atrasada
 
-    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
-    val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
+    val cardBg = MaterialTheme.colorScheme.surface
     val cardBorder = when {
         cuota.pagada -> accent.copy(alpha = 0.35f)
         atrasada -> MaterialTheme.colorScheme.error.copy(alpha = 0.5f)
-        else -> if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
+        else -> MaterialTheme.colorScheme.outlineVariant
     }
     // Las cuotas futuras se atenúan: todavía no se pueden pagar.
     val contentAlpha = if (esFutura) 0.4f else 1f
@@ -1028,7 +1026,7 @@ private fun CuotaRow(
                         color = when {
                             atrasada -> MaterialTheme.colorScheme.error
                             pagable -> accent
-                            else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
                         }.copy(alpha = contentAlpha))
                 }
             }
@@ -1052,7 +1050,7 @@ private fun CuotaRow(
                     color = when {
                         cuota.pagada -> accent
                         atrasada -> MaterialTheme.colorScheme.error
-                        esFutura -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                        esFutura -> com.example.ui.theme.appTextMuted
                         else -> accent
                     }
                 )
@@ -1062,7 +1060,7 @@ private fun CuotaRow(
                 cuota.pagada -> Text(
                     formatMoney.format(cuota.monto),
                     fontWeight = FontWeight.Bold, fontSize = 14.sp,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 pagable && canPay -> Button(   // solo el dueño del plan puede pagar
                     onClick = onConfirm,
@@ -1077,12 +1075,12 @@ private fun CuotaRow(
                 esFutura -> Text(  // futura: solo el monto, atenuado (no pagable aún)
                     formatMoney.format(cuota.monto),
                     fontWeight = FontWeight.Bold, fontSize = 14.sp,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
+                    color = com.example.ui.theme.appTextMuted
                 )
                 else -> Text(  // pagable pero no es tu plan: solo lectura, mostramos el monto
                     formatMoney.format(cuota.monto),
                     fontWeight = FontWeight.Bold, fontSize = 14.sp,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
@@ -1141,12 +1139,12 @@ fun ConfirmarCuotaDialog(
                 Text(
                     text = "Cuota $numero/$cantidadCuotas — ${planDescripcion.ifBlank { "Compra en cuotas" }}",
                     fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
                 // Monto
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Monto", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                    Text("Monto", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     OutlinedTextField(
                         value = montoText,
                         onValueChange = { input ->
@@ -1165,14 +1163,14 @@ fun ConfirmarCuotaDialog(
                         Text(
                             text = "Última cuota: podés ajustar el monto si hubo diferencia por redondeo.",
                             fontSize = 10.sp,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
 
                 // Método de pago
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Método de pago", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                    Text("Método de pago", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         listOf("Billetera Virtual", "Efectivo").forEach { item ->
                             val selected = metodoPago == item
@@ -1201,12 +1199,12 @@ fun ConfirmarCuotaDialog(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("Cargar en el mes actual", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                            Text("Cargar en el mes actual", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Text(
                                 text = if (cargarEnMesActual) "El gasto se registrará en ${formatMonthLabel(currentYyyyMm())}"
                                 else "Se registrará en ${formatMonthLabel(mesVencimiento)} (mes de la cuota)",
                                 fontSize = 10.sp,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                         Switch(checked = cargarEnMesActual, onCheckedChange = { cargarEnMesActual = it })
@@ -1216,7 +1214,7 @@ fun ConfirmarCuotaDialog(
                 // Fecha (solo cuando el gasto va con fecha del mes actual)
                 if (usarFechaManual) {
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("Fecha de pago", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                        Text("Fecha de pago", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             DateShortcut("Hoy", fecha == hoy, Modifier.weight(1f)) { fecha = hoy }
                             DateShortcut("Ayer", fecha == ayer, Modifier.weight(1f)) { fecha = ayer }
@@ -1300,6 +1298,8 @@ private fun PlanFormContent(
     config: UsuariosConfig,
     isLoading: Boolean,
     draft: CuotaDraft,
+    /** Categorías usadas, de más nueva a más vieja: alimenta los "Frecuentes" del [CategoryPicker]. */
+    historialCategorias: List<String>,
     onDraftChange: (CuotaDraft) -> Unit,
     onClearDraft: () -> Unit,
     onBack: () -> Unit,
@@ -1391,9 +1391,8 @@ private fun PlanFormContent(
             )
 
             // Monto por cuota (tipo cajero)
-            val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
-            val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
-            val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
+            val cardBg = MaterialTheme.colorScheme.surface
+            val cardBorder = MaterialTheme.colorScheme.outlineVariant
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(24.dp),
@@ -1404,7 +1403,7 @@ private fun PlanFormContent(
                     Text(
                         text = "MONTO POR CUOTA",
                         style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     TextField(
                         value = montoText,
@@ -1462,7 +1461,7 @@ private fun PlanFormContent(
                         modifier = Modifier.weight(1f),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Text("Total del plan", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+                        Text("Total del plan", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text(fmt.format(monto * cant), fontSize = 16.sp, fontWeight = FontWeight.Bold)
                     }
                 }
@@ -1482,29 +1481,12 @@ private fun PlanFormContent(
 
             // Categoría
             FormLabel("Categoría del gasto")
-            FlowRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                CATEGORIAS_CUOTAS.forEach { cat ->
-                    val selected = categoria == cat
-                    FilterChip(
-                        selected = selected,
-                        onClick = { categoria = cat },
-                        label = { Text(cat, fontSize = 11.sp) },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = MaterialTheme.colorScheme.primary,
-                            selectedLabelColor = MaterialTheme.colorScheme.onPrimary
-                        ),
-                        border = FilterChipDefaults.filterChipBorder(
-                            enabled = true,
-                            selected = selected,
-                            borderColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.15f)
-                        )
-                    )
-                }
-            }
+            CategoryPicker(
+                tipo = "Gasto",
+                seleccionada = categoria,
+                historialCategorias = historialCategorias,
+                onSelect = { categoria = it }
+            )
 
             // Tarjeta (selección por chip; se puede deseleccionar tocando la elegida)
             FormLabel("Tarjeta (opcional)")
@@ -1526,7 +1508,7 @@ private fun PlanFormContent(
                         border = FilterChipDefaults.filterChipBorder(
                             enabled = true,
                             selected = selected,
-                            borderColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.15f)
+                            borderColor = MaterialTheme.colorScheme.outlineVariant
                         )
                     )
                 }
@@ -1572,7 +1554,7 @@ private fun FormLabel(text: String) {
         text = text,
         fontWeight = FontWeight.Bold,
         fontSize = 14.sp,
-        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
+        color = MaterialTheme.colorScheme.onSurfaceVariant
     )
 }
 
@@ -1791,7 +1773,7 @@ private fun TarjetaResumenContent(
                 item {
                     // Método de pago (se aplica a todas)
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("Método de pago", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                        Text("Método de pago", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             listOf("Billetera Virtual", "Efectivo").forEach { item ->
                                 val selected = metodoPago == item
@@ -1827,9 +1809,8 @@ private fun TarjetaResumenContent(
             }
 
             // Barra inferior: total (no editable) + Pagar
-            val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
             Surface(
-                color = if (isDark) MaterialTheme.colorScheme.surface else Color.White,
+                color = MaterialTheme.colorScheme.surface,
                 tonalElevation = 3.dp,
                 shadowElevation = 8.dp
             ) {
@@ -1840,9 +1821,9 @@ private fun TarjetaResumenContent(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column {
-                            Text("Total de la tarjeta", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                            Text("Total de la tarjeta", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             if (excluidos.isNotEmpty()) {
-                                Text("${incluidas.size} de ${cuotas.size} cuotas", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f))
+                                Text("${incluidas.size} de ${cuotas.size} cuotas", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
                         Text(formatMoney.format(total), fontWeight = FontWeight.Black, fontSize = 22.sp, color = MaterialTheme.colorScheme.primary)
@@ -1880,9 +1861,8 @@ private fun ResumenCuotaRow(
     formatMoney: NumberFormat,
     onToggle: () -> Unit
 ) {
-    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
-    val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
-    val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
+    val cardBg = MaterialTheme.colorScheme.surface
+    val cardBorder = MaterialTheme.colorScheme.outlineVariant
     val alpha = if (incluida) 1f else 0.4f
 
     Card(

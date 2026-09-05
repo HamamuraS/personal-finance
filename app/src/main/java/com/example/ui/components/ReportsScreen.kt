@@ -119,12 +119,12 @@ fun ReportsScreen(
                         imageVector = Icons.Default.Info,
                         contentDescription = null,
                         modifier = Modifier.size(64.dp),
-                        tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.15f)
+                        tint = com.example.ui.theme.appTextMuted
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
                         text = "Registra movimientos para ver reportes",
-                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Medium
                     )
@@ -202,9 +202,8 @@ fun ReportsScreen(
 
 @Composable
 fun ReportAportesCard(userProfile: String, config: UsuariosConfig, balance: BalanceBreakdown, formatMoney: NumberFormat) {
-    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
-    val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
-    val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
+    val cardBg = MaterialTheme.colorScheme.surface
+    val cardBorder = MaterialTheme.colorScheme.outlineVariant
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -286,7 +285,7 @@ fun ReportAportesCard(userProfile: String, config: UsuariosConfig, balance: Bala
                 verticalAlignment = Alignment.Top
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Total Aportado", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+                    Text("Total Aportado", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(formatMoney.format(totalAportes), fontSize = 16.sp, fontWeight = FontWeight.Black)
                 }
             }
@@ -318,9 +317,8 @@ fun ReportCategoriasCard(
     accentColor: Color,
     onCategoriaClick: (String) -> Unit = {}
 ) {
-    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
-    val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
-    val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
+    val cardBg = MaterialTheme.colorScheme.surface
+    val cardBorder = MaterialTheme.colorScheme.outlineVariant
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -351,7 +349,7 @@ fun ReportCategoriasCard(
                     contentAlignment = Alignment.Center
                 ) {
                     val label = "No hay gastos registrados todavía"
-                    Text(label, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+                    Text(label, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             } else {
                 // Se muestran TODAS las categorías con gasto (antes se truncaba a las primeras 6,
@@ -389,7 +387,7 @@ fun ReportCategoriasCard(
                                 Text(
                                     text = "${(percentage * 100).toInt()}%",
                                     fontSize = 11.sp,
-                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.padding(end = 8.dp)
                                 )
                                 Text(
@@ -427,9 +425,8 @@ fun TarjetasPorMesCard(
     totales: Map<String, Double>,
     formatMoney: NumberFormat
 ) {
-    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
-    val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
-    val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
+    val cardBg = MaterialTheme.colorScheme.surface
+    val cardBorder = MaterialTheme.colorScheme.outlineVariant
     val accent = MaterialTheme.colorScheme.tertiary
     val total = totales.values.sum()
     val ordenadas = totales.entries.sortedByDescending { it.value }
@@ -451,7 +448,7 @@ fun TarjetasPorMesCard(
                 }
                 Column {
                     Text("Total en tarjetas", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurface)
-                    Text(formatMonthLabel(mes), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+                    Text(formatMonthLabel(mes), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
 
@@ -477,7 +474,7 @@ fun TarjetasPorMesCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Total del mes", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), fontWeight = FontWeight.Medium)
+                Text("Total del mes", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Medium)
                 Text(formatMoney.format(total), fontSize = 16.sp, fontWeight = FontWeight.Black, color = accent)
             }
         }

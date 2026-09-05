@@ -128,6 +128,17 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     private val _cuotaDraft = MutableStateFlow(CuotaDraft())
     val cuotaDraft: StateFlow<CuotaDraft> = _cuotaDraft.asStateFlow()
 
+    /**
+     * Importe detectado en la notificación de una billetera, esperando a que el alta lo consuma.
+     *
+     * Va aparte del borrador y no dentro de él porque es un **evento**, no un estado: el formulario
+     * puede estar ya compuesto cuando llega (el borrador se siembra una sola vez, en la primera
+     * composición), así que hace falta algo que la pantalla pueda observar y después limpiar. Es el
+     * mismo patrón que [scrollAFiltros].
+     */
+    private val _montoSugerido = MutableStateFlow<String?>(null)
+    val montoSugerido: StateFlow<String?> = _montoSugerido.asStateFlow()
+
     // Filtros del historial de Inicio. Acá arriba (y no en el composable) para que sobrevivan al
     // cambio de pestaña y para que Métricas pueda aplicarlos al saltar a Inicio.
     private val _dashboardFilters = MutableStateFlow(DashboardFilters())
@@ -685,6 +696,9 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     fun consumirScrollAFiltros() { _scrollAFiltros.value = false }
 
     // --- Borradores ---
+    /** Siembra el importe detectado; lo consume el alta al mostrarse (ver [montoSugerido]). */
+    fun sugerirMonto(monto: String) { _montoSugerido.value = monto }
+    fun consumirMontoSugerido() { _montoSugerido.value = null }
     fun setMovementDraft(draft: MovementDraft) { _movementDraft.value = draft }
     fun clearMovementDraft() { _movementDraft.value = MovementDraft() }
     fun setCuotaDraft(draft: CuotaDraft) { _cuotaDraft.value = draft }

@@ -17,8 +17,10 @@ android {
     applicationId = "com.aistudio.ahorrocompartido.pquzx"
     minSdk = 24
     targetSdk = 35
-    versionCode = 1
-    versionName = "1.0"
+    // La versión que se muestra en Ajustes sale de acá (BuildConfig.VERSION_NAME). El
+    // `versionCode` es la misma versión sin puntos: monótono y trivial de leer al lado del nombre.
+    versionCode = 76
+    versionName = "0.7.6"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

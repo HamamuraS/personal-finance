@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">Fondo Compartido</string>
+    <!-- Nombre con el que Android lista el servicio en "Acceso a notificaciones". -->
+    <string name="deteccion_montos_label">Detección de montos de Fondo Compartido</string>
 </resources>

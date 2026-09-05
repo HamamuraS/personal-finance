@@ -5,6 +5,8 @@ import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
+import androidx.activity.compose.BackHandler
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -26,6 +28,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import com.example.data.PreferencesHelper
 import com.example.data.notifications.BackgroundSyncScheduler
+import com.example.data.notifications.BilleterasNotificationListener
 import com.example.ui.AhorroViewModel
 import com.example.ui.components.AddMovementScreen
 import com.example.ui.components.CuotasScreen
@@ -66,16 +69,46 @@ class MainActivity : ComponentActivity() {
         pedirPermisoNotificaciones.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
+    /**
+     * Estilo de las barras del sistema (estado y navegación).
+     *
+     * El tema claro/oscuro de la app lo elige el usuario en Ajustes y **no** sigue al del sistema,
+     * así que `enableEdgeToEdge()` sin argumentos era el bug: dejaba que Android decidiera el color
+     * de sus íconos por su cuenta. Con el teléfono en modo oscuro y la app en modo claro, los
+     * íconos de arriba quedaban blancos sobre el fondo blanco de la app: invisibles.
+     *
+     * Se vuelve a llamar cada vez que cambia el tema (el efecto de más abajo), que es la forma
+     * soportada de actualizar el estilo en caliente.
+     */
+    private fun aplicarEstiloDeBarras(darkTheme: Boolean) {
+        val transparente = android.graphics.Color.TRANSPARENT
+        // Velo que Android pone detrás de sus íconos oscuros en las APIs que no saben pintarlos
+        // sobre un fondo claro (< 29 en la barra de navegación).
+        val velo = android.graphics.Color.argb(0x40, 0, 0, 0)
+        val estilo =
+            if (darkTheme) SystemBarStyle.dark(transparente)
+            else SystemBarStyle.light(transparente, velo)
+        enableEdgeToEdge(statusBarStyle = estilo, navigationBarStyle = estilo)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        aplicarEstiloDeBarras(PreferencesHelper(applicationContext).isDarkMode)
         BackgroundSyncScheduler.schedule(applicationContext)
         pedirPermisoDeNotificacionesUnaVez()
-        pendingOpenTab = tabFromIntent(intent)
+        // El listener de billeteras puede haber quedado muerto (actualización del APK, optimización
+        // de batería del fabricante). Abrir la app es el momento natural para resucitarlo.
+        if (PreferencesHelper(applicationContext).deteccionMontosActiva) {
+            BilleterasNotificationListener.pedirRebind(applicationContext)
+        }
+        consumirIntent(intent)
 
         setContent {
             val userProfile by viewModel.currentUserProfile.collectAsState()
             val isDarkMode by viewModel.isDarkMode.collectAsState()
+
+            // El tema es del usuario, no del sistema: las barras lo tienen que seguir a él.
+            LaunchedEffect(isDarkMode) { aplicarEstiloDeBarras(isDarkMode) }
             val usuarios by viewModel.usuarios.collectAsState()
             val activeUser by viewModel.activeUser.collectAsState()
             val otherUser by viewModel.otherUser.collectAsState()
@@ -93,11 +126,29 @@ class MainActivity : ComponentActivity() {
 
                 var currentTab by remember { mutableStateOf(pendingOpenTab ?: ScreenTab.INICIO) }
 
-                // Si se toca la notificación de cuotas con la Activity ya viva, `onNewIntent`
-                // actualiza `pendingOpenTab` y este efecto salta de pestaña.
+                // Pila de pestañas visitadas, para que el gesto de retroceso de Android vuelva a la
+                // anterior en vez de cerrar la app. La app no usa Navigation-Compose (las pantallas
+                // son un `when` sobre la pestaña actual), así que el back stack se lleva a mano.
+                val tabBackStack = remember { mutableStateListOf<ScreenTab>() }
+
+                /** Cambia de pestaña apilando la actual. Es el único camino de navegación. */
+                fun irA(tab: ScreenTab) {
+                    if (tab == currentTab) return
+                    tabBackStack.add(currentTab)
+                    currentTab = tab
+                }
+
+                // Deshabilitado en la raíz (Inicio recién abierto, sin historial): ahí el retroceso
+                // tiene que cerrar la app como siempre, no quedar atrapado.
+                BackHandler(enabled = tabBackStack.isNotEmpty()) {
+                    currentTab = tabBackStack.removeAt(tabBackStack.lastIndex)
+                }
+
+                // Si se toca una notificación con la Activity ya viva, `onNewIntent` actualiza
+                // `pendingOpenTab` y este efecto salta de pestaña.
                 LaunchedEffect(pendingOpenTab) {
                     pendingOpenTab?.let {
-                        currentTab = it
+                        irA(it)
                         pendingOpenTab = null
                     }
                 }
@@ -114,6 +165,9 @@ class MainActivity : ComponentActivity() {
                 val pendingStates by viewModel.pendingStates.collectAsState()
                 val scrollAFiltros by viewModel.scrollAFiltros.collectAsState()
 
+                // Expulsión de "Nuevo" al mirar un mes cerrado. No es navegación del usuario, así
+                // que no se apila: retroceder desde acá tiene que llevar a donde estaba antes, no
+                // devolverlo a una pestaña que ya no existe.
                 LaunchedEffect(isCurrentMonth) {
                     if (!isCurrentMonth && currentTab == ScreenTab.NUEVO) {
                         currentTab = ScreenTab.METRICAS
@@ -129,33 +183,33 @@ class MainActivity : ComponentActivity() {
                         ) {
                             NavigationBarItem(
                                 selected = currentTab == ScreenTab.INICIO,
-                                onClick = { currentTab = ScreenTab.INICIO },
+                                onClick = { irA(ScreenTab.INICIO) },
                                 icon = { Icon(Icons.Default.Home, contentDescription = "Inicio") },
                                 label = { Text("Inicio", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
                             )
                             if (isCurrentMonth) {
                                 NavigationBarItem(
                                     selected = currentTab == ScreenTab.NUEVO,
-                                    onClick = { currentTab = ScreenTab.NUEVO },
+                                    onClick = { irA(ScreenTab.NUEVO) },
                                     icon = { Icon(Icons.Default.Add, contentDescription = "Nuevo") },
                                     label = { Text("Nuevo", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
                                 )
                             }
                             NavigationBarItem(
                                 selected = currentTab == ScreenTab.CUOTAS,
-                                onClick = { currentTab = ScreenTab.CUOTAS },
+                                onClick = { irA(ScreenTab.CUOTAS) },
                                 icon = { Icon(Icons.Default.CreditCard, contentDescription = "Cuotas") },
                                 label = { Text("Cuotas", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
                             )
                             NavigationBarItem(
                                 selected = currentTab == ScreenTab.METRICAS,
-                                onClick = { currentTab = ScreenTab.METRICAS },
+                                onClick = { irA(ScreenTab.METRICAS) },
                                 icon = { Icon(Icons.Default.Info, contentDescription = "Métricas") },
                                 label = { Text("Métricas", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
                             )
                             NavigationBarItem(
                                 selected = currentTab == ScreenTab.AJUSTES,
-                                onClick = { currentTab = ScreenTab.AJUSTES },
+                                onClick = { irA(ScreenTab.AJUSTES) },
                                 icon = { Icon(Icons.Default.Settings, contentDescription = "Ajustes") },
                                 label = { Text("Ajustes", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
                             )
@@ -195,7 +249,7 @@ class MainActivity : ComponentActivity() {
                                 AddMovementScreen(
                                     viewModel = viewModel,
                                     onSuccess = {
-                                        currentTab = ScreenTab.INICIO
+                                        irA(ScreenTab.INICIO)
                                     }
                                 )
                             }
@@ -217,7 +271,7 @@ class MainActivity : ComponentActivity() {
                                     // deja el filtro puesto y salta a Inicio. Sin cambios de UI.
                                     onVerDetalle = { persona, categoria ->
                                         viewModel.verDetalleDeGastos(persona, categoria)
-                                        currentTab = ScreenTab.INICIO
+                                        irA(ScreenTab.INICIO)
                                     }
                                 )
                             }
@@ -236,11 +290,32 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        consumirIntent(intent)
+    }
+
+    /**
+     * Lee lo que trae un intent externo: a qué pestaña saltar y, si viene de la detección de montos
+     * (ver [com.example.data.notifications.MontoDetectadoNotifier]), con qué importe sembrar el alta.
+     *
+     * El monto se siembra en el borrador del ViewModel y no se pasa por parámetro a la pantalla: es
+     * el mismo canal que ya usaba el formulario para sobrevivir al cambio de pestaña, así que el
+     * alta no necesita ninguna UI nueva.
+     */
+    private fun consumirIntent(intent: Intent?) {
+        intent?.getStringExtra(EXTRA_MONTO_SUGERIDO)?.takeIf { it.isNotBlank() }?.let { monto ->
+            viewModel.sugerirMonto(monto)
+        }
         pendingOpenTab = tabFromIntent(intent)
     }
 
     companion object {
         const val EXTRA_OPEN_TAB = "open_tab"
+
+        /**
+         * Importe detectado en la notificación de una billetera, listo para precargar en el alta.
+         * Viaja como texto con punto decimal (el formato que espera el campo del formulario).
+         */
+        const val EXTRA_MONTO_SUGERIDO = "monto_sugerido"
 
         private fun tabFromIntent(intent: Intent?): ScreenTab? =
             intent?.getStringExtra(EXTRA_OPEN_TAB)?.let { name ->

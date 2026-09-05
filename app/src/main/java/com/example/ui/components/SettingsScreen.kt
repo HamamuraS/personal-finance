@@ -24,6 +24,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.BuildConfig
 import com.example.data.CuotaPlan
 import com.example.data.Movement
 import com.example.data.Usuario
@@ -79,9 +80,9 @@ fun SettingsScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
-            val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
-            val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
-            val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
+            val isDark = com.example.ui.theme.LocalIsDarkTheme.current
+            val cardBg = MaterialTheme.colorScheme.surface
+            val cardBorder = MaterialTheme.colorScheme.outlineVariant
 
             // Tarjeta de Perfil (self): "Sos {nombre}", editar nombre, elegir color, cerrar sesión.
             val config = usuariosState.value
@@ -122,7 +123,7 @@ fun SettingsScreen(
                             Text(
                                 text = "Cambiar entre paleta oscura y clara",
                                 fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                         Switch(
@@ -163,7 +164,7 @@ fun SettingsScreen(
                             Text(
                                 text = "Usa la memoria interna sin conexión de forma totalmente funcional.",
                                 fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                         Switch(
@@ -210,6 +211,9 @@ fun SettingsScreen(
                 }
             }
 
+            // Detección de montos desde las notificaciones de las billeteras (opt-in).
+            DeteccionMontosCard(cardBg = cardBg, cardBorder = cardBorder)
+
             // Tarjeta de prueba de Notificaciones de Cuotas (ver features/notificaciones-cuotas.md)
             CuotasNotificationTestCard(
                 cardBg = cardBg,
@@ -241,12 +245,23 @@ fun SettingsScreen(
                     Text(
                         text = "Los aportes aumentan el saldo del aportante. Los gastos personales reducen solo su saldo. Los gastos compartidos se dividen 50% cada uno.",
                         fontSize = 10.sp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         lineHeight = 14.sp,
                         modifier = Modifier.weight(1f)
                     )
                 }
             }
+
+            // Pie: versión instalada. Sale de BuildConfig y no de una constante escrita a mano,
+            // así lo que se ve en el teléfono es siempre lo que se compiló — que es justamente el
+            // dato que hace falta cuando alguien reporta un problema desde una versión vieja.
+            Text(
+                text = "Versión ${BuildConfig.VERSION_NAME}",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
+            )
 
             Spacer(modifier = Modifier.height(20.dp))
         }
@@ -295,12 +310,12 @@ private fun SaldoInicialCard(
                         "meses anteriores, así que esas hojas no se pueden archivar."
                 },
                 fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Text(
                 text = "Recalculalo si corregiste un movimiento de un mes anterior.",
                 fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Button(
                 onClick = {
@@ -323,7 +338,7 @@ private fun SaldoInicialCard(
                 Text(
                     text = it,
                     fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
@@ -378,7 +393,7 @@ private fun CuotasNotificationTestCard(
             Text(
                 text = "Usan los datos ya cargados, no reflejan el horario real. El recordatorio automático corre solo (último día del mes y todos los lunes, 9am hora Argentina).",
                 fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
             if (!permisoConcedido) {
@@ -475,7 +490,7 @@ private fun PerfilCard(
                     Text(
                         text = "Tu perfil",
                         fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
                         text = "Sos ${me.nombre}",
@@ -492,7 +507,7 @@ private fun PerfilCard(
                     text = "Tu nombre",
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -527,7 +542,7 @@ private fun PerfilCard(
                     text = "Tu color",
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
@@ -540,6 +555,9 @@ private fun PerfilCard(
                         val disabled = !selected && preset.id == otherColorId
                         ColorSwatch(
                             fill = preset.resolve(isDark).brand,
+                            // El "on" del propio preset: los rellenos del tema oscuro son pasteles
+                            // y un tilde blanco encima no se veía.
+                            onFill = preset.resolve(isDark).on,
                             selected = selected,
                             disabled = disabled,
                             onClick = { if (!disabled && !selected) onColorChange(preset.id) }
@@ -549,11 +567,11 @@ private fun PerfilCard(
                 Text(
                     text = "El color del otro usuario aparece deshabilitado para no repetirlo.",
                     fontSize = 10.sp,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
-            HorizontalDivider(color = if (isDark) Color(0xFF333833) else Color(0xFFF1F5F9))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
             // Cerrar sesión
             OutlinedButton(
@@ -573,6 +591,7 @@ private fun PerfilCard(
 @Composable
 private fun ColorSwatch(
     fill: Color,
+    onFill: Color,
     selected: Boolean,
     disabled: Boolean,
     onClick: () -> Unit
@@ -594,13 +613,13 @@ private fun ColorSwatch(
             Icon(
                 imageVector = Icons.Default.Check,
                 contentDescription = "Color seleccionado",
-                tint = Color.White
+                tint = onFill
             )
         } else if (disabled) {
             Icon(
                 imageVector = Icons.Default.Block,
                 contentDescription = "No disponible",
-                tint = Color.White.copy(alpha = 0.7f),
+                tint = onFill.copy(alpha = 0.7f),
                 modifier = Modifier.size(18.dp)
             )
         }

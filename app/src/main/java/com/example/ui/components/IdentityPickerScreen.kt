@@ -19,7 +19,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.Usuario
 import com.example.data.UsuariosConfig
-import com.example.ui.theme.DarkBackground
+import com.example.ui.theme.LocalIsDarkTheme
 import com.example.ui.theme.presetOf
 
 /**
@@ -33,7 +33,7 @@ fun IdentityPickerScreen(
     usuarios: UsuariosConfig,
     onPick: (slotKey: String) -> Unit
 ) {
-    val isDark = MaterialTheme.colorScheme.background == DarkBackground
+    val isDark = LocalIsDarkTheme.current
 
     Box(
         modifier = Modifier
@@ -57,7 +57,7 @@ fun IdentityPickerScreen(
             Text(
                 text = "Elegí tu perfil para entrar. Lo vamos a recordar en este dispositivo.",
                 fontSize = 14.sp,
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.padding(bottom = 8.dp)
             )
@@ -76,8 +76,8 @@ private fun IdentityCard(
     onClick: () -> Unit
 ) {
     val resolved = presetOf(usuario.colorId).resolve(isDark)
-    val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
-    val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
+    val cardBg = MaterialTheme.colorScheme.surface
+    val cardBorder = MaterialTheme.colorScheme.outlineVariant
 
     Card(
         modifier = Modifier

@@ -35,6 +35,17 @@ class PreferencesHelper(context: Context) {
         private const val KEY_LAST_FETCH_AT = "last_fetch_at"
         private const val KEY_PENDING_MOVEMENTS = "pending_movements"
 
+        // --- Detección de montos desde notificaciones de billeteras ---
+        private const val KEY_DETECCION_ACTIVA = "deteccion_montos_activa"
+        private const val KEY_DETECCION_DIVULGADA = "deteccion_montos_divulgada"
+        private const val KEY_DESCUBRIMIENTO_HASTA = "deteccion_descubrimiento_hasta"
+        private const val KEY_ULTIMA_DETECCION_AT = "deteccion_ultima_at"
+        private const val KEY_ULTIMO_PACKAGE = "deteccion_ultimo_package"
+        private const val KEY_PACKAGES_EXTRA = "deteccion_packages_extra"
+
+        /** Cuánto dura el modo descubrimiento antes de apagarse solo. */
+        const val DESCUBRIMIENTO_DURACION_MILLIS = 10L * 60 * 1000
+
         /** Ventana de frescura del cache: no se refresca solo hasta que pasen 6 horas. */
         const val FETCH_TTL_MILLIS = 6L * 60 * 60 * 1000
 
@@ -120,6 +131,70 @@ class PreferencesHelper(context: Context) {
     fun necesitaFetchAutomatico(ahora: Long = System.currentTimeMillis()): Boolean {
         val transcurrido = ahora - lastFetchAt
         return transcurrido >= FETCH_TTL_MILLIS || transcurrido < 0
+    }
+
+    // --- Detección de montos desde notificaciones de billeteras -------------------------------
+    //
+    // Todo el módulo es opt-in y prescindible: la app funciona completa sin nada de esto. Por eso
+    // el default de [deteccionMontosActiva] es `false` y no se enciende solo ni siquiera cuando el
+    // permiso de Android ya está dado.
+
+    /** ¿El usuario pidió que la app lea las notificaciones de sus billeteras? */
+    var deteccionMontosActiva: Boolean
+        get() = prefs.getBoolean(KEY_DETECCION_ACTIVA, false)
+        set(value) = prefs.edit().putBoolean(KEY_DETECCION_ACTIVA, value).apply()
+
+    /**
+     * ¿Ya vio la pantalla de divulgación? Google Play exige (Prominent Disclosure & Consent) que
+     * antes de mandarlo al setting de Android se le explique qué se lee, de qué apps y para qué.
+     * El diálogo del sistema no alcanza, y la política de privacidad tampoco.
+     */
+    var deteccionDivulgacionAceptada: Boolean
+        get() = prefs.getBoolean(KEY_DETECCION_DIVULGADA, false)
+        set(value) = prefs.edit().putBoolean(KEY_DETECCION_DIVULGADA, value).apply()
+
+    /**
+     * Hasta cuándo (epoch millis) el modo descubrimiento mira notificaciones fuera de la lista
+     * curada. Se guarda un vencimiento y no un booleano a propósito: si el usuario se olvida de
+     * apagarlo, se apaga solo (ver [descubrimientoActivo]).
+     */
+    var descubrimientoHasta: Long
+        get() = prefs.getLong(KEY_DESCUBRIMIENTO_HASTA, 0L)
+        set(value) = prefs.edit().putLong(KEY_DESCUBRIMIENTO_HASTA, value).apply()
+
+    fun descubrimientoActivo(ahora: Long = System.currentTimeMillis()): Boolean = ahora < descubrimientoHasta
+
+    /**
+     * Cuándo se detectó un monto por última vez. Se muestra en Ajustes porque el servicio puede
+     * morir por la optimización de batería de algunos fabricantes, y esa muerte es silenciosa: sin
+     * esta fecha, el usuario creería que simplemente no compró nada.
+     */
+    var ultimaDeteccionAt: Long
+        get() = prefs.getLong(KEY_ULTIMA_DETECCION_AT, 0L)
+        set(value) = prefs.edit().putLong(KEY_ULTIMA_DETECCION_AT, value).apply()
+
+    /** Package de la última notificación con monto. Es lo ÚNICO que guarda el modo descubrimiento. */
+    var ultimoPackageDetectado: String
+        get() = prefs.getString(KEY_ULTIMO_PACKAGE, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_ULTIMO_PACKAGE, value).apply()
+
+    /**
+     * Packages agregados a mano desde el modo descubrimiento, que se suman a la lista curada del
+     * código. Existen porque los nombres de package de los bancos cambian entre versiones y países,
+     * y descubrirlos escaneando las apps instaladas exigiría `QUERY_ALL_PACKAGES`, que es un permiso
+     * restringido en Play. Esto llega al mismo resultado sin pedir nada.
+     */
+    var packagesBancariosExtra: Set<String>
+        get() = prefs.getStringSet(KEY_PACKAGES_EXTRA, emptySet()) ?: emptySet()
+        set(value) = prefs.edit().putStringSet(KEY_PACKAGES_EXTRA, value).apply()
+
+    fun agregarPackageBancario(packageName: String) {
+        if (packageName.isBlank()) return
+        packagesBancariosExtra = packagesBancariosExtra + packageName
+    }
+
+    fun quitarPackageBancario(packageName: String) {
+        packagesBancariosExtra = packagesBancariosExtra - packageName
     }
 
     // Guarda los movimientos para el modo local

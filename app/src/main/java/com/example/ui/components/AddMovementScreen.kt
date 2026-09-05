@@ -121,6 +121,14 @@ fun AddMovementScreen(
     // Nombre visible del usuario activo (para textos); la lógica sigue usando el slotKey.
     val miNombre = usuarios.nombreDe(currentUserProfile)
 
+    // Historial de categorías de más nueva a más vieja (`allMovements` ya viene ordenado así).
+    // Alimenta la fila "Frecuentes" del selector de categorías: con el catálogo plegado en
+    // carpetas, es lo que evita el tap extra en el caso de todos los días.
+    val allMovements by viewModel.allMovements.collectAsState()
+    val historialCategorias = remember(allMovements) {
+        allMovements.filterNot { it.eliminado }.map { it.categoria }
+    }
+
     // Posición cruzada vigente: es lo que habilita el atajo "perdonar todo" del modo condonación.
     val balance by viewModel.balance.collectAsState()
     val formatMoney = remember {
@@ -211,6 +219,17 @@ fun AddMovementScreen(
         }
     }
 
+    // Importe llegado desde la notificación de una billetera (ver MontoDetectadoNotifier): se
+    // vuelca al campo y se consume, para que volver a esta pestaña más tarde no lo re-imponga
+    // encima de lo que el usuario haya escrito. Solo pisa el monto: el resto del alta es manual.
+    val montoSugerido by viewModel.montoSugerido.collectAsState()
+    LaunchedEffect(montoSugerido) {
+        montoSugerido?.let {
+            monto = it
+            viewModel.consumirMontoSugerido()
+        }
+    }
+
     // Volcar el estado al borrador del VM para que sobreviva el cambio de pestaña.
     LaunchedEffect(monto, tipo, esComun, metodoPago, propietario, descripcion, categoria, fecha, ticketUri) {
         viewModel.setMovementDraft(
@@ -259,9 +278,8 @@ fun AddMovementScreen(
             verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
             // Monto (Tipo Cajero)
-            val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
-            val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
-            val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
+            val cardBg = MaterialTheme.colorScheme.surface
+            val cardBorder = MaterialTheme.colorScheme.outlineVariant
 
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -276,7 +294,7 @@ fun AddMovementScreen(
                     Text(
                         text = "MONTO DEL MOVIMIENTO",
                         style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     
                     TextField(
@@ -333,7 +351,7 @@ fun AddMovementScreen(
                     text = "Tipo de Movimiento",
                     fontWeight = FontWeight.Bold,
                     fontSize = 14.sp,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(bottom = 8.dp)
                 )
 
@@ -372,7 +390,7 @@ fun AddMovementScreen(
                         text = "¿Qué estás haciendo?",
                         fontWeight = FontWeight.Bold,
                         fontSize = 14.sp,
-                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(bottom = 8.dp)
                     )
                     Row(
@@ -440,7 +458,7 @@ fun AddMovementScreen(
                                 text = if (hayDeudaAFavor) "No se mueve plata: deja de debértelos."
                                 else "$otroNombre no tiene plata tuya para perdonar.",
                                 fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                         if (hayDeudaAFavor) {
@@ -469,7 +487,7 @@ fun AddMovementScreen(
                     text = "Método de Pago",
                     fontWeight = FontWeight.Bold,
                     fontSize = 14.sp,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(bottom = 8.dp)
                 )
                 
@@ -504,7 +522,7 @@ fun AddMovementScreen(
                         text = "Distribución del Gasto",
                         fontWeight = FontWeight.Bold,
                         fontSize = 14.sp,
-                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(bottom = 8.dp)
                     )
                     
@@ -530,7 +548,7 @@ fun AddMovementScreen(
                         ) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                                 Text("Común (50/50)", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                                Text("Afecta a ambos", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f), maxLines = 1)
+                                Text("Afecta a ambos", fontSize = 9.sp, color = com.example.ui.theme.appTextMuted, maxLines = 1)
                             }
                         }
 
@@ -556,7 +574,7 @@ fun AddMovementScreen(
                         ) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                                 Text("Personal", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                                Text("Paga solo $miNombre", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f), maxLines = 1)
+                                Text("Paga solo $miNombre", fontSize = 9.sp, color = com.example.ui.theme.appTextMuted, maxLines = 1)
                             }
                         }
                     }
@@ -576,7 +594,7 @@ fun AddMovementScreen(
                         text = label,
                         fontWeight = FontWeight.Bold,
                         fontSize = 14.sp,
-                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(bottom = 8.dp)
                     )
 
@@ -625,41 +643,22 @@ fun AddMovementScreen(
                 }
             }
 
-            // Categoría (Chips seleccionables dinámicos)
+            // Categoría: frecuentes + carpetas plegables (ver CategoryPicker)
             Column {
                 Text(
                     text = "Categoría",
                     fontWeight = FontWeight.Bold,
                     fontSize = 14.sp,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(bottom = 8.dp)
                 )
 
-                val items = Categorias.deTipo(tipo)
-
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    items.forEach { cat ->
-                        val isSelected = categoria == cat
-                        FilterChip(
-                            selected = isSelected,
-                            onClick = { categoria = cat },
-                            label = { Text(cat, fontSize = 11.sp) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                selectedLabelColor = MaterialTheme.colorScheme.onPrimary
-                            ),
-                            border = FilterChipDefaults.filterChipBorder(
-                                enabled = true,
-                                selected = isSelected,
-                                borderColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.15f)
-                            )
-                        )
-                    }
-                }
+                CategoryPicker(
+                    tipo = tipo,
+                    seleccionada = categoria,
+                    historialCategorias = historialCategorias,
+                    onSelect = { categoria = it }
+                )
             }
 
             // Fecha con Atajos (Hoy / Ayer / Lanzar dialog)
@@ -668,7 +667,7 @@ fun AddMovementScreen(
                     text = "Fecha del Movimiento",
                     fontWeight = FontWeight.Bold,
                     fontSize = 14.sp,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(bottom = 8.dp)
                 )
 
@@ -748,7 +747,7 @@ fun AddMovementScreen(
                     text = "Descripción (Opcional)",
                     fontWeight = FontWeight.Bold,
                     fontSize = 14.sp,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(bottom = 8.dp)
                 )
                 
@@ -759,7 +758,7 @@ fun AddMovementScreen(
                     shape = RoundedCornerShape(12.dp),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = MaterialTheme.colorScheme.primary,
-                        unfocusedBorderColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.15f)
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
                     ),
                     keyboardOptions = KeyboardOptions(
                         imeAction = ImeAction.Done
@@ -777,7 +776,7 @@ fun AddMovementScreen(
                     text = "Adjuntar Ticket (Opcional)",
                     fontWeight = FontWeight.Bold,
                     fontSize = 14.sp,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(bottom = 8.dp)
                 )
 
@@ -939,7 +938,7 @@ private fun ModoTransferenciaBoton(
             Text(
                 bajada,
                 fontSize = 9.sp,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
+                color = com.example.ui.theme.appTextMuted,
                 maxLines = 1
             )
         }

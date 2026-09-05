@@ -22,10 +22,14 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.MyApplication">
+        <!-- singleTop: al tocar una notificación la Activity viva recibe `onNewIntent` en vez de
+             destruirse y recrearse. Sin esto se perdía el ViewModel y con él el borrador del alta
+             a medio escribir, que es exactamente lo que la notificación de monto viene a completar. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"
+            android:launchMode="singleTop"
             android:theme="@style/Theme.MyApplication">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -40,6 +44,21 @@
             android:name="androidx.work.impl.foreground.SystemForegroundService"
             android:foregroundServiceType="dataSync"
             tools:node="merge" />
+
+        <!-- Escucha las notificaciones de las billeteras y extrae SOLO el importe. Solo corre si
+             el usuario lo habilita a mano en los Ajustes de Android; la app funciona completa sin él.
+             `exported=true` + `permission`: el que lo bindea es el sistema (otra app, por eso
+             exportado), y el permiso de firma hace que NADIE más pueda hacerlo. No se declara el
+             permiso con <uses-permission>: acá se ofrece el servicio, no se lo consume. -->
+        <service
+            android:name=".data.notifications.BilleterasNotificationListener"
+            android:exported="true"
+            android:label="@string/deteccion_montos_label"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
 
         <provider
             android:name="androidx.core.content.FileProvider"

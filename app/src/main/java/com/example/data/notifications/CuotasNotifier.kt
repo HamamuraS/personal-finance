@@ -88,7 +88,10 @@ object CuotasNotifier {
     /** Al tocar la notificación, abre (o trae al frente) la app directo en la pestaña Cuotas. */
     private fun contentIntent(context: Context): PendingIntent {
         val intent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            // SINGLE_TOP y no CLEAR_TOP: con CLEAR_TOP la Activity viva se destruía y se
+            // recreaba en vez de recibir `onNewIntent`, perdiendo el ViewModel y con él los
+            // borradores del alta a medio escribir.
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra(MainActivity.EXTRA_OPEN_TAB, ScreenTab.CUOTAS.name)
         }
         return PendingIntent.getActivity(

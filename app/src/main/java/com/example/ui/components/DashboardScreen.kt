@@ -287,7 +287,7 @@ fun DashboardScreen(
                             Text(
                                 text = "Mantén presionado para borrar",
                                 fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
@@ -356,12 +356,12 @@ fun DashboardScreen(
                                     imageVector = Icons.Default.Info,
                                     contentDescription = null,
                                     modifier = Modifier.size(40.dp),
-                                    tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.2f)
+                                    tint = com.example.ui.theme.appTextMuted
                                 )
                                 Spacer(modifier = Modifier.height(8.dp))
                                 Text(
                                     text = "Sin movimientos registrados para el filtro",
-                                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     fontSize = 13.sp
                                 )
                             }
@@ -550,9 +550,8 @@ fun MovementItem(
         )
     }
 
-    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
-    val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
-    val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFF1F5F9)
+    val cardBg = MaterialTheme.colorScheme.surface
+    val cardBorder = MaterialTheme.colorScheme.outlineVariant
 
     Card(
         modifier = Modifier
@@ -606,7 +605,7 @@ fun MovementItem(
                     tint = when {
                         isAporte -> aporteColor
                         isGasto && movement.esComun -> MaterialTheme.colorScheme.error
-                        isGasto -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        isGasto -> MaterialTheme.colorScheme.onSurfaceVariant
                         else -> MaterialTheme.colorScheme.tertiary
                     }
                 )
@@ -673,7 +672,7 @@ fun MovementItem(
                     Text(
                         text = subtitulo,
                         fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1.5f)
@@ -749,7 +748,7 @@ fun MovementItem(
                                     text = if (movement.esComun) "Común" else "Pers.",
                                     fontSize = 9.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = if (movement.esComun) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                                    color = if (movement.esComun) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                         }
@@ -808,7 +807,7 @@ fun MovementItem(
                 Text(
                     text = formatDateMinimal(movement.fecha).replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() },
                     fontSize = 10.sp,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
+                    color = com.example.ui.theme.appTextMuted,
                     modifier = Modifier.padding(top = 2.dp)
                 )
             }
@@ -870,14 +869,14 @@ private fun MovementDetailDialog(
                     Text(
                         text = "Descripción",
                         fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
                         text = movement.descripcion.ifBlank { "Sin descripción" },
                         fontSize = 14.sp,
                         color = if (movement.descripcion.isBlank())
-                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                            com.example.ui.theme.appTextMuted
                         else MaterialTheme.colorScheme.onSurface
                     )
                 }
@@ -914,7 +913,7 @@ private fun DetailRow(label: String, value: String) {
         Text(
             text = label,
             fontSize = 13.sp,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.weight(1f)
         )
         Text(
@@ -930,11 +929,13 @@ private fun DetailRow(label: String, value: String) {
 
 @Composable
 fun PozoComunCard(userProfile: String, config: UsuariosConfig, balance: BalanceBreakdown, formatMoney: NumberFormat) {
-    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
-    val cardBg = if (isDark) Color(0xFF2E332F) else Color(0xFFE8F3E9)
-    val cardBorder = if (isDark) Color(0xFF414941) else Color(0xFFDCE5DB)
-    val labelColor = if (isDark) Color(0xFFCDD3CD) else Color(0xFF414941)
-    val textMainColor = if (isDark) Color.White else Color(0xFF1A1C19)
+    // La tarjeta hero es la única que NO va sobre `surface`: usa el contenedor tonal para
+    // despegarse del resto del listado. Los tres colores salen del tema, así que el contraste del
+    // label sobre ese fondo está garantizado por la paleta y no por un hex elegido a ojo.
+    val cardBg = MaterialTheme.colorScheme.surfaceVariant
+    val cardBorder = MaterialTheme.colorScheme.outlineVariant
+    val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val textMainColor = MaterialTheme.colorScheme.onSurface
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -981,7 +982,7 @@ fun PozoComunCard(userProfile: String, config: UsuariosConfig, balance: BalanceB
                     .fillMaxWidth()
                     .height(8.dp)
                     .clip(CircleShape)
-                    .background(if (isDark) Color(0xFF5D625C) else Color(0xFFC2CDC1))
+                    .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
             ) {
                 // Barra del slot primario
                 Box(
@@ -1109,10 +1110,9 @@ fun DineroCruzadoCard(externoSantiago: Double, currentUserProfile: String, confi
     // Umbral para ignorar redondeos de centavos
     if (kotlin.math.abs(externoSantiago) < 1.0) return
 
-    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
-    val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
-    val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
-    val textMainColor = if (isDark) Color.White else Color(0xFF191C19)
+    val cardBg = MaterialTheme.colorScheme.surface
+    val cardBorder = MaterialTheme.colorScheme.outlineVariant
+    val textMainColor = MaterialTheme.colorScheme.onSurface
 
     // Quién tiene plata en la cuenta de quién. externoSantiago > 0 = el primario tiene plata en la
     // cuenta del secundario. El acento representa al dueño (persona concreta), así que usa su color
@@ -1195,10 +1195,9 @@ fun DesgloseSocioCard(
     formatMoney: NumberFormat,
     avatarColor: Color
 ) {
-    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
-    val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
-    val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
-    val textMainColor = if (isDark) Color.White else Color(0xFF191C19)
+    val cardBg = MaterialTheme.colorScheme.surface
+    val cardBorder = MaterialTheme.colorScheme.outlineVariant
+    val textMainColor = MaterialTheme.colorScheme.onSurface
     val rojo = MaterialTheme.colorScheme.error
 
     Card(
@@ -1277,7 +1276,7 @@ fun DesgloseSocioCard(
                 )
             }
 
-            HorizontalDivider(color = if (isDark) Color(0xFF333833) else Color(0xFFF1F5F9))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
             // Aportes (+)
             Column {
@@ -1322,10 +1321,9 @@ fun DesgloseSocioCard(
 fun GastosComunesCard(total: Double, formatMoney: NumberFormat) {
     if (total < 1.0) return
 
-    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
-    val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
-    val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
-    val textMainColor = if (isDark) Color.White else Color(0xFF191C19)
+    val cardBg = MaterialTheme.colorScheme.surface
+    val cardBorder = MaterialTheme.colorScheme.outlineVariant
+    val textMainColor = MaterialTheme.colorScheme.onSurface
     val rojo = MaterialTheme.colorScheme.error
 
     Card(
@@ -1390,10 +1388,9 @@ fun CuotasRecordatorioCard(
     isLoading: Boolean,
     onConfirmCuota: (CuotaPlan, Int, String, String, Double?, () -> Unit) -> Unit
 ) {
-    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
-    val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
-    val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
-    val textMain = if (isDark) Color.White else Color(0xFF191C19)
+    val cardBg = MaterialTheme.colorScheme.surface
+    val cardBorder = MaterialTheme.colorScheme.outlineVariant
+    val textMain = MaterialTheme.colorScheme.onSurface
     val accent = MaterialTheme.colorScheme.primary
 
     var target by remember { mutableStateOf<CuotaRecordatorio?>(null) }
@@ -1552,9 +1549,8 @@ fun MovementFilters(
     onToggleCategory: (String) -> Unit,
     onClearCategories: () -> Unit
 ) {
-    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
-    val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
-    val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
+    val cardBg = MaterialTheme.colorScheme.surface
+    val cardBorder = MaterialTheme.colorScheme.outlineVariant
     val trackBg = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
 
     Card(
@@ -1596,7 +1592,7 @@ fun MovementFilters(
                     text = "Persona",
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Row(
                     modifier = Modifier
@@ -1625,7 +1621,7 @@ fun MovementFilters(
                                 text = label,
                                 fontSize = 13.sp,
                                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                color = if (selected) accent else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                color = if (selected) accent else MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1
                             )
                         }
@@ -1660,7 +1656,7 @@ fun MovementFilters(
                         border = FilterChipDefaults.filterChipBorder(
                             enabled = true,
                             selected = selected,
-                            borderColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.15f)
+                            borderColor = MaterialTheme.colorScheme.outlineVariant
                         )
                     )
                 }
@@ -1687,7 +1683,7 @@ fun MovementFilters(
                                 else Icons.Default.KeyboardArrowDown,
                                 contentDescription = if (categoriesExpanded) "Contraer" else "Expandir",
                                 modifier = Modifier.size(18.dp),
-                                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
@@ -1695,7 +1691,7 @@ fun MovementFilters(
                                 else "Categorías (${selectedCategories.size})",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                         if (selectedCategories.isNotEmpty()) {
@@ -1751,7 +1747,7 @@ fun MovementFilters(
                                     border = FilterChipDefaults.filterChipBorder(
                                         enabled = true,
                                         selected = selected,
-                                        borderColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.15f)
+                                        borderColor = MaterialTheme.colorScheme.outlineVariant
                                     )
                                 )
                             }
