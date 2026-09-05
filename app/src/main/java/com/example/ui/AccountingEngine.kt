@@ -24,6 +24,9 @@ data class BalanceBreakdown(
     val gastosComunesTotales: Double,
     val santiagoGastosComunes: Double,
     val rocioGastosComunes: Double,
+    // Plata que cada uno le REGALÓ al otro en el periodo: la porción de una transferencia que no
+    // saldaba una deuda, más lo perdonado en las condonaciones. En los dos casos baja el patrimonio
+    // de quien la envía sin ser un gasto (no sale del pozo, cambia de dueño).
     val santiagoTransfersEnviadas: Double,
     val rocioTransfersEnviadas: Double,
     val santiagoSaldoFinal: Double,
@@ -69,6 +72,8 @@ data class OpeningBalance(
  *    responsable; la mitad del otro genera un reclamo a favor del responsable.
  *  - Transferencia: mueve dinero físicamente del responsable al otro. Si conserva propietario,
  *    solo cambia de ubicación (genera propiedad cruzada). Si cambia de dueño, es un regalo.
+ *  - Condonación: el responsable perdona lo que el otro tiene de él. No mueve nada físico: solo
+ *    cancela propiedad cruzada. Ver [TIPO_CONDONACION].
  *
  * El stock (físico + propiedad cruzada) arranca en [opening]; los flujos del periodo
  * (aportes, gastos, etc.) siempre arrancan en cero para reflejar solo el mes en curso.
@@ -89,6 +94,24 @@ object AccountingEngine {
 
     /** Categoría reservada de las filas de apertura. Nunca es elegible por el usuario. */
     const val CATEGORIA_APERTURA = "Saldo inicial"
+
+    /**
+     * Tipo de la **condonación** ("perdonar deuda"): el responsable renuncia a lo que el otro tiene
+     * de él.
+     *
+     * Es el único movimiento que no toca ningún bucket físico —la plata ya está donde tiene que
+     * estar, lo único que cambia es de quién es—, y por eso no se puede modelar como una
+     * transferencia: esa *siempre* mueve plata de una cuenta a la otra, así que perdonar con una
+     * transferencia descontaba el monto de la cuenta del acreedor **y encima dejaba la deuda en
+     * pie** (la devolución de la transferencia mira la propiedad cruzada en el sentido contrario).
+     *
+     * En la UI se carga como un submodo de "Transferencia"; en la planilla es un tipo propio.
+     */
+    const val TIPO_CONDONACION = "Condonación"
+
+    /** ¿[m] es una condonación? Tolera la forma sin tilde por si se carga a mano en la planilla. */
+    fun isCondonacion(m: Movement): Boolean =
+        m.tipo.equals(TIPO_CONDONACION, ignoreCase = true) || m.tipo.equals("Condonacion", ignoreCase = true)
 
     fun isOpeningRow(m: Movement): Boolean = m.tipo.equals(TIPO_APERTURA, ignoreCase = true)
 
@@ -220,6 +243,52 @@ object AccountingEngine {
         return opening(replay, base)
     }
 
+    /** Resultado de [chequearRecalculo]: si se puede regenerar la apertura, y por qué no. */
+    data class ChequeoDeApertura(val permitido: Boolean, val motivo: String = "")
+
+    /**
+     * ¿Es seguro regenerar la apertura de [month] a partir de los meses anteriores?
+     *
+     * Regenerar deriva el arrastre de los meses previos **ignorando a propósito** la apertura que el
+     * mes ya tenga escrita (si no, recalcular sería un no-op). Eso es correcto mientras esos meses
+     * existan; si se purgaron, "derivar" da cero y la regeneración pisa una apertura correcta con
+     * ceros — es decir, se lleva puesto todo el patrimonio arrastrado. Y no es un caso raro: con
+     * hojas viejas borradas, ese es el estado **normal** del mes más antiguo que sobrevive.
+     *
+     * Se bloquea en dos situaciones, siempre con la apertura ya escrita como cosa a proteger:
+     *  1. No queda ningún movimiento anterior a [month].
+     *  2. El recálculo da todo cero pero la apertura escrita no lo es (purga parcial).
+     *
+     * Materializar el corte de un mes que **todavía no tiene** apertura siempre se permite: no hay
+     * nada que perder, y es el caso normal (incluido el primer mes de la planilla, cuyo arrastre
+     * legítimamente es cero).
+     */
+    fun chequearRecalculo(all: List<Movement>, month: String): ChequeoDeApertura {
+        val usable = all.filter { !isLegacyCarryover(it) && monthOf(it).isNotEmpty() }
+        val escritas = usable.filter { monthOf(it) == month && isOpeningRow(it) }
+        if (escritas.isEmpty()) return ChequeoDeApertura(true)
+
+        if (usable.none { monthOf(it) < month }) return ChequeoDeApertura(
+            false,
+            "No quedan meses anteriores a $month en la planilla: el arrastre daría cero y borraría " +
+                "la apertura que el mes ya tiene escrita."
+        )
+
+        val nueva = openingFor(usable.filter { monthOf(it) != month }, month)
+        if (esVacia(nueva) && !esVacia(openingFromRows(escritas))) return ChequeoDeApertura(
+            false,
+            "El recálculo da cero pero $month ya tiene una apertura con saldo: faltan meses " +
+                "anteriores en la planilla."
+        )
+        return ChequeoDeApertura(true)
+    }
+
+    /** Un arrastre sin nada: todos los buckets y la propiedad cruzada en cero (tolerando centavos). */
+    private fun esVacia(o: OpeningBalance): Boolean =
+        listOf(
+            o.santiagoEfectivo, o.santiagoVirtual, o.rocioEfectivo, o.rocioVirtual, o.netSantiagoEnRocio
+        ).all { kotlin.math.abs(it) < 0.005 }
+
     private fun monthOf(m: Movement): String = if (m.fecha.length >= 7) m.fecha.substring(0, 7) else ""
 
     fun compute(list: List<Movement>, opening: OpeningBalance = OpeningBalance()): BalanceBreakdown {
@@ -338,6 +407,23 @@ object AccountingEngine {
                                 rTransfers += (m.monto - devolucion)
                             }
                         }
+                    }
+                }
+
+                // Perdón de deuda: el responsable (acreedor) renuncia a lo que el otro tiene de él.
+                // No toca ningún bucket físico; solo cancela propiedad cruzada. Se clampea contra la
+                // deuda existente para que perdonar de más nunca genere deuda en el sentido
+                // contrario — mismo criterio que la devolución de las transferencias. Tampoco es un
+                // flujo del periodo: el pozo no cambia, así que no suma a aportes ni a gastos.
+                "condonación", "condonacion" -> {
+                    if (respS) {
+                        val perdonado = minOf(m.monto, maxOf(0.0, netSR)) // sEnRocio
+                        netSR -= perdonado
+                        sTransfers += perdonado
+                    } else {
+                        val perdonado = minOf(m.monto, maxOf(0.0, -netSR)) // rEnSantiago
+                        netSR += perdonado
+                        rTransfers += perdonado
                     }
                 }
             }

@@ -24,10 +24,39 @@ data class CuotaRecordatorio(
  *
  * Todo lo que produce es **derivado** de `planes` + `movimientos`: nunca toca saldos. El estado
  * "pagada" de cada cuota se deduce de la existencia de un [Movement] no eliminado que la referencia
- * (`planId` + `cuotaNumero`), que es la única fuente de verdad. De este modo, si se borra el
- * movimiento del pago, la cuota vuelve automáticamente a "pendiente".
+ * (`planId` + `cuotaNumero`) **unida** a [CuotaPlan.cuotasPagadasPrevias], el snapshot que deja el
+ * corte de mes para las cuotas cuyos movimientos ya se purgaron.
+ *
+ * Consecuencia a tener presente: borrar el movimiento de un pago devuelve la cuota a "pendiente"
+ * **solo mientras ese movimiento exista**. Una vez que el mes se cerró y entró en el snapshot, la
+ * cuota queda pagada aunque se borre la fila. Es la misma concesión que ya se paga con la plata —a
+ * un mes materializado tampoco se lo corrige retroactivamente— y es el precio de poder purgar hojas.
  */
 object CuotasEngine {
+
+    /**
+     * Id determinístico del movimiento que paga la cuota [numero] de [planId].
+     *
+     * Antes cada intento de pago generaba un UUID nuevo dentro del propio request: si un lote de
+     * cuotas fallaba a la mitad, reintentarlo duplicaba en la planilla las que sí se habían escrito.
+     * Con un id derivado, el upsert por id pisa la fila y el reintento es seguro; de paso, pagar dos
+     * veces la misma cuota se vuelve imposible.
+     */
+    fun idDePago(planId: String, numero: Int): String = "cuota-$planId-$numero"
+
+    /**
+     * Números de cuota pagados de [plan]: los que tienen movimiento vivo **unidos** a los del
+     * snapshot del corte de mes ([CuotaPlan.cuotasPagadasPrevias]). Es la única definición de
+     * "pagada" del módulo; todo lo demás se apoya acá.
+     */
+    fun pagadasDe(plan: CuotaPlan, movimientos: List<Movement>): Set<Int> {
+        val validas = 1..plan.cantidadCuotas
+        val porMovimiento = movimientos
+            .asSequence()
+            .filter { !it.eliminado && it.planId == plan.id && it.cuotaNumero in validas }
+            .map { it.cuotaNumero }
+        return (porMovimiento + plan.cuotasPagadasPrevias.asSequence().filter { it in validas }).toSet()
+    }
 
     /**
      * Cronograma completo del plan: una entrada por cuota (1..N) con su mes de vencimiento y su
@@ -40,27 +69,23 @@ object CuotasEngine {
             .asSequence()
             .filter { !it.eliminado && it.planId == plan.id && it.cuotaNumero > 0 }
             .groupBy { it.cuotaNumero }
+        val pagadas = pagadasDe(plan, movimientos)
 
         return (1..plan.cantidadCuotas).map { numero ->
-            val mov = pagos[numero]?.firstOrNull()
             CuotaProgramada(
                 numero = numero,
                 monto = plan.montoPorCuota,
                 mesVencimiento = addMonths(plan.fechaPrimeraCuota, numero - 1),
-                pagada = mov != null,
-                movimientoId = mov?.id
+                pagada = numero in pagadas,
+                // Null si la cuota viene del snapshot: su movimiento pudo haberse purgado.
+                movimientoId = pagos[numero]?.firstOrNull()?.id
             )
         }
     }
 
     /** Cantidad de cuotas distintas ya pagadas de un plan. */
     fun cuotasPagadas(plan: CuotaPlan, movimientos: List<Movement>): Int =
-        movimientos
-            .asSequence()
-            .filter { !it.eliminado && it.planId == plan.id && it.cuotaNumero in 1..plan.cantidadCuotas }
-            .map { it.cuotaNumero }
-            .distinct()
-            .count()
+        pagadasDe(plan, movimientos).size
 
     /** Un plan está completamente pago si tiene tantas cuotas pagadas como cuotas totales. */
     fun estaCompleto(plan: CuotaPlan, movimientos: List<Movement>): Boolean =

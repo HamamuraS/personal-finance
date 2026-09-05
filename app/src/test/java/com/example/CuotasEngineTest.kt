@@ -7,6 +7,7 @@ import com.example.ui.CuotasEngine
 import com.example.ui.OpeningBalance
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -353,5 +354,50 @@ class CuotasEngineTest {
         assertEquals(0.0, b.santiagoExterno, delta)                 // sin propiedad cruzada
         assertEquals(100000.0, b.santiagoGastosPersonales, delta)   // gasto personal de Santiago
         assertEquals(0.0, b.gastosComunesTotales, delta)            // no es común
+    }
+
+    // --- Snapshot del corte de mes (cuotas pagadas previas) ----------------------------------
+
+    @Test
+    fun elSnapshotMantienePagadaUnaCuotaCuyoMovimientoSePurgo() {
+        // "ropa shopping": 3 cuotas, la 1 pagada en una hoja que se borró.
+        val p = plan(cantidadCuotas = 3).copy(cuotasPagadasPrevias = listOf(1))
+        val crono = CuotasEngine.cronograma(p, emptyList())
+
+        assertTrue(crono[0].pagada)
+        assertFalse(crono[1].pagada)
+        // Sin movimiento detrás: la cuota está pagada pero no hay a qué fila apuntar.
+        assertNull(crono[0].movimientoId)
+        assertEquals(1, CuotasEngine.cuotasPagadas(p, emptyList()))
+        assertFalse(CuotasEngine.estaCompleto(p, emptyList()))
+    }
+
+    @Test
+    fun elSnapshotSeUneALosMovimientosSinContarDosVeces() {
+        val p = plan(cantidadCuotas = 3).copy(cuotasPagadasPrevias = listOf(1, 2))
+        // La cuota 2 está en el snapshot Y tiene movimiento vivo: cuenta una sola vez.
+        val movs = listOf(pago(p.id, 2), pago(p.id, 3))
+
+        assertEquals(setOf(1, 2, 3), CuotasEngine.pagadasDe(p, movs))
+        assertEquals(3, CuotasEngine.cuotasPagadas(p, movs))
+        assertTrue(CuotasEngine.estaCompleto(p, movs))
+        // El plan completo ya no genera recordatorios.
+        assertTrue(CuotasEngine.recordatoriosDelMes("2027-01", listOf(p), movs).isEmpty())
+    }
+
+    @Test
+    fun elSnapshotIgnoraNumerosFueraDelPlan() {
+        // Basura en la celda (un plan al que le bajaron la cantidad de cuotas) no infla el conteo.
+        val p = plan(cantidadCuotas = 2).copy(cuotasPagadasPrevias = listOf(0, 1, 7))
+        assertEquals(setOf(1), CuotasEngine.pagadasDe(p, emptyList()))
+        assertFalse(CuotasEngine.estaCompleto(p, emptyList()))
+    }
+
+    @Test
+    fun elIdDePagoEsDeterministicoPorPlanYCuota() {
+        // Reintentar un lote a medio escribir tiene que pisar la fila, no duplicarla.
+        assertEquals(CuotasEngine.idDePago("plan-1", 3), CuotasEngine.idDePago("plan-1", 3))
+        assertNotEquals(CuotasEngine.idDePago("plan-1", 3), CuotasEngine.idDePago("plan-1", 4))
+        assertNotEquals(CuotasEngine.idDePago("plan-1", 3), CuotasEngine.idDePago("plan-2", 3))
     }
 }

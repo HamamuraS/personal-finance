@@ -1,5 +1,27 @@
-1. Cuando se carga un movimiento deberia limpiarse la vista automáticamente, asi como esta ahora me fuerza a tocar Limpiar si quiero cargar otro movimiento. Lo mismo con la carga de cuotas.
-2. Agregar categoría Alimentos frescos debajo de Verdulería
-3. En la parte de Métricas, creo se están tomando solamente los gastos de cuenta y lo de efectivo se está ignorando. Debería sumarizarse independientemente del medio de pago. Por ejemplo tengo 2400 pesos en efectivo en Gustos del 27 de julio (Santiago) y no me figura en metricas.
-4. Crear plan de implementación de feature de notificaciones de cuotas: El último día de cada mes a las 9.00am en hora local argentina el sistema debería actualizarse (traer los datos de la planilla) en segundo plano sin que el usuario haya abierto la app. Si tiene cuotas pendientes de pago debe emitir una notificación de sistema operativo amistosa recordandole el importe que tiene pendiente de pago en total entre todas sus tarjetas que corresponden al mes actual por cerrar. También, todos los lunes a las 9am el sistema debe actualizarse y notificar amistosamente al usuario el monto total entre todas sus tarjetas si tiene cuotas atrasadas sin pagar de meses anteriores. Quiero poder disparar ambas notificaciones mockeadas desde Ajustes para poder probar la funcionalidad.
-5. Analizar si es factible un sistema de actualizaciones sin costo. Actualmente cada vez que cambio algo en la app mi novia tiene que instalarse un apk nuevo que le comparto. Analizar si es posible realizar un deploy a los usuarios con la app ya instalada sin tener que volver a compartir el apk y sin costo. Si es factible, documentar en un .md en features, sino informar al usuario
+
+# Hecho
+
+- **Condonación (perdón de deuda).** Tipo propio `Condonación` en los dos motores; submodo de la
+  pestaña "Transf." con atajo "perdonar todo". No mueve plata: solo cancela propiedad cruzada.
+- **1 · Candado en el Apps Script.** `doPost` toma `LockService.getScriptLock()` y delega en
+  `handlePost`; el upsert dejó de ser leer-y-después-escribir sin protección.
+- **2 · Todas las escrituras con `PUT`.** `duplicateMovement`, `confirmarCuota`, `pagarCuotas` y
+  `savePlan` pasaron de `POST` (append ciego) al upsert idempotente por id.
+- **3 · `pagarCuotas` reintentable.** El id del pago sale de `CuotasEngine.idDePago(planId, numero)`
+  en vez de un UUID nuevo por intento: reintentar un lote a medio escribir pisa las filas en vez de
+  duplicarlas, y pagar dos veces la misma cuota se volvió imposible.
+- **4a · El corte de mes cubre las cuotas.** Columna K `Cuotas Pagadas Previas` en la hoja `Planes`
+  (`CuotaPlan.cuotasPagadasPrevias`), unión —nunca reemplazo— en `CuotasEngine.pagadasDe`,
+  `AhorroRepository.isPlanComplete` y `getPlans`. La calcula el servidor (`SNAPSHOT_CUOTAS`), que ya
+  recorre todas las hojas. El trade-off quedó documentado en `features/modulo-cuotas.md`.
+- **4b · El corte se dispara solo.** `BackgroundSyncWorker.materializarCorteDelMes` escribe la
+  apertura del mes en curso si le falta y pide el snapshot de cuotas **siempre**. Las dos mitades van
+  por separado a propósito: el trigger diario del script (`actualizarAperturas()`, que hay que
+  instalar una vez desde el editor) escribe aperturas pero no sabe nada de cuotas, así que atar el
+  snapshot a "acabo de escribir la apertura" lo dejaba sin correr justo en el caso más común.
+- **5 · Guard del recálculo.** `AccountingEngine.chequearRecalculo` bloquea regenerar una apertura
+  cuando no quedan meses anteriores, o cuando el recálculo da cero y la escrita tiene saldo. Sin él,
+  el botón de Ajustes sobre el mes más viejo que sobrevive a una purga escribía ceros y se llevaba
+  puesto todo el patrimonio arrastrado. Espejado en `escribirAperturaDeMes` del script.
+- **6 · Duplicar pasa por la cola.** `duplicateMovement` ya no escribe sincrónico: fila optimista,
+  reintento y notificación, como cualquier alta.

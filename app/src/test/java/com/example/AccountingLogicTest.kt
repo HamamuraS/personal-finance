@@ -4,6 +4,8 @@ import com.example.data.Movement
 import com.example.ui.AccountingEngine
 import com.example.ui.OpeningBalance
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -350,5 +352,169 @@ class AccountingLogicTest {
         // Y no cuentan como ancla: openingFor sigue replayando.
         val o = AccountingEngine.openingFor(listOf(legacy, gasto), "2026-08")
         assertEquals(-1000.0, o.santiagoVirtual, delta)
+    }
+
+    // --- Condonación (perdón de deuda) ------------------------------------------------------
+
+    /**
+     * Escenario real que motivó el tipo: Rocío tenía 100k de Santiago (ya gastados) y Santiago se
+     * los perdona. Cargarlo como transferencia hacía dos cosas mal —le sacaba 100k físicos a
+     * Santiago y encima dejaba la deuda en pie—, porque la devolución de la transferencia mira la
+     * propiedad cruzada en el sentido contrario.
+     */
+    @Test
+    fun perdonarDeudaCancelaElCruzadoSinMoverPlata() {
+        val previos = listOf(
+            Movement(fecha = "2026-09-01", monto = 100000.0, tipo = "Aporte", categoria = "Sueldo",
+                responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Billetera Virtual"),
+            Movement(fecha = "2026-09-02", monto = 100000.0, tipo = "Transferencia", categoria = "Ajuste",
+                responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Billetera Virtual"),
+            Movement(fecha = "2026-09-03", monto = 100000.0, tipo = "Gasto", categoria = "Gustos",
+                responsable = "Rocío", propietario = "Rocío", esComun = false, metodoPago = "Billetera Virtual"),
+            Movement(fecha = "2026-09-04", monto = 30000.0, tipo = "Aporte", categoria = "Sueldo",
+                responsable = "Rocío", propietario = "Rocío", esComun = false, metodoPago = "Efectivo")
+        )
+        val antes = AccountingEngine.compute(previos)
+        assertEquals(100000.0, antes.santiagoExterno, delta)
+        assertEquals(-70000.0, antes.rocioSaldoFinal, delta)
+
+        val perdon = Movement(fecha = "2026-09-05", monto = 100000.0,
+            tipo = AccountingEngine.TIPO_CONDONACION, categoria = "Perdón de deuda",
+            responsable = "Santiago", propietario = "Rocío", esComun = false, metodoPago = "Billetera Virtual")
+        val b = AccountingEngine.compute(previos + perdon)
+
+        // La deuda desaparece...
+        assertEquals(0.0, b.santiagoExterno, delta)
+        assertEquals(0.0, b.sEnRocio, delta)
+        assertEquals(0.0, b.rEnSantiago, delta)
+        // ...sin que se mueva un peso: el físico de cada uno queda igual que antes.
+        assertEquals(antes.santiagoEnMano, b.santiagoEnMano, delta)
+        assertEquals(antes.rocioEnMano, b.rocioEnMano, delta)
+        assertEquals(antes.totalPozo, b.totalPozo, delta)
+        // Patrimonio: Santiago resigna el reclamo, Rocío se queda con lo suyo.
+        assertEquals(0.0, b.santiagoSaldoFinal, delta)
+        assertEquals(30000.0, b.rocioSaldoFinal, delta)
+        // No es un flujo del periodo (el pozo no cambió), pero sí plata regalada.
+        assertEquals(antes.totalGastosMes, b.totalGastosMes, delta)
+        assertEquals(antes.totalAportesMes, b.totalAportesMes, delta)
+        assertEquals(100000.0, b.santiagoTransfersEnviadas, delta)
+    }
+
+    @Test
+    fun perdonarDeMasNoGeneraDeudaEnElSentidoContrario() {
+        val movs = listOf(
+            Movement(fecha = "2026-09-01", monto = 40000.0, tipo = "Gasto", categoria = "Super",
+                responsable = "Santiago", propietario = "Ambos", esComun = true, metodoPago = "Billetera Virtual"),
+            // Rocío le debe 20000, pero se perdonan 500000.
+            Movement(fecha = "2026-09-02", monto = 500000.0, tipo = AccountingEngine.TIPO_CONDONACION,
+                categoria = "Perdón de deuda", responsable = "Santiago", propietario = "Rocío",
+                esComun = false, metodoPago = "Billetera Virtual")
+        )
+        val b = AccountingEngine.compute(movs)
+        assertEquals(0.0, b.santiagoExterno, delta)
+        assertEquals(0.0, b.rEnSantiago, delta)
+        // Solo cuenta como regalado lo que realmente se perdonó.
+        assertEquals(20000.0, b.santiagoTransfersEnviadas, delta)
+    }
+
+    @Test
+    fun perdonarSinDeudaAFavorNoHaceNada() {
+        val movs = listOf(
+            // La deuda es a favor de Santiago; el que perdona es Rocío, que no tiene nada que perdonar.
+            Movement(fecha = "2026-09-01", monto = 40000.0, tipo = "Gasto", categoria = "Super",
+                responsable = "Santiago", propietario = "Ambos", esComun = true, metodoPago = "Billetera Virtual"),
+            Movement(fecha = "2026-09-02", monto = 20000.0, tipo = AccountingEngine.TIPO_CONDONACION,
+                categoria = "Perdón de deuda", responsable = "Rocío", propietario = "Santiago",
+                esComun = false, metodoPago = "Billetera Virtual")
+        )
+        val b = AccountingEngine.compute(movs)
+        assertEquals(20000.0, b.santiagoExterno, delta)
+        assertEquals(0.0, b.rocioTransfersEnviadas, delta)
+    }
+
+    @Test
+    fun elPerdonSobreviveAlCierreDelMes() {
+        val septiembre = listOf(
+            Movement(fecha = "2026-09-01", monto = 200000.0, tipo = "Aporte", categoria = "Sueldo",
+                responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Billetera Virtual"),
+            Movement(fecha = "2026-09-02", monto = 60000.0, tipo = "Transferencia", categoria = "Ajuste",
+                responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Billetera Virtual"),
+            Movement(fecha = "2026-09-03", monto = 60000.0, tipo = AccountingEngine.TIPO_CONDONACION,
+                categoria = "Perdón de deuda", responsable = "Santiago", propietario = "Rocío",
+                esComun = false, metodoPago = "Billetera Virtual")
+        )
+        val apertura = AccountingEngine.openingRowsFor("2026-10", AccountingEngine.opening(septiembre))
+
+        // Sin propiedad cruzada, la apertura de octubre son solo las 4 filas propias.
+        assertEquals(4, apertura.size)
+        val b = AccountingEngine.compute(emptyList(), AccountingEngine.openingFromRows(apertura))
+        assertEquals(0.0, b.santiagoExterno, delta)
+        assertEquals(140000.0, b.santiagoSaldoFinal, delta)
+        assertEquals(60000.0, b.rocioSaldoFinal, delta)
+    }
+
+    @Test
+    fun laCondonacionSeReconoceSinTilde() {
+        // La app siempre escribe "Condonación", pero una fila cargada a mano en la planilla puede venir sin tilde.
+        val sinTilde = Movement(fecha = "2026-09-02", monto = 20000.0, tipo = "Condonacion",
+            categoria = "Perdón de deuda", responsable = "Santiago", propietario = "Rocío",
+            esComun = false, metodoPago = "Billetera Virtual")
+        val comun = Movement(fecha = "2026-09-01", monto = 40000.0, tipo = "Gasto", categoria = "Super",
+            responsable = "Santiago", propietario = "Ambos", esComun = true, metodoPago = "Billetera Virtual")
+
+        assertTrue(AccountingEngine.isCondonacion(sinTilde))
+        assertEquals(0.0, AccountingEngine.compute(listOf(comun, sinTilde)).santiagoExterno, delta)
+    }
+
+    // --- Guard del recálculo de la apertura -------------------------------------------------
+
+    @Test
+    fun materializarUnMesSinAperturaSiempreSePermite() {
+        val julio = listOf(
+            Movement(fecha = "2026-07-05", monto = 500000.0, tipo = "Aporte", categoria = "Sueldo",
+                responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Billetera Virtual")
+        )
+        // Caso normal: agosto todavía no tiene apertura.
+        assertTrue(AccountingEngine.chequearRecalculo(julio, "2026-08").permitido)
+        // Y el primerísimo mes de la planilla, cuyo arrastre legítimamente es cero, tampoco molesta.
+        assertTrue(AccountingEngine.chequearRecalculo(emptyList(), "2026-07").permitido)
+    }
+
+    @Test
+    fun noSeRecalculaSiSePurgaronTodosLosMesesAnteriores() {
+        // Septiembre tiene su apertura y es la única hoja que queda: recalcular daría cero y se
+        // llevaría puesto todo el arrastre.
+        val apertura = AccountingEngine.openingRowsFor(
+            "2026-09", OpeningBalance(46650.0, 2104193.98, 108600.0, 82568.33, 372067.42)
+        )
+        val septiembre = apertura + Movement(fecha = "2026-09-03", monto = 1900.0, tipo = "Gasto",
+            categoria = "Consumo inmediato", responsable = "Rocío", propietario = "Rocío",
+            esComun = false, metodoPago = "Billetera Virtual")
+
+        val chequeo = AccountingEngine.chequearRecalculo(septiembre, "2026-09")
+        assertFalse(chequeo.permitido)
+        assertTrue(chequeo.motivo.contains("2026-09"))
+
+        // Con el mes anterior presente, el mismo recálculo se permite.
+        val agosto = listOf(
+            Movement(fecha = "2026-08-10", monto = 2237412.31, tipo = "Aporte", categoria = "Sueldo",
+                responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Billetera Virtual")
+        )
+        assertTrue(AccountingEngine.chequearRecalculo(septiembre + agosto, "2026-09").permitido)
+    }
+
+    @Test
+    fun noSePisaUnaAperturaConSaldoPorUnaEnCero() {
+        // Purga parcial: queda un mes anterior, pero solo con movimientos que se anulan entre sí,
+        // así que el recálculo da cero. La apertura escrita no lo es: no se toca.
+        val agosto = listOf(
+            Movement(fecha = "2026-08-10", monto = 1000.0, tipo = "Aporte", categoria = "Sueldo",
+                responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Efectivo"),
+            Movement(fecha = "2026-08-11", monto = 1000.0, tipo = "Gasto", categoria = "Gustos",
+                responsable = "Santiago", propietario = "Santiago", esComun = false, metodoPago = "Efectivo")
+        )
+        val septiembre = AccountingEngine.openingRowsFor("2026-09", OpeningBalance(0.0, 2104193.98, 0.0, 0.0, 0.0))
+
+        assertFalse(AccountingEngine.chequearRecalculo(agosto + septiembre, "2026-09").permitido)
     }
 }

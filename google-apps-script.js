@@ -161,7 +161,13 @@ function getPlans(e) {
       if (!id) continue;
 
       const cantidadCuotas = Number(row[4]) || 0;
-      const pagadas = paidMap[id] ? Object.keys(paidMap[id]).length : 0;
+      // "Pagada" = tiene movimiento vivo O figura en el snapshot del corte (columna K). Sin la
+      // unión, purgar hojas viejas devolvía a pendiente cuotas ya pagadas.
+      const previas = parsePrevias(row.length > 10 ? row[10] : "");
+      const pagadasSet = {};
+      if (paidMap[id]) Object.keys(paidMap[id]).forEach(function (k) { pagadasSet[Number(k)] = true; });
+      previas.forEach(function (k) { if (k >= 1 && k <= cantidadCuotas) pagadasSet[k] = true; });
+      const pagadas = Object.keys(pagadasSet).length;
       const completo = cantidadCuotas > 0 && pagadas >= cantidadCuotas;
 
       if (filtro === 'pagos' && !completo) continue;
@@ -177,7 +183,8 @@ function getPlans(e) {
         propietario: row[6] ? row[6].toString() : "",
         categoria: row[7] ? row[7].toString() : "",
         tarjeta: row[8] ? row[8].toString() : "",
-        eliminado: false
+        eliminado: false,
+        cuotasPagadasPrevias: previas
       });
     }
   }
@@ -188,7 +195,36 @@ function getPlans(e) {
   return jsonOutput({ status: "SUCCESS", plans: plans });
 }
 
+/** Segundos que una escritura espera el candado antes de rendirse. */
+const LOCK_TIMEOUT_MS = 30000;
+
+/**
+ * Punto de entrada de TODAS las escrituras. Serializa con un candado de script porque el upsert es
+ * leer-todas-las-filas -> buscar-el-id -> escribir, y eso no es atómico: dos requests simultáneos
+ * con el mismo id leerían los dos "no existe" y appendearían los dos. Una fila duplicada rompía la
+ * app entera hasta borrarla a mano (el listado de Inicio usa el id como key del LazyColumn).
+ *
+ * Hoy es difícil que pase —la cola de subida está serializada en el cliente y los ids son por
+ * dispositivo— pero nada del lado del servidor lo impedía, y ahora hay dos teléfonos escribiendo.
+ */
 function doPost(e) {
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(LOCK_TIMEOUT_MS);
+  } catch (lockErr) {
+    return jsonOutput({
+      status: "ERROR",
+      message: "El servidor está ocupado con otra escritura, reintentá en unos segundos."
+    });
+  }
+  try {
+    return handlePost(e);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function handlePost(e) {
   let imgStatus = "No procesada";
   try {
     const contents = e.postData.contents;
@@ -206,6 +242,11 @@ function doPost(e) {
     // --- Usuarios parametrizables: solo edición (PUT) de nombre/color por slotKey ---
     if (json.entity === 'user') {
       return handleUserUpsert(json.user);
+    }
+
+    // --- Corte de mes: congelar qué cuotas ya estaban pagadas antes de `mes` ---
+    if (action === 'SNAPSHOT_CUOTAS') {
+      return snapshotCuotasPrevias(json.mes);
     }
 
     // --- Movimientos ---
@@ -316,40 +357,138 @@ function handlePlanUpsert(action, plan) {
   let sheet = ss.getSheetByName(PLANS_SHEET);
   if (!sheet) {
     sheet = ss.insertSheet(PLANS_SHEET);
-    sheet.appendRow(["ID", "Fecha Creación", "Descripción", "Monto Por Cuota", "Cantidad Cuotas", "Primera Cuota", "Propietario", "Categoría", "Tarjeta", "Eliminado"]);
-    sheet.getRange(1, 1, 1, 10).setFontWeight("bold").setBackground("#e2e8f0");
+    sheet.appendRow(["ID", "Fecha Creación", "Descripción", "Monto Por Cuota", "Cantidad Cuotas", "Primera Cuota", "Propietario", "Categoría", "Tarjeta", "Eliminado", COLUMNA_PREVIAS]);
+    sheet.getRange(1, 1, 1, 11).setFontWeight("bold").setBackground("#e2e8f0");
     sheet.setFrozenRows(1);
     // Forzar texto en las columnas de fecha para preservar el formato "yyyy-MM"/"yyyy-MM-dd HH:mm".
     sheet.getRange("B:B").setNumberFormat("@");
     sheet.getRange("F:F").setNumberFormat("@");
   }
 
-  const rowValues = [
-    plan.id,
-    plan.fechaCreacion,
-    plan.descripcion,
-    plan.montoPorCuota,
-    plan.cantidadCuotas,
-    plan.fechaPrimeraCuota,
-    plan.propietario,
-    plan.categoria,
-    plan.tarjeta || "",
-    false
-  ];
+  asegurarColumnaPrevias(sheet);
+  const delPayload = parsePrevias(plan.cuotasPagadasPrevias);
+
+  const rowValues = function (previas) {
+    return [
+      plan.id,
+      plan.fechaCreacion,
+      plan.descripcion,
+      plan.montoPorCuota,
+      plan.cantidadCuotas,
+      plan.fechaPrimeraCuota,
+      plan.propietario,
+      plan.categoria,
+      plan.tarjeta || "",
+      false,
+      formatPrevias(previas)
+    ];
+  };
 
   if (action === 'PUT') {
     const data = sheet.getDataRange().getValues();
     for (let i = 1; i < data.length; i++) {
       if (data[i][0] == plan.id) {
-        sheet.getRange(i + 1, 1, 1, 10).setValues([rowValues]);
+        // La columna K se escribe SIEMPRE por unión con lo que ya había: un cliente con el plan
+        // cacheado de antes del corte mandaría una lista más corta y, reemplazando, borraría el
+        // registro de cuotas pagadas cuyos movimientos ya no existen.
+        const previas = unirPrevias(parsePrevias(data[i].length > 10 ? data[i][10] : ""), delPayload);
+        sheet.getRange(i + 1, 1, 1, 11).setValues([rowValues(previas)]);
         return jsonOutput({ status: "SUCCESS", message: "Plan actualizado OK" });
       }
     }
     // Si no se encontró, cae a append (alta).
   }
 
-  sheet.appendRow(rowValues);
+  sheet.appendRow(rowValues(delPayload));
   return jsonOutput({ status: "SUCCESS", message: "Plan creado OK" });
+}
+
+/** Encabezado de la columna K de la hoja "Planes" (snapshot de cuotas del corte de mes). */
+const COLUMNA_PREVIAS = "Cuotas Pagadas Previas";
+
+/** "1,2,3" (o un array) -> [1,2,3]. Tolera vacío, espacios y basura. */
+function parsePrevias(v) {
+  if (v === null || v === undefined || v === "") return [];
+  const partes = Array.isArray(v) ? v : v.toString().split(",");
+  const out = [];
+  partes.forEach(function (x) {
+    const n = Number(String(x).trim());
+    if (n > 0 && out.indexOf(n) === -1) out.push(n);
+  });
+  return out.sort(function (a, b) { return a - b; });
+}
+
+/** [3,1] -> "1,3". Inversa de [parsePrevias]. */
+function formatPrevias(arr) {
+  return parsePrevias(arr).join(",");
+}
+
+/** Unión de dos listas de cuotas. NUNCA reemplazo: el snapshot solo puede crecer. */
+function unirPrevias(a, b) {
+  return parsePrevias(parsePrevias(a).concat(parsePrevias(b)));
+}
+
+/** Escribe el encabezado de la columna K si la hoja "Planes" es anterior al snapshot. */
+function asegurarColumnaPrevias(sheet) {
+  // Una hoja creada a mano puede tener menos de 11 columnas; getRange(1, 11) tiraría excepción y se
+  // llevaría puesto el guardado del plan entero.
+  if (sheet.getMaxColumns() < 11) sheet.insertColumnsAfter(sheet.getMaxColumns(), 11 - sheet.getMaxColumns());
+
+  // La columna va a TEXTO, igual que las de fecha. Sin esto Sheets interpreta el contenido como
+  // número: con una sola cuota es inofensivo ("1" -> 1, que `parsePrevias` vuelve a leer bien), pero
+  // en una planilla con coma decimal "1,2" se convierte en el número 1.2 y el snapshot de ese plan
+  // se pierde en silencio — justo el caso de un plan con dos cuotas ya pagadas antes del corte.
+  sheet.getRange("K:K").setNumberFormat("@");
+
+  const celda = sheet.getRange(1, 11);
+  if (!celda.getValue()) {
+    celda.setValue(COLUMNA_PREVIAS).setFontWeight("bold").setBackground("#e2e8f0");
+  }
+}
+
+/**
+ * Congela, para cada plan, qué cuotas ya estaban pagadas ANTES de [mes], escribiéndolas por unión
+ * en la columna K de la hoja "Planes".
+ *
+ * Es la mitad "cuotas" del corte de mes. El estado "pagada" se deriva del movimiento que la pagó, y
+ * ese movimiento vive en la hoja del mes en que se pagó: sin este snapshot, purgar las hojas viejas
+ * hace reaparecer como deuda cuotas ya saldadas, aunque el saldo esté bien (la apertura ya incorporó
+ * la plata gastada).
+ *
+ * Idempotente y seguro de correr de más: solo agrega.
+ */
+function snapshotCuotasPrevias(mes) {
+  if (!mes) return jsonOutput({ status: "ERROR", message: "Falta el mes del snapshot" });
+
+  const previas = {};
+  leerTodosLosMovimientos().forEach(function (m) {
+    if (!m.planId || !m.cuotaNumero || m.cuotaNumero <= 0) return;
+    if (!m.mes || m.mes >= mes) return;   // solo lo ya cerrado
+    if (!previas[m.planId]) previas[m.planId] = [];
+    if (previas[m.planId].indexOf(m.cuotaNumero) === -1) previas[m.planId].push(m.cuotaNumero);
+  });
+
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PLANS_SHEET);
+  if (!sheet) return jsonOutput({ status: "SUCCESS", message: "No hay hoja de planes: nada que congelar" });
+  asegurarColumnaPrevias(sheet);
+
+  const data = sheet.getDataRange().getValues();
+  let tocados = 0;
+  for (let i = 1; i < data.length; i++) {
+    const id = data[i][0] ? data[i][0].toString() : "";
+    if (!id || !previas[id]) continue;
+    const actual = parsePrevias(data[i].length > 10 ? data[i][10] : "");
+    const union = unirPrevias(actual, previas[id]);
+    if (union.length !== actual.length) {
+      sheet.getRange(i + 1, 11).setValue(formatPrevias(union));
+      tocados++;
+    }
+  }
+
+  return jsonOutput({
+    status: "SUCCESS",
+    message: "Snapshot de cuotas previo a " + mes + ": " + tocados + " plan(es) actualizados."
+  });
 }
 
 /** Baja lógica de un plan: marca la columna J (index 9) = true en la hoja "Planes". */
@@ -534,7 +673,9 @@ function leerTodosLosMovimientos() {
         responsable: row[5] ? row[5].toString() : "",
         esComun: row[6] === true || row[6] === "true" || row[6] === "VERDADERO",
         metodoPago: row[8] ? row[8].toString() : VIRTUAL,
-        propietario: row[11] ? row[11].toString() : (row[5] ? row[5].toString() : "")
+        propietario: row[11] ? row[11].toString() : (row[5] ? row[5].toString() : ""),
+        planId: row[12] ? row[12].toString() : "",
+        cuotaNumero: Number(row[13]) || 0
       });
     }
   });
@@ -597,6 +738,16 @@ function aplicarMovimientos(movs, estado) {
           else if (propS) netSR -= Math.min(monto, Math.max(0, netSR)); // devolución
         }
         break;
+
+      // Perdón de deuda: el responsable (acreedor) renuncia a lo que el otro tiene de él. NO toca
+      // ningún bucket físico, solo cancela propiedad cruzada; clampeado para que perdonar de más no
+      // genere deuda en el sentido contrario. Sin este caso, recalcular el saldo inicial resucitaría
+      // la deuda perdonada en la apertura del mes siguiente.
+      case "condonación":
+      case "condonacion":
+        if (respS) netSR -= Math.min(monto, Math.max(0, netSR));  // el primario perdona al secundario
+        else netSR += Math.min(monto, Math.max(0, -netSR));       // el secundario perdona al primario
+        break;
     }
   });
 
@@ -641,6 +792,28 @@ function filasDeApertura(mes, estado) {
       propietario: propietario
     };
   });
+}
+
+/** ¿El estado no tiene nada? (todos los buckets y la propiedad cruzada en cero, salvo centavos). */
+function esEstadoVacio(st) {
+  return Math.abs(st.sEfec) < 0.005 && Math.abs(st.sVirt) < 0.005 &&
+    Math.abs(st.rEfec) < 0.005 && Math.abs(st.rVirt) < 0.005 && Math.abs(st.netSR) < 0.005;
+}
+
+/** Estado que representan las filas de apertura ya escritas en las filas [data] de una hoja. */
+function estadoEscritoDe(data) {
+  const filas = [];
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    if (!esFilaApertura(row[3])) continue;
+    filas.push({
+      responsable: row[5] ? row[5].toString() : "",
+      propietario: row[11] ? row[11].toString() : "",
+      metodoPago: row[8] ? row[8].toString() : VIRTUAL,
+      monto: Number(row[2]) || 0
+    });
+  }
+  return estadoDesdeFilasDeApertura(filas);
 }
 
 /** "2026-08" -> "Agosto 2026". Devuelve null si el mes no es parseable. */
@@ -891,6 +1064,15 @@ function escribirAperturaDeMes(mes, estado) {
   const filaPorId = {};
   for (let i = 1; i < data.length; i++) {
     if (data[i][0]) filaPorId[data[i][0].toString()] = i + 1;
+  }
+
+  // Nunca pisar una apertura con saldo por una en cero. Un estado vacío con una apertura ya escrita
+  // significa que faltan los meses anteriores (hojas purgadas), no que el patrimonio sea cero:
+  // escribirlo se llevaría puesto todo el arrastre. Espejo de `AccountingEngine.chequearRecalculo`.
+  if (esEstadoVacio(estado) && !esEstadoVacio(estadoEscritoDe(data))) {
+    Logger.log("Apertura de " + mes + " NO tocada: el recálculo da cero y la escrita tiene saldo " +
+      "(¿faltan los meses anteriores?).");
+    return 0;
   }
 
   const filas = filasDeApertura(mes, estado);

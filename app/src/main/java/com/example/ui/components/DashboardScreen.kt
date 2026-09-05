@@ -305,7 +305,8 @@ fun DashboardScreen(
                         when (filterTipo) {
                             "Gastos" -> m.tipo.equals("Gasto", ignoreCase = true)
                             "Aportes" -> m.tipo.equals("Aporte", ignoreCase = true)
-                            "Transfer." -> m.tipo.equals("Transferencia", ignoreCase = true)
+                            "Transfer." -> m.tipo.equals("Transferencia", ignoreCase = true) ||
+                                    AccountingEngine.isCondonacion(m)
                             else -> true
                         }
                 }
@@ -573,6 +574,7 @@ fun MovementItem(
             // Icono contextual
             val isGasto = movement.tipo.lowercase() == "gasto"
             val isAporte = movement.tipo.lowercase() == "aporte"
+            val isCondonacion = AccountingEngine.isCondonacion(movement)
 
             // El color del aporte es el de identidad del aportante (estable ante el usuario activo).
             // Solo se usa cuando isAporte, y `responsable` siempre es un slotKey.
@@ -597,6 +599,7 @@ fun MovementItem(
                     imageVector = when {
                         isAporte -> Icons.Default.KeyboardArrowUp
                         isGasto -> Icons.Default.KeyboardArrowDown
+                        isCondonacion -> Icons.Default.VolunteerActivism
                         else -> Icons.Default.Refresh
                     },
                     contentDescription = null,
@@ -627,7 +630,13 @@ fun MovementItem(
                     )
                     
                     Text(
-                        text = if (isAporte) "+${formatMoney.format(movement.monto)}" else "-${formatMoney.format(movement.monto)}",
+                        // Un perdón de deuda no mueve plata: mostrarlo con "-" haría pensar que
+                        // salió de la cuenta. Va sin signo.
+                        text = when {
+                            isAporte -> "+${formatMoney.format(movement.monto)}"
+                            isCondonacion -> formatMoney.format(movement.monto)
+                            else -> "-${formatMoney.format(movement.monto)}"
+                        },
                         fontWeight = FontWeight.ExtraBold,
                         fontSize = 15.sp,
                         color = when {
@@ -744,6 +753,20 @@ fun MovementItem(
                                 )
                             }
                         }
+                    } else if (isCondonacion) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.08f))
+                                .padding(horizontal = 4.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = "Perdón",
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.tertiary
+                            )
+                        }
                     } else if (movement.tipo.lowercase() == "transferencia") {
                         val isPropia = movement.propietario == movement.responsable
                         Box(
@@ -814,7 +837,11 @@ private fun MovementDetailDialog(
         isGasto -> MaterialTheme.colorScheme.onSurface
         else -> MaterialTheme.colorScheme.tertiary
     }
-    val signo = if (isAporte) "+" else "-"
+    val signo = when {
+        isAporte -> "+"
+        AccountingEngine.isCondonacion(movement) -> ""
+        else -> "-"
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,

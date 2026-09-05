@@ -6,7 +6,7 @@ data class Movement(
     val id: String = UUID.randomUUID().toString(),
     val fecha: String,
     val monto: Double,
-    val tipo: String, // "Aporte", "Gasto", "Transferencia"
+    val tipo: String, // "Aporte", "Gasto", "Transferencia", "Condonación", "Apertura"
     val categoria: String,
     val responsable: String, // "Santiago", "Rocío"
     val esComun: Boolean, // Si es compartido o personal (para gastos)

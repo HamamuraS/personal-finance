@@ -19,7 +19,9 @@ data class WebAppRequest(
     // Si es null, la operación es sobre movimientos (comportamiento por defecto).
     val entity: String? = null,
     val plan: CuotaPlan? = null,
-    val user: Usuario? = null
+    val user: Usuario? = null,
+    // Mes "yyyy-MM" de las acciones de corte (hoy solo SNAPSHOT_CUOTAS).
+    val mes: String? = null
 )
 
 data class ImageInfo(

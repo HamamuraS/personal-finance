@@ -44,6 +44,14 @@ Plan "Notebook" ($100.000 × 12, primera 2026-08, tarjeta Visa Santiago, propiet
 Ventajas: el débito reutiliza toda la lógica probada (efectivo/virtual); si se borra el movimiento del
 débito, la cuota vuelve automáticamente a "pendiente"; cero inconsistencia de estado.
 
+> **Matiz agregado con el corte de mes.** Ese "vuelve a pendiente" vale mientras el movimiento exista.
+> Al materializar el corte de un mes, las cuotas ya pagadas quedan congeladas en la columna K de la
+> hoja `Planes` (`CuotaPlan.cuotasPagadasPrevias`), porque si no purgar la hoja donde vivía el pago
+> las hacía reaparecer como deuda. Desde entonces, borrar el movimiento de un pago **ya incluido en
+> un corte** no devuelve la cuota a pendiente. Es la misma concesión que ya se paga con la plata: a
+> un mes materializado no se lo corrige retroactivamente. Para el mes abierto el invariante sigue
+> valiendo tal cual.
+
 ## 4. Regla de negocio: los planes son SIEMPRE personales
 
 Un gasto en cuotas **nunca es común**. Esto simplifica el modelo respecto de `Movement`:

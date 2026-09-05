@@ -6,6 +6,7 @@ import androidx.work.WorkerParameters
 import com.example.data.AhorroRepository
 import com.example.data.PreferencesHelper
 import com.example.data.upload.MovementUploadScheduler
+import com.example.ui.AccountingEngine
 import com.example.ui.CuotasEngine
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -20,7 +21,8 @@ import java.util.TimeZone
  *     pudieron subir en su momento (ver [com.example.data.PendingMovement]).
  *  2. **Refresca la planilla.** Esto renueva `lastFetchAt`, así que abrir la app después de una
  *     corrida no dispara ningún fetch: el arranque es instantáneo contra el cache.
- *  3. **Evalúa los recordatorios de cuotas** (cierre de mes y atrasos de los lunes).
+ *  3. **Materializa el corte del mes** si el mes en curso todavía no tiene su apertura.
+ *  4. **Evalúa los recordatorios de cuotas** (cierre de mes y atrasos de los lunes).
  *
  * Antes esto eran dos schedulers: uno diario a las 9:00 que fetcheaba **solo** los días que iba a
  * notificar. Se fusionaron para no traer la planilla dos veces el mismo día y para que haya un
@@ -68,13 +70,67 @@ class BackgroundSyncWorker(
                 repo.fetchPlans(prefs.scriptUrl).also { prefs.savePlansCache(it) }
             }
 
-            // 3. Recordatorios de cuotas.
+            // 3. Corte del mes (plata + cuotas). Escribir el saldo inicial salía de un botón en
+            //    Ajustes que hay que acordarse de tocar, así que en la práctica las hojas seguían
+            //    encadenadas y purgar una vieja rompía el saldo de la actual. Es seguro correrlo de
+            //    más: los ids de las filas de apertura son determinísticos (regenerar pisa en vez de
+            //    duplicar) y el snapshot de cuotas solo agrega.
+            materializarCorteDelMes(prefs, repo, movimientos)
+
+            // 4. Recordatorios de cuotas.
             notificarCuotas(prefs, movimientos, planes)
             Result.success()
         } catch (e: Exception) {
             Result.retry()
         }
     }
+
+    /**
+     * Materializa el corte del mes en curso: la **plata** (filas de apertura) y las **cuotas**
+     * (snapshot de las ya pagadas). Con las dos mitades escritas, el mes deja de depender de las
+     * hojas anteriores y se las puede archivar.
+     *
+     * Las dos mitades se disparan por separado a propósito:
+     *
+     *  - La **apertura** se escribe solo si falta. Si no hay ningún mes anterior del que arrastrar,
+     *    o si [AccountingEngine.chequearRecalculo] lo desaconseja, no se toca: nunca se pisa una
+     *    apertura con saldo por una en cero.
+     *  - El **snapshot de cuotas** se pide SIEMPRE. Atarlo a "acabo de escribir la apertura" lo
+     *    dejaba sin correr justo en el caso más común: la apertura del mes ya puede estar escrita
+     *    por el trigger diario del Apps Script (`actualizarAperturas`), que no sabe nada de cuotas,
+     *    y entonces esta función salía temprano y el snapshot no se escribía nunca. Es idempotente
+     *    y solo agrega (unión, nunca reemplazo), así que correrlo de más no cuesta nada.
+     */
+    private suspend fun materializarCorteDelMes(
+        prefs: PreferencesHelper,
+        repo: AhorroRepository,
+        movimientos: List<com.example.data.Movement>
+    ) {
+        if (prefs.useLocalDemo || prefs.scriptUrl.isEmpty()) return
+
+        val mes = SimpleDateFormat("yyyy-MM", Locale.US)
+            .apply { timeZone = ARGENTINA_TZ }
+            .format(Calendar.getInstance(ARGENTINA_TZ).time)
+
+        val usable = movimientos.filter {
+            !AccountingEngine.isLegacyCarryover(it) && mesDe(it).isNotEmpty()
+        }
+
+        val faltaApertura = usable.none { mesDe(it) == mes && AccountingEngine.isOpeningRow(it) }
+        val hayDeDondeArrastrar = usable.any { mesDe(it) < mes }
+        if (faltaApertura && hayDeDondeArrastrar &&
+            AccountingEngine.chequearRecalculo(usable, mes).permitido
+        ) {
+            AccountingEngine.openingRowsFor(mes, AccountingEngine.openingFor(usable, mes))
+                .forEach { repo.saveMovement(prefs.scriptUrl, it, action = "PUT") }
+        }
+
+        repo.snapshotCuotasPrevias(prefs.scriptUrl, mes)
+    }
+
+    /** "yyyy-MM" de un movimiento, o "" si la fecha no tiene forma de fecha. */
+    private fun mesDe(m: com.example.data.Movement): String =
+        if (m.fecha.length >= 7) m.fecha.substring(0, 7) else ""
 
     private fun notificarCuotas(
         prefs: PreferencesHelper,

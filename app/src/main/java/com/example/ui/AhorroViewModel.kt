@@ -279,18 +279,34 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
             _isLoading.value = true
             _errorMessage.value = null
 
+            val todos = _cachedAllMovements.filter {
+                !AccountingEngine.isLegacyCarryover(it) && monthOf(it).isNotEmpty()
+            }
+
+            // Con las hojas viejas purgadas, "derivar de los meses anteriores" da cero y el botón
+            // pisaría una apertura correcta con ceros. Ver [AccountingEngine.chequearRecalculo].
+            val chequeo = AccountingEngine.chequearRecalculo(todos, mes)
+            if (!chequeo.permitido) {
+                _isLoading.value = false
+                _errorMessage.value = chequeo.motivo
+                onResult(false, chequeo.motivo)
+                return@launch
+            }
+
             // El arrastre se deriva SIEMPRE de los meses anteriores, ignorando la apertura que el
             // mes pueda tener ya escrita (si no, recalcular sería un no-op).
-            val relevant = _cachedAllMovements.filter {
-                !AccountingEngine.isLegacyCarryover(it) && monthOf(it).isNotEmpty() && monthOf(it) != mes
-            }
+            val relevant = todos.filter { monthOf(it) != mes }
             val opening = AccountingEngine.openingFor(relevant, mes)
             val filas = AccountingEngine.openingRowsFor(mes, opening)
 
             val ok = filas.all { repository.saveMovement(_spreadsheetId.value, it, action = "PUT") }
             if (ok) {
+                // Materializar el corte cubre la plata Y las cuotas: sin el snapshot, purgar las
+                // hojas anteriores devolvería a "pendiente" cuotas ya pagadas (ver CuotaPlan).
+                val cuotasOk = repository.snapshotCuotasPrevias(_spreadsheetId.value, mes)
                 doRefreshData()
-                onResult(true, "Saldo inicial de $mes actualizado (${filas.size} filas).")
+                val aviso = if (cuotasOk) "" else " (no se pudo guardar el snapshot de cuotas)"
+                onResult(true, "Saldo inicial de $mes actualizado (${filas.size} filas).$aviso")
             } else {
                 _errorMessage.value = "No se pudo escribir el saldo inicial de $mes."
                 onResult(false, "No se pudo escribir el saldo inicial de $mes.")
@@ -435,19 +451,30 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
         ticketUri: android.net.Uri? = null,
         onEncolado: () -> Unit
     ) {
-        val nuevo = Movement(
-            fecha = fecha,
-            monto = monto,
-            tipo = tipo,
-            categoria = categoria,
-            responsable = responsable,
-            esComun = if (tipo == "Gasto") esComun else false,
-            propietario = propietario,
-            descripcion = descripcion,
-            metodoPago = metodoPago,
-            ticketUrl = "" // El script lo llenará si hay imagen
+        encolar(
+            Movement(
+                fecha = fecha,
+                monto = monto,
+                tipo = tipo,
+                categoria = categoria,
+                responsable = responsable,
+                esComun = if (tipo == "Gasto") esComun else false,
+                propietario = propietario,
+                descripcion = descripcion,
+                metodoPago = metodoPago,
+                ticketUrl = "" // El script lo llenará si hay imagen
+            ),
+            ticketUri,
+            onEncolado
         )
+    }
 
+    /**
+     * Mete un movimiento **ya armado** en la cola de subida: fila optimista al instante, escritura
+     * en segundo plano con reintento y notificación al terminar. Es el único camino de alta; el id
+     * viaja con el movimiento, así que reintentar es idempotente (la cola sube con `PUT`).
+     */
+    private fun encolar(nuevo: Movement, ticketUri: android.net.Uri?, onEncolado: () -> Unit) {
         _errorMessage.value = null
         // Se limpia el filtro del historial: si venía uno puesto (propio o traído desde Métricas),
         // el movimiento recién cargado podía quedar escondido justo al volver a Inicio a verlo.
@@ -551,29 +578,32 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
      * Duplica un movimiento **a nombre del usuario activo**, como gasto personal. Se usa en el botón
      * de duplicar de los gastos de transporte: si dos personas viajan juntas, una lo carga y la otra
      * toca duplicar para registrar fácilmente su propio gasto (no el de la otra persona).
+     *
+     * Pasa por la **cola de subida**, igual que el alta normal. Antes escribía sincrónico con
+     * `POST`, sin fila optimista ni reintento: si el request se caía, el duplicado se perdía entero
+     * y solo quedaba un cartel de error — justo en el alta más repetida (el pasaje de colectivo) y
+     * por lo tanto la más expuesta a un timeout.
+     *
+     * El vínculo con un plan de cuotas y el ticket NO se copian: un duplicado es un gasto nuevo, no
+     * otro pago de la misma cuota ni el mismo comprobante.
      */
-    fun duplicateMovement(movement: Movement, onSuccess: () -> Unit) {
-        viewModelScope.launch {
-            _isLoading.value = true
-            val now = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date())
-            val yo = _currentUserProfile.value
-            val duplicate = movement.copy(
+    fun duplicateMovement(movement: Movement, onEncolado: () -> Unit) {
+        val now = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date())
+        val yo = _currentUserProfile.value
+        encolar(
+            movement.copy(
                 id = java.util.UUID.randomUUID().toString(),
                 fecha = now,
                 responsable = yo,      // pasa a mi cuenta
                 propietario = yo,      // gasto personal mío (sin propiedad cruzada)
-                esComun = false
-            )
-            
-            val success = repository.saveMovement(_spreadsheetId.value, duplicate, null, _folderId.value)
-            if (success) {
-                doRefreshData()
-                onSuccess()
-            } else {
-                _errorMessage.value = "Error al duplicar el movimiento"
-            }
-            _isLoading.value = false
-        }
+                esComun = false,
+                ticketUrl = "",
+                planId = "",
+                cuotaNumero = 0
+            ),
+            ticketUri = null,
+            onEncolado = onEncolado
+        )
     }
 
     /**
@@ -763,6 +793,10 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
             var todoOk = true
             for ((plan, numero) in cuotas) {
                 val movimiento = Movement(
+                    // Id derivado del plan y la cuota, no un UUID nuevo por intento: si el lote
+                    // falla a la mitad, reintentar pisa las filas ya escritas en vez de duplicarlas
+                    // (y hace imposible pagar dos veces la misma cuota).
+                    id = CuotasEngine.idDePago(plan.id, numero),
                     fecha = fecha,
                     monto = plan.montoPorCuota,
                     tipo = "Gasto",
@@ -775,7 +809,9 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
                     planId = plan.id,
                     cuotaNumero = numero
                 )
-                val ok = repository.saveMovement(_spreadsheetId.value, movimiento, null, _folderId.value)
+                val ok = repository.saveMovement(
+                    _spreadsheetId.value, movimiento, null, _folderId.value, action = "PUT"
+                )
                 if (!ok) todoOk = false
             }
             doRefreshData()
@@ -806,6 +842,7 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
             _isLoading.value = true
             _errorMessage.value = null
             val movimiento = Movement(
+                id = CuotasEngine.idDePago(plan.id, numero),  // idempotente: ver `pagarCuotas`
                 fecha = fecha,
                 monto = monto ?: plan.montoPorCuota,
                 tipo = "Gasto",
@@ -818,7 +855,9 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
                 planId = plan.id,
                 cuotaNumero = numero
             )
-            val success = repository.saveMovement(_spreadsheetId.value, movimiento, null, _folderId.value)
+            val success = repository.saveMovement(
+                _spreadsheetId.value, movimiento, null, _folderId.value, action = "PUT"
+            )
             if (success) {
                 // Refresca movimientos y planes: un pago puede completar el plan (pasa a "pagados").
                 doRefreshData()

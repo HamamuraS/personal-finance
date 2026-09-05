@@ -38,9 +38,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.filled.AddAPhoto
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Collections
+import androidx.compose.material.icons.filled.VolunteerActivism
 import androidx.core.content.FileProvider
 import coil.compose.AsyncImage
 import com.example.data.Categorias
+import com.example.ui.AccountingEngine
 import com.example.ui.AhorroViewModel
 import com.example.ui.MovementDraft
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
@@ -119,11 +121,21 @@ fun AddMovementScreen(
     // Nombre visible del usuario activo (para textos); la lógica sigue usando el slotKey.
     val miNombre = usuarios.nombreDe(currentUserProfile)
 
+    // Posición cruzada vigente: es lo que habilita el atajo "perdonar todo" del modo condonación.
+    val balance by viewModel.balance.collectAsState()
+    val formatMoney = remember {
+        java.text.DecimalFormat("#,##0.00").apply {
+            val symbols = java.text.DecimalFormatSymbols()
+            symbols.groupingSeparator = '.'
+            symbols.decimalSeparator = ','
+            decimalFormatSymbols = symbols
+            positivePrefix = "$ "
+            negativePrefix = "-$ "
+        }
+    }
+
     // Categorías basadas en Tipo (declaradas antes para derivar defaults del borrador).
     // El catálogo vive en [Categorias]: es el mismo que usa el alta de cuotas.
-    val listAportes = Categorias.APORTES
-    val listGastos = Categorias.GASTOS
-    val listTransferencias = Categorias.TRANSFERENCIAS
     fun categoriaDefault(t: String): String = Categorias.defaultDeTipo(t)
 
     // Fechas base
@@ -170,6 +182,17 @@ fun AddMovementScreen(
         }
     }
 
+    // "Perdonar deuda" es un submodo de Transferencia en la UI, pero un tipo propio en la planilla
+    // (`AccountingEngine.TIPO_CONDONACION`). Vive en `tipo`, así que el borrador lo arrastra solo.
+    val esCondonacion = tipo == AccountingEngine.TIPO_CONDONACION
+    val otroSlot = usuarios.elOtro(currentUserProfile).slotKey
+    val otroNombre = usuarios.nombreDe(otroSlot)
+    // Lo que el otro tiene tuyo hoy. El motor guarda un único neto con signo desde el punto de
+    // vista del slot primario, así que hay que leerlo del lado que corresponde al usuario activo.
+    val deudaAFavor = if (currentUserProfile == usuarios.primario.slotKey) balance.santiagoExterno
+                      else balance.rocioExterno
+    val hayDeudaAFavor = deudaAFavor >= 1.0
+
     // Reset de categoría/propietario SOLO cuando el usuario cambia tipo/comunalidad (no en la primera
     // composición, para no pisar el borrador restaurado).
     var resetInicializado by remember { mutableStateOf(false) }
@@ -180,7 +203,12 @@ fun AddMovementScreen(
             return@LaunchedEffect
         }
         categoria = categoriaDefault(tipo)
-        propietario = if (tipo == "Gasto" && esComun) "Ambos" else currentUserProfile
+        propietario = when {
+            tipo == "Gasto" && esComun -> "Ambos"
+            // En una condonación el propietario es el beneficiario: a quién se le perdona.
+            tipo == AccountingEngine.TIPO_CONDONACION -> otroSlot
+            else -> currentUserProfile
+        }
     }
 
     // Volcar el estado al borrador del VM para que sobreviva el cambio de pestaña.
@@ -314,10 +342,12 @@ fun AddMovementScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     listOf("Gasto", "Aporte", "Transferencia").forEach { item ->
-                        val isSelected = tipo == item
+                        // La condonación se elige en el submodo de abajo, no acá: mientras se carga
+                        // una, la pestaña "Transf." se queda marcada y volver a tocarla no la anula.
+                        val isSelected = tipo == item || (item == "Transferencia" && esCondonacion)
                         val label = if (item == "Transferencia") "Transf." else item
                         Button(
-                            onClick = { tipo = item },
+                            onClick = { if (!isSelected) tipo = item },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
                                 contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
@@ -334,8 +364,107 @@ fun AddMovementScreen(
                 }
             }
 
-            // Método de Pago (Efectivo o Billetera Virtual)
-            Column {
+            // Submodo de la transferencia: mover plata (lo de siempre) o perdonar deuda. Se guarda
+            // directamente en `tipo`, así que no hace falta un campo nuevo en el borrador.
+            if (tipo == "Transferencia" || esCondonacion) {
+                Column {
+                    Text(
+                        text = "¿Qué estás haciendo?",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        ModoTransferenciaBoton(
+                            titulo = "Mover plata",
+                            bajada = "Sale de tu cuenta",
+                            seleccionado = !esCondonacion,
+                            modifier = Modifier.weight(1f),
+                            onClick = { tipo = "Transferencia" }
+                        )
+                        ModoTransferenciaBoton(
+                            titulo = "Perdonar deuda",
+                            bajada = "No mueve plata",
+                            seleccionado = esCondonacion,
+                            modifier = Modifier.weight(1f),
+                            onClick = { tipo = AccountingEngine.TIPO_CONDONACION }
+                        )
+                    }
+                }
+            }
+
+            // Contexto del perdón: cuánto tiene el otro que es tuyo, con el atajo para perdonarlo
+            // todo (el caso de uso real) sin perder la opción de perdonar solo una parte.
+            if (esCondonacion) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = cardBg),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.12f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.VolunteerActivism,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.tertiary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = if (hayDeudaAFavor) "$otroNombre tiene ${formatMoney.format(deudaAFavor)} tuyos"
+                                else "No hay deuda a tu favor",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = if (hayDeudaAFavor) "No se mueve plata: deja de debértelos."
+                                else "$otroNombre no tiene plata tuya para perdonar.",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                            )
+                        }
+                        if (hayDeudaAFavor) {
+                            TextButton(onClick = { monto = montoParaInput(deudaAFavor) }) {
+                                Text("Todo", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+
+                // Perdonar de más no puede generar deuda en el sentido contrario, así que se capa.
+                val excedido = hayDeudaAFavor && (monto.toDoubleOrNull() ?: 0.0) > deudaAFavor
+                if (excedido) {
+                    Text(
+                        text = "Es más de lo que te debe: se van a perdonar ${formatMoney.format(deudaAFavor)}.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+
+            // Método de Pago (Efectivo o Billetera Virtual). Una condonación no mueve plata de una
+            // cuenta a la otra, así que no hay medio de pago que elegir.
+            if (!esCondonacion) Column {
                 Text(
                     text = "Método de Pago",
                     fontWeight = FontWeight.Bold,
@@ -434,8 +563,9 @@ fun AddMovementScreen(
                 }
             }
 
-            // Propiedad del Dinero (Solo si no es Común)
-            if (!(tipo == "Gasto" && esComun)) {
+            // Propiedad del Dinero (Solo si no es Común). En una condonación tampoco hay nada que
+            // elegir: el propietario es el beneficiario (el otro) y lo fija el reset de tipo.
+            if (!esCondonacion && !(tipo == "Gasto" && esComun)) {
                 Column {
                     val label = when(tipo) {
                         "Aporte" -> "¿En qué cuenta entra?"
@@ -505,11 +635,7 @@ fun AddMovementScreen(
                     modifier = Modifier.padding(bottom = 8.dp)
                 )
 
-                val items = when (tipo) {
-                    "Aporte" -> listAportes
-                    "Transferencia" -> listTransferencias
-                    else -> listGastos
-                }
+                val items = Categorias.deTipo(tipo)
 
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
@@ -736,7 +862,10 @@ fun AddMovementScreen(
             val useLocalDemo by viewModel.useLocalDemo.collectAsState()
             Button(
                 onClick = {
-                    val doubleMonto = monto.toDoubleOrNull() ?: 0.0
+                    val ingresado = monto.toDoubleOrNull() ?: 0.0
+                    // El motor también clampea, pero se capa acá para que la planilla guarde el
+                    // monto que realmente se aplicó y no uno mayor que nunca llegó a perdonarse.
+                    val doubleMonto = if (esCondonacion) minOf(ingresado, deudaAFavor) else ingresado
                     if (doubleMonto <= 0.0) {
                         return@Button
                     }
@@ -762,7 +891,8 @@ fun AddMovementScreen(
                         }
                     )
                 },
-                enabled = monto.isNotEmpty() && monto.toDoubleOrNull() != null && (monto.toDoubleOrNull() ?: 0.0) > 0,
+                enabled = monto.isNotEmpty() && monto.toDoubleOrNull() != null &&
+                        (monto.toDoubleOrNull() ?: 0.0) > 0 && (!esCondonacion || hayDeudaAFavor),
                 shape = RoundedCornerShape(16.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.primary
@@ -778,6 +908,53 @@ fun AddMovementScreen(
         }
     }
 }
+
+/**
+ * Botón del submodo de transferencia ("Mover plata" / "Perdonar deuda"): mismo formato de dos
+ * líneas que los de "Distribución del Gasto".
+ */
+@Composable
+private fun ModoTransferenciaBoton(
+    titulo: String,
+    bajada: String,
+    seleccionado: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Button(
+        onClick = onClick,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = if (seleccionado) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
+            contentColor = if (seleccionado) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurface
+        ),
+        shape = RoundedCornerShape(12.dp),
+        elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp),
+        modifier = modifier.height(56.dp),
+        contentPadding = PaddingValues(0.dp)
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+            Text(titulo, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+            Text(
+                bajada,
+                fontSize = 9.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
+                maxLines = 1
+            )
+        }
+    }
+}
+
+/**
+ * Formatea un monto para el campo de texto del alta, que espera dígitos con punto decimal y a lo
+ * sumo dos decimales (lo mismo que acepta su `onValueChange`).
+ */
+private fun montoParaInput(valor: Double): String =
+    java.math.BigDecimal.valueOf(valor)
+        .setScale(2, java.math.RoundingMode.HALF_UP)
+        .stripTrailingZeros()
+        .toPlainString()
 
 // Un simple FlowRow para organizar dinámicamente los chips sin librerías externas
 @Composable

@@ -216,14 +216,16 @@ class AhorroRepository(private val prefsHelper: PreferencesHelper) {
         )
 
     /** Un plan está completo si tiene tantas cuotas distintas pagadas como cuotas totales.
-     *  (Réplica local de la derivación que hace el servidor; evita que `data` dependa de `ui`.) */
+     *  (Réplica local de la derivación que hace el servidor; evita que `data` dependa de `ui`.)
+     *  Cuenta la unión de los pagos con movimiento vivo y el snapshot [CuotaPlan.cuotasPagadasPrevias],
+     *  igual que `CuotasEngine.pagadasDe`. */
     private fun isPlanComplete(plan: CuotaPlan, movs: List<Movement>): Boolean {
         if (plan.cantidadCuotas <= 0) return false
-        val pagadas = movs
-            .filter { !it.eliminado && it.planId == plan.id && it.cuotaNumero in 1..plan.cantidadCuotas }
-            .map { it.cuotaNumero }
-            .distinct()
-            .size
+        val validas = 1..plan.cantidadCuotas
+        val pagadas = (
+            movs.filter { !it.eliminado && it.planId == plan.id && it.cuotaNumero in validas }
+                .map { it.cuotaNumero } + plan.cuotasPagadasPrevias.filter { it in validas }
+            ).toSet().size
         return pagadas >= plan.cantidadCuotas
     }
 
@@ -289,11 +291,45 @@ class AhorroRepository(private val prefsHelper: PreferencesHelper) {
         }
     }
 
+    /**
+     * Alta de un plan. Va con `PUT` igual que la edición: el Web App resuelve el upsert por id (y si
+     * no encuentra la fila, la agrega), así que reintentar un alta que quedó sin confirmar pisa la
+     * fila en vez de duplicar el plan. El nombre distinto de [updatePlan] se conserva porque los
+     * llamadores expresan intenciones distintas.
+     */
     suspend fun savePlan(webAppUrl: String, plan: CuotaPlan): Boolean =
-        upsertPlan(webAppUrl, plan, action = "POST")
+        upsertPlan(webAppUrl, plan, action = "PUT")
 
     suspend fun updatePlan(webAppUrl: String, plan: CuotaPlan): Boolean =
         upsertPlan(webAppUrl, plan, action = "PUT")
+
+    /**
+     * Le pide al Web App que congele, para cada plan, qué cuotas ya estaban pagadas **antes** de
+     * [mes], escribiéndolas por unión en la columna K de la hoja "Planes".
+     *
+     * Es la mitad "cuotas" del corte de mes: sin esto, purgar las hojas anteriores devuelve a
+     * pendiente cuotas ya pagadas, porque su único rastro es el movimiento que vivía ahí. Se calcula
+     * en el servidor —que ya recorre todas las hojas para derivar los planes completos— así que el
+     * cliente no necesita tener cargado el historial entero.
+     *
+     * En modo demo no hay servidor y no hay nada que purgar: devuelve `true` sin hacer nada.
+     */
+    suspend fun snapshotCuotasPrevias(webAppUrl: String, mes: String): Boolean {
+        if (prefsHelper.useLocalDemo) return true
+        if (webAppUrl.isEmpty()) return false
+        return try {
+            val response = sheetsService.addMovement(
+                webAppUrl,
+                WebAppRequest(action = "SNAPSHOT_CUOTAS", mes = mes)
+            )
+            val ok = response.isSuccessful && response.body()?.status == "SUCCESS"
+            if (!ok) Log.e("AhorroRepository", "SNAPSHOT_CUOTAS error: ${response.body()?.message}")
+            ok
+        } catch (e: Exception) {
+            Log.e("AhorroRepository", "Exception snapshotCuotasPrevias: ${e.message}", e)
+            false
+        }
+    }
 
     private suspend fun upsertPlan(webAppUrl: String, plan: CuotaPlan, action: String): Boolean {
         if (prefsHelper.useLocalDemo) {
