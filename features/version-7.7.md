@@ -492,3 +492,7 @@ cosa.
     cosa por persona con prioridad descripción puntual/gusto > novedad > buena noticia; prohíbe
     comentar gastos de rutina o necesarios (lo más frecuente no es lo más interesante) y limita las
     advertencias en broma a lo evitable. Incluye ejemplos buenos y malos.
+  - Variedad: el script sortea cada día un formato distinto por persona (`MSG_FORMATOS`: pregunta
+    amistosa, comentario puntual, frase de ánimo genérica, observación/buena noticia del mes). Si no hay
+    datos que encajen, cae a una pregunta genérica o una frase de ánimo. Se pide variar la puntuación
+    (el modelo se clavaba en exclamaciones sobre algo puntual).

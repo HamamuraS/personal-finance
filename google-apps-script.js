@@ -1420,6 +1420,31 @@ function movimientosParaMensaje_(mes, usuarios) {
   return lineas.join("\n");
 }
 
+/**
+ * Formatos posibles del mensaje. El script le asigna uno al azar a cada persona cada día (distinto
+ * entre ellas): librado a su criterio, el modelo se clavaba en exclamaciones sobre algo puntual.
+ */
+const MSG_FORMATOS = [
+  "una PREGUNTA amistosa y curiosa sobre algo de sus movimientos, como un amigo que se interesa " +
+    "(ej: \"¿Cómo andan los perritos?\", \"¿Cómo estuvo esa salida?\", \"¿Valió la pena esa pizza?\")",
+  "un COMENTARIO simpático o gracioso sobre algo puntual con nombre propio " +
+    "(ej: \"Esa provoleta del sábado pintaba bárbara 🧀\", \"Debe haber estado bueno ese café Martínez\")",
+  "una FRASE DE ÁNIMO corta y genérica, sin mencionar gastos, para arrancar el día " +
+    "(ej: \"Que hoy te salga todo redondo\", \"Arrancá tranqui, que viene un lindo día\")",
+  "una OBSERVACIÓN o BUENA NOTICIA sobre cómo viene su mes comparado con el anterior " +
+    "(ej: \"Semana tranqui de gustos, bien ahí\", \"Vas mejor que en agosto con los antojos\")"
+];
+
+/** Un formato al azar por persona, sin repetir entre ellas mientras alcancen. */
+function formatosDelDia_(usuarios) {
+  const orden = MSG_FORMATOS.map(function (_, i) { return i; });
+  for (let i = orden.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = orden[i]; orden[i] = orden[j]; orden[j] = t;
+  }
+  return usuarios.map(function (u, k) { return MSG_FORMATOS[orden[k % orden.length]]; });
+}
+
 function promptDeMensajes_(hoy, ahora, usuarios, movimientos) {
   const dias = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
   const diaSemana = dias[parseInt(Utilities.formatDate(ahora, MSG_ZONA, "u"), 10) % 7];
@@ -1427,6 +1452,9 @@ function promptDeMensajes_(hoy, ahora, usuarios, movimientos) {
   const anteriores = usuarios
     .filter(function (u) { return u.anterior; })
     .map(function (u) { return "- " + u.nombre + ": " + u.anterior; }).join("\n");
+  const formatos = formatosDelDia_(usuarios);
+  const formatoDeCadaUno = usuarios
+    .map(function (u, k) { return "- " + u.nombre + ": " + formatos[k] + "."; }).join("\n");
   return [
     "Sos el amigo buena onda de una app de finanzas que usa una pareja en Argentina.",
     "Hoy es " + diaSemana + " " + hoy + ". Abajo están sus gastos y aportes del mes pasado y del actual,",
@@ -1435,30 +1463,31 @@ function promptDeMensajes_(hoy, ahora, usuarios, movimientos) {
     "",
     "Escribí UN mensaje para cada una de estas personas: " + quienes + ".",
     "",
-    "Qué comentar: elegí UNA sola cosa, la más interesante de cada persona, preferentemente de los",
-    "últimos días. En este orden de preferencia:",
-    "1. Algo puntual con nombre propio en la descripción, sobre todo gustos o compras poco habituales",
-    "   (un bar, un antojo, un regalo, un hobby, una salida).",
-    "2. Una novedad: algo que no aparece el mes anterior, o un día fuera de lo común.",
-    "3. Una buena noticia: un ingreso, menos gustos que el mes pasado, unos días tranquilos.",
+    "Formato de hoy para cada uno (respetalo):",
+    formatoDeCadaUno,
+    "",
+    "Si el formato pide algo puntual y no hay nada que encaje bien, cambiá a una pregunta genérica",
+    "(\"¿Cómo estuvo esa salida?\") o a una frase de ánimo. Mejor algo simple y cálido que forzado.",
+    "",
+    "Qué conviene mirar, cuando el formato habla de sus movimientos: descripciones con nombre propio,",
+    "gustos o evitables, algo nuevo respecto del mes anterior, un ingreso, sus mascotas o salidas.",
     "",
     "Qué NO comentar:",
     "- Gastos de rutina o necesarios, aunque se repitan muchísimo: transporte, servicios, supermercado,",
-    "  verdulería, farmacia, animales, alquiler, cosas de trabajo o de salud. No se pueden evitar y",
-    "  comentarlos queda tonto. Que algo sea lo más frecuente NO lo hace interesante.",
-    "- Las advertencias en broma (\"¡cuidado con…!\") son solo para gustos o evitables, nunca para",
+    "  verdulería, farmacia, alquiler, cosas de trabajo o de salud. No se pueden evitar y comentarlos",
+    "  queda tonto. Que algo sea lo más frecuente NO lo hace interesante. (Preguntar cómo andan las",
+    "  mascotas sí está bien; retar por lo que cuestan, no.)",
+    "- Las advertencias en broma (\"cuidado con…\") son solo para gustos o evitables, nunca para",
     "  necesidades.",
     "- Sermones, retos, culpa, consejos genéricos de ahorro, montos o cifras exactas.",
     "- Datos del otro en el mensaje de cada uno.",
     "",
-    "Ejemplos buenos: \"¡Cuidado con tantas medialunas!\", \"¡Debe haber estado bueno ese café Martínez!\",",
-    "\"Esa provoleta del sábado pintaba bárbara 🧀\", \"Semana tranqui de gustos, ¡bien ahí!\".",
     "Ejemplos malos, NO los hagas: \"¡Cuidado con tanto transporte!\" (lo necesita para trabajar),",
     "\"¡Cuánto supermercado!\" (hay que comer), \"Gastaste mucho este mes\" (sermón genérico).",
     "",
     "Forma: máximo 60 caracteres, español rioplatense, de vos, a lo sumo un emoji. Simpático y",
-    "amistoso, como un amigo que te conoce. Si casi no hay movimientos, un saludo o ánimo corto.",
-    anteriores ? "No repitas la idea de los mensajes de ayer:\n" + anteriores : "",
+    "amistoso, como un amigo que te conoce. Variá la puntuación: no todo con signos de exclamación.",
+    anteriores ? "No repitas la idea ni el tipo de frase de los mensajes de ayer:\n" + anteriores : "",
     "",
     "Respondé SOLO con JSON, sin texto alrededor, con las claves exactas: {" +
       usuarios.map(function (u) { return '"' + u.slotKey + '": "..."'; }).join(", ") + "}",
