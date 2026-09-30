@@ -732,15 +732,16 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     fun setDashboardFilters(filters: DashboardFilters) { _dashboardFilters.value = filters }
 
     /**
-     * Deja Inicio filtrado en los gastos de una categoría (y opcionalmente de una persona). Lo llama
+     * Deja Inicio filtrado en los gastos de unas categorías (una, o todas las de un rubro) y
+     * opcionalmente de una persona. Lo llama
      * Métricas al tocar una línea: es el atajo para ir del "cuánto" al "en qué". [persona] es un
      * slotKey, o null para la tarjeta de gastos combinados.
      */
-    fun verDetalleDeGastos(persona: String?, categoria: String) {
+    fun verDetalleDeGastos(persona: String?, categorias: Set<String>) {
         _dashboardFilters.value = DashboardFilters(
             persona = persona ?: DashboardFilters.TODOS,
             tipo = DashboardFilters.GASTOS,
-            categorias = setOf(categoria)
+            categorias = categorias
         )
         // Lo que se vino a ver es el listado, no los saldos: Inicio arranca en los filtros.
         _scrollAFiltros.value = true

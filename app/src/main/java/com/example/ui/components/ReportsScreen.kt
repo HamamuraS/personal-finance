@@ -12,6 +12,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -23,6 +25,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.Categorias
 import com.example.data.CuotaPlan
 import com.example.data.Movement
 import com.example.data.UsuariosConfig
@@ -49,7 +52,7 @@ fun ReportsScreen(
      * Tocar una línea de categoría lleva a Inicio con el filtro ya aplicado (gastos + persona +
      * categoría). `persona` es el slotKey del dueño del gasto, o null en la tarjeta combinada.
      */
-    onVerDetalle: (persona: String?, categoria: String) -> Unit = { _, _ -> }
+    onVerDetalle: (persona: String?, categorias: Set<String>) -> Unit = { _, _ -> }
 ) {
     // Total que caerá en cada tarjeta en el mes seleccionado (cuotas pagadas + impagas).
     val tarjetaTotals = CuotasEngine.totalTarjetaPorMes(selectedMonth, plans, allMovements)
@@ -119,12 +122,12 @@ fun ReportsScreen(
                         imageVector = Icons.Default.Info,
                         contentDescription = null,
                         modifier = Modifier.size(64.dp),
-                        tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.15f)
+                        tint = com.example.ui.theme.appTextMuted
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
                         text = "Registra movimientos para ver reportes",
-                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Medium
                     )
@@ -214,9 +217,8 @@ fun ReportsScreen(
 
 @Composable
 fun ReportAportesCard(userProfile: String, config: UsuariosConfig, balance: BalanceBreakdown, formatMoney: NumberFormat) {
-    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
-    val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
-    val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
+    val cardBg = MaterialTheme.colorScheme.surface
+    val cardBorder = MaterialTheme.colorScheme.outlineVariant
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -300,7 +302,7 @@ fun ReportAportesCard(userProfile: String, config: UsuariosConfig, balance: Bala
                 verticalAlignment = Alignment.Top
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Total Ingresado", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+                    Text("Total Ingresado", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(formatMoney.format(totalAportes), fontSize = 16.sp, fontWeight = FontWeight.Black)
                 }
             }
@@ -321,9 +323,8 @@ fun GastosAcumuladosCard(
     secundario: AccountingEngine.GastosPorEvitabilidad,
     formatMoney: NumberFormat
 ) {
-    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
-    val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
-    val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
+    val cardBg = MaterialTheme.colorScheme.surface
+    val cardBorder = MaterialTheme.colorScheme.outlineVariant
     val total = primario.total + secundario.total
 
     Card(
@@ -369,11 +370,11 @@ fun GastosAcumuladosCard(
                 verticalAlignment = Alignment.Top
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Total Gastado", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+                    Text("Total Gastado", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(formatMoney.format(total), fontSize = 16.sp, fontWeight = FontWeight.Black)
                 }
                 Column(horizontalAlignment = Alignment.End) {
-                    Text("🍰 Evitable", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+                    Text("🍰 Evitable", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(
                         formatMoney.format(primario.evitable + secundario.evitable),
                         fontSize = 16.sp,
@@ -459,17 +460,23 @@ private fun sumPorCategoria(
         .toList()
         .sortedByDescending { it.second }
 
+/**
+ * Gastos de una tarjeta de Métricas agrupados por rubro (🍽 Comida, 🏠 Casa…): 7 filas en vez de
+ * 15. Tocar un rubro de una sola categoría va directo a Inicio filtrado; uno de varias despliega sus
+ * categorías, cada una con su salto a Inicio, más "Ver todo el rubro".
+ */
 @Composable
 fun ReportCategoriasCard(
     title: String,
     sumPorCategoria: List<Pair<String, Double>>,
     formatMoney: NumberFormat,
     accentColor: Color,
-    onCategoriaClick: (String) -> Unit = {}
+    onCategoriaClick: (Set<String>) -> Unit = {}
 ) {
-    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
-    val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
-    val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
+    val cardBg = MaterialTheme.colorScheme.surface
+    val cardBorder = MaterialTheme.colorScheme.outlineVariant
+    val rubros = remember(sumPorCategoria) { Categorias.agruparPorRubro(sumPorCategoria) }
+    var abiertos by remember { mutableStateOf(setOf<String>()) }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -500,18 +507,23 @@ fun ReportCategoriasCard(
                     contentAlignment = Alignment.Center
                 ) {
                     val label = "No hay gastos registrados todavía"
-                    Text(label, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+                    Text(label, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             } else {
-                // Se muestran TODAS las categorías con gasto (antes se truncaba a las primeras 6,
-                // lo que podía esconder silenciosamente categorías con montos menores, dando la
-                // falsa impresión de que ciertos gastos —p.ej. en efectivo— no se estaban sumando).
-                sumPorCategoria.forEach { (catName, amount) ->
-                    val percentage = (amount / totalGastos).toFloat()
+                // Se muestran TODOS los rubros con gasto (antes se truncaba a las primeras 6
+                // categorías, lo que podía esconder montos menores y dar la falsa impresión de que
+                // ciertos gastos —p.ej. en efectivo— no se estaban sumando).
+                rubros.forEach { grupo ->
+                    val percentage = (grupo.total / totalGastos).toFloat()
+                    val unica = grupo.categorias.singleOrNull()?.first
+                    val abierto = grupo.rubro.nombre in abiertos
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { onCategoriaClick(catName) }
+                            .clickable {
+                                if (unica != null) onCategoriaClick(setOf(unica))
+                                else abiertos = if (abierto) abiertos - grupo.rubro.nombre else abiertos + grupo.rubro.nombre
+                            }
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -519,30 +531,33 @@ fun ReportCategoriasCard(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(8.dp)
-                                        .clip(CircleShape)
-                                        .background(accentColor.copy(alpha = if (percentage > 0.4) 1f else 0.5f))
-                                )
+                                Text(grupo.rubro.emoji, fontSize = 13.sp)
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = catName,
+                                    text = grupo.rubro.nombre,
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.Medium,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
+                                if (unica == null) {
+                                    Icon(
+                                        imageVector = if (abierto) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                        contentDescription = if (abierto) "Contraer" else "Ver categorías",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
                             }
                             Row(horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
                                 Text(
                                     text = "${(percentage * 100).toInt()}%",
                                     fontSize = 11.sp,
-                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.padding(end = 8.dp)
                                 )
                                 Text(
-                                    text = formatMoney.format(amount),
+                                    text = formatMoney.format(grupo.total),
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.onSurface
@@ -560,6 +575,36 @@ fun ReportCategoriasCard(
                             trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f)
                         )
                     }
+
+                    // Detalle del rubro: sus categorías (tal como están en la planilla) y el salto
+                    // a Inicio con todo el rubro.
+                    if (abierto && unica == null) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(start = 22.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            grupo.categorias.forEach { (cat, monto) ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().clickable { onCategoriaClick(setOf(cat)) },
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(cat, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                    Text(formatMoney.format(monto), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+                            Text(
+                                text = "Ver todo ${grupo.rubro.etiqueta} en Inicio",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = accentColor,
+                                modifier = Modifier.clickable {
+                                    onCategoriaClick(grupo.categorias.map { it.first }.toSet())
+                                }
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -576,9 +621,8 @@ fun TarjetasPorMesCard(
     totales: Map<String, Double>,
     formatMoney: NumberFormat
 ) {
-    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
-    val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
-    val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
+    val cardBg = MaterialTheme.colorScheme.surface
+    val cardBorder = MaterialTheme.colorScheme.outlineVariant
     val accent = MaterialTheme.colorScheme.tertiary
     val total = totales.values.sum()
     val ordenadas = totales.entries.sortedByDescending { it.value }
@@ -600,7 +644,7 @@ fun TarjetasPorMesCard(
                 }
                 Column {
                     Text("Total en tarjetas", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurface)
-                    Text(formatMonthLabel(mes), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+                    Text(formatMonthLabel(mes), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
 
@@ -626,7 +670,7 @@ fun TarjetasPorMesCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Total del mes", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), fontWeight = FontWeight.Medium)
+                Text("Total del mes", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Medium)
                 Text(formatMoney.format(total), fontSize = 16.sp, fontWeight = FontWeight.Black, color = accent)
             }
         }

@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -68,9 +69,31 @@ class MainActivity : ComponentActivity() {
         pedirPermisoNotificaciones.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
+    /**
+     * Estilo de las barras del sistema (estado y navegación).
+     *
+     * El tema claro/oscuro de la app lo elige el usuario en Ajustes y **no** sigue al del sistema,
+     * así que `enableEdgeToEdge()` sin argumentos era el bug: dejaba que Android decidiera el color
+     * de sus íconos por su cuenta. Con el teléfono en modo oscuro y la app en modo claro, los
+     * íconos de arriba quedaban blancos sobre el fondo blanco de la app: invisibles.
+     *
+     * Se vuelve a llamar cada vez que cambia el tema (el efecto de más abajo), que es la forma
+     * soportada de actualizar el estilo en caliente.
+     */
+    private fun aplicarEstiloDeBarras(darkTheme: Boolean) {
+        val transparente = android.graphics.Color.TRANSPARENT
+        // Velo que Android pone detrás de sus íconos oscuros en las APIs que no saben pintarlos
+        // sobre un fondo claro (< 29 en la barra de navegación).
+        val velo = android.graphics.Color.argb(0x40, 0, 0, 0)
+        val estilo =
+            if (darkTheme) SystemBarStyle.dark(transparente)
+            else SystemBarStyle.light(transparente, velo)
+        enableEdgeToEdge(statusBarStyle = estilo, navigationBarStyle = estilo)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        aplicarEstiloDeBarras(PreferencesHelper(applicationContext).isDarkMode)
         BackgroundSyncScheduler.schedule(applicationContext)
         pedirPermisoDeNotificacionesUnaVez()
         pendingOpenTab = tabFromIntent(intent)
@@ -78,6 +101,9 @@ class MainActivity : ComponentActivity() {
         setContent {
             val userProfile by viewModel.currentUserProfile.collectAsState()
             val isDarkMode by viewModel.isDarkMode.collectAsState()
+
+            // El tema es del usuario, no del sistema: las barras lo tienen que seguir a él.
+            LaunchedEffect(isDarkMode) { aplicarEstiloDeBarras(isDarkMode) }
             val usuarios by viewModel.usuarios.collectAsState()
             val activeUser by viewModel.activeUser.collectAsState()
             val otherUser by viewModel.otherUser.collectAsState()
@@ -253,8 +279,8 @@ class MainActivity : ComponentActivity() {
                                     allMovements = allMovements,
                                     // Tocar una categoría en Métricas = "quiero ver el detalle":
                                     // deja el filtro puesto y salta a Inicio. Sin cambios de UI.
-                                    onVerDetalle = { persona, categoria ->
-                                        viewModel.verDetalleDeGastos(persona, categoria)
+                                    onVerDetalle = { persona, categorias ->
+                                        viewModel.verDetalleDeGastos(persona, categorias)
                                         currentTab = ScreenTab.INICIO
                                     }
                                 )

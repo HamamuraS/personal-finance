@@ -40,10 +40,12 @@ private val OnFillDark = Color(0xFF111411)
 val USER_COLOR_PRESETS: List<UserColorPreset> = listOf(
     UserColorPreset("green", "Verde", GeoGreenPrimary, GeoDarkPrimary, OnFillLight, OnFillDark),
     UserColorPreset("blue", "Azul", GeoBlueTertiary, GeoDarkTertiary, OnFillLight, OnFillDark),
-    UserColorPreset("violet", "Violeta", Color(0xFF6A4CA5), Color(0xFFC3B0E8), OnFillLight, OnFillDark),
-    UserColorPreset("teal", "Turquesa", Color(0xFF176B63), Color(0xFF83CFC5), OnFillLight, OnFillDark),
-    UserColorPreset("amber", "Ámbar", Color(0xFF8A6100), Color(0xFFE6C15C), OnFillLight, OnFillDark),
-    UserColorPreset("rose", "Rosa", Color(0xFFB0345F), Color(0xFFE79BB4), OnFillLight, OnFillDark),
+    // Los rellenos claros se suavizaron en la v7.7.1 para la paleta cálida, sin bajar de ~5.4:1
+    // sobre las tarjetas ni con texto blanco encima. Los oscuros no cambiaron.
+    UserColorPreset("violet", "Violeta", Color(0xFF6E55A3), Color(0xFFC3B0E8), OnFillLight, OnFillDark),
+    UserColorPreset("teal", "Turquesa", Color(0xFF2A6E66), Color(0xFF83CFC5), OnFillLight, OnFillDark),
+    UserColorPreset("amber", "Ámbar", Color(0xFF825B00), Color(0xFFE6C15C), OnFillLight, OnFillDark),
+    UserColorPreset("rose", "Rosa", Color(0xFFA14264), Color(0xFFE79BB4), OnFillLight, OnFillDark),
 )
 
 /** Preset por defecto si un id no se reconoce (dato viejo/corrupto). El verde histórico. */
