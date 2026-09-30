@@ -151,11 +151,23 @@ fun ReportsScreen(
                 }
 
                 if (movements.isNotEmpty()) {
-                    val gastos = movements.filter { it.tipo.equals("Gasto", ignoreCase = true) }
+                    // Gastos "reales": sin las correcciones, que son ajustes para cuadrar con el banco.
+                    val gastos = movements.filter { AccountingEngine.esGastoReal(it) }
 
-                    // Tarjeta 1: Aportes por socio
+                    // Tarjeta 1: Ingresos por socio (solo aportes de categoría Ingreso)
                     item {
                         ReportAportesCard(userProfile = userProfile, config = config, balance = balance, formatMoney = formatMoney)
+                    }
+
+                    // Tarjeta 1b: Gastos por socio, partidos en no evitable / evitable
+                    item {
+                        GastosAcumuladosCard(
+                            userProfile = userProfile,
+                            config = config,
+                            primario = AccountingEngine.gastosPorEvitabilidad(movements, config.primario.slotKey),
+                            secundario = AccountingEngine.gastosPorEvitabilidad(movements, config.secundario.slotKey),
+                            formatMoney = formatMoney
+                        )
                     }
 
                     // Tarjeta 2: Gastos Totales Combinados
@@ -218,14 +230,16 @@ fun ReportAportesCard(userProfile: String, config: UsuariosConfig, balance: Bala
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Text(
-                text = "Aportes Acumulados",
+                text = "Ingresos Acumulados",
                 fontWeight = FontWeight.Bold,
                 fontSize = 15.sp,
                 color = MaterialTheme.colorScheme.onSurface
             )
 
-            val totalAportes = balance.santiagoAportes + balance.rocioAportes
-            val sSantiagoPct = if (totalAportes > 0) (balance.santiagoAportes / totalAportes).toFloat() else 0.5f
+            // Solo la categoría Ingreso: los demás aportes (transferencias entre ustedes,
+            // correcciones) no son plata nueva.
+            val totalAportes = balance.santiagoIngresos + balance.rocioIngresos
+            val sSantiagoPct = if (totalAportes > 0) (balance.santiagoIngresos / totalAportes).toFloat() else 0.5f
             val sRocioPct = 1f - sSantiagoPct
 
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -241,7 +255,7 @@ fun ReportAportesCard(userProfile: String, config: UsuariosConfig, balance: Bala
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(config.primario.nombre, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        Text(formatMoney.format(balance.santiagoAportes), fontSize = 13.sp, fontWeight = FontWeight.Bold, color = santiagoColor)
+                        Text(formatMoney.format(balance.santiagoIngresos), fontSize = 13.sp, fontWeight = FontWeight.Bold, color = santiagoColor)
                     }
                     Spacer(modifier = Modifier.height(4.dp))
                     LinearProgressIndicator(
@@ -263,7 +277,7 @@ fun ReportAportesCard(userProfile: String, config: UsuariosConfig, balance: Bala
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(config.secundario.nombre, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        Text(formatMoney.format(balance.rocioAportes), fontSize = 13.sp, fontWeight = FontWeight.Bold, color = rocioColor)
+                        Text(formatMoney.format(balance.rocioIngresos), fontSize = 13.sp, fontWeight = FontWeight.Bold, color = rocioColor)
                     }
                     Spacer(modifier = Modifier.height(4.dp))
                     LinearProgressIndicator(
@@ -286,10 +300,145 @@ fun ReportAportesCard(userProfile: String, config: UsuariosConfig, balance: Bala
                 verticalAlignment = Alignment.Top
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Total Aportado", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+                    Text("Total Ingresado", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
                     Text(formatMoney.format(totalAportes), fontSize = 16.sp, fontWeight = FontWeight.Black)
                 }
             }
+        }
+    }
+}
+
+/**
+ * Gastos acumulados del periodo por persona. Cada barra mide la parte de esa persona sobre el gasto
+ * de los dos (igual que "Ingresos Acumulados") y se parte en dos tramos: el color de la persona es lo
+ * **no evitable** y el rojo lo **evitable**, con el monto de cada parcial debajo.
+ */
+@Composable
+fun GastosAcumuladosCard(
+    userProfile: String,
+    config: UsuariosConfig,
+    primario: AccountingEngine.GastosPorEvitabilidad,
+    secundario: AccountingEngine.GastosPorEvitabilidad,
+    formatMoney: NumberFormat
+) {
+    val isDark = MaterialTheme.colorScheme.background == com.example.ui.theme.DarkBackground
+    val cardBg = if (isDark) MaterialTheme.colorScheme.surface else Color.White
+    val cardBorder = if (isDark) Color(0xFF333833) else Color(0xFFE2E8F0)
+    val total = primario.total + secundario.total
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = cardBg),
+        border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text(
+                text = "Gastos Acumulados",
+                fontWeight = FontWeight.Bold,
+                fontSize = 15.sp,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+
+            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                GastoPersonaFila(
+                    nombre = config.primario.nombre,
+                    gastos = primario,
+                    total = total,
+                    color = personaColor(config.primario.slotKey, userProfile),
+                    formatMoney = formatMoney
+                )
+                GastoPersonaFila(
+                    nombre = config.secundario.nombre,
+                    gastos = secundario,
+                    total = total,
+                    color = personaColor(config.secundario.slotKey, userProfile),
+                    formatMoney = formatMoney
+                )
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Total Gastado", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+                    Text(formatMoney.format(total), fontSize = 16.sp, fontWeight = FontWeight.Black)
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    Text("🍰 Evitable", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+                    Text(
+                        formatMoney.format(primario.evitable + secundario.evitable),
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Black,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Una fila de [GastosAcumuladosCard]: nombre + total, barra en dos tramos y los dos parciales. */
+@Composable
+private fun GastoPersonaFila(
+    nombre: String,
+    gastos: AccountingEngine.GastosPorEvitabilidad,
+    total: Double,
+    color: Color,
+    formatMoney: NumberFormat
+) {
+    val rojo = MaterialTheme.colorScheme.error
+    // Fracción de la barra entera (ancho de la card) que ocupa cada tramo.
+    val fNecesario = if (total > 0) (maxOf(0.0, gastos.necesario) / total).toFloat().coerceIn(0f, 1f) else 0f
+    val fEvitable = if (total > 0) (maxOf(0.0, gastos.evitable) / total).toFloat().coerceIn(0f, 1f - fNecesario) else 0f
+    val fResto = (1f - fNecesario - fEvitable).coerceAtLeast(0f)
+
+    Column {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(nombre, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Text(formatMoney.format(gastos.total), fontSize = 13.sp, fontWeight = FontWeight.Bold, color = color)
+        }
+        Spacer(modifier = Modifier.height(4.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(8.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f))
+        ) {
+            if (fNecesario > 0f) Box(Modifier.fillMaxHeight().weight(fNecesario).background(color))
+            if (fEvitable > 0f) Box(Modifier.fillMaxHeight().weight(fEvitable).background(rojo))
+            if (fResto > 0f) Spacer(Modifier.fillMaxHeight().weight(fResto))
+        }
+        Spacer(modifier = Modifier.height(4.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                "🍞 Necesario ${formatMoney.format(gastos.necesario)}",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = color
+            )
+            Text(
+                "🍰 Evitable ${formatMoney.format(gastos.evitable)}",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = rojo
+            )
         }
     }
 }

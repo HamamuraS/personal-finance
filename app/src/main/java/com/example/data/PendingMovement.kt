@@ -28,3 +28,14 @@ data class PendingMovement(
     val ultimoError: String = "",
     val esperandoTicket: Boolean = false
 )
+
+/**
+ * La cola después de que la planilla confirmó la subida de [subido]: saca la entrada **solo si sigue
+ * siendo la misma versión** que se subió.
+ *
+ * Desde que los movimientos se pueden editar (v7.7), el usuario puede reencolar un movimiento
+ * mientras el drenado está subiendo la versión anterior. Sacarlo por id a secas borraba de la cola la
+ * versión editada, que nunca llegaba a la planilla. Si cambió, queda para el próximo drenado.
+ */
+fun quitarSiNoCambio(cola: List<PendingMovement>, subido: Movement): List<PendingMovement> =
+    cola.filterNot { it.movement.id == subido.id && it.movement == subido }

@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
@@ -24,6 +25,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import com.example.data.Movement
 import com.example.data.PreferencesHelper
 import com.example.data.notifications.BackgroundSyncScheduler
 import com.example.ui.AhorroViewModel
@@ -93,6 +95,15 @@ class MainActivity : ComponentActivity() {
 
                 var currentTab by remember { mutableStateOf(pendingOpenTab ?: ScreenTab.INICIO) }
 
+                // Gesto/botón "atrás": desde cualquier pestaña vuelve a Inicio, y solo desde Inicio
+                // cierra la app (el patrón de Material para navegación inferior). Un historial de
+                // pestañas haría que "atrás" rebote por todas las visitadas. Las sub-pantallas con su
+                // propio BackHandler (detalle/formulario de Cuotas) se componen después, así que
+                // tienen prioridad y siguen volviendo a su listado.
+                BackHandler(enabled = currentTab != ScreenTab.INICIO) {
+                    currentTab = ScreenTab.INICIO
+                }
+
                 // Si se toca la notificación de cuotas con la Activity ya viva, `onNewIntent`
                 // actualiza `pendingOpenTab` y este efecto salta de pestaña.
                 LaunchedEffect(pendingOpenTab) {
@@ -118,6 +129,27 @@ class MainActivity : ComponentActivity() {
                     if (!isCurrentMonth && currentTab == ScreenTab.NUEVO) {
                         currentTab = ScreenTab.METRICAS
                     }
+                }
+
+                // Editar un movimiento (v7.7) = cargarlo en el borrador del alta e ir a Nuevo. Si el
+                // alta tenía algo cargado, se pregunta antes de pisarlo.
+                var editarPendiente by remember { mutableStateOf<Movement?>(null) }
+                fun editar(m: Movement) {
+                    viewModel.cargarParaEditar(m)
+                    currentTab = ScreenTab.NUEVO
+                }
+                editarPendiente?.let { m ->
+                    AlertDialog(
+                        onDismissRequest = { editarPendiente = null },
+                        title = { Text("¿Descartar lo que estabas cargando?") },
+                        text = { Text("Tenés un movimiento a medio cargar en Nuevo. Si editás este, se pierde.") },
+                        confirmButton = {
+                            TextButton(onClick = { editarPendiente = null; editar(m) }) { Text("Editar igual") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { editarPendiente = null }) { Text("Cancelar") }
+                        }
+                    )
                 }
 
                 Scaffold(
@@ -188,7 +220,13 @@ class MainActivity : ComponentActivity() {
                                     onFiltersChange = { viewModel.setDashboardFilters(it) },
                                     pendingStates = pendingStates,
                                     scrollAFiltros = scrollAFiltros,
-                                    onScrollAFiltrosConsumido = { viewModel.consumirScrollAFiltros() }
+                                    onScrollAFiltrosConsumido = { viewModel.consumirScrollAFiltros() },
+                                    puedeEditar = { viewModel.puedeEditar(it) },
+                                    onEditMovement = { m ->
+                                        val borrador = viewModel.movementDraft.value
+                                        if (borrador.tieneContenido && borrador.editandoId != m.id) editarPendiente = m
+                                        else editar(m)
+                                    }
                                 )
                             }
                             ScreenTab.NUEVO -> {

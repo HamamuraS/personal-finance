@@ -517,4 +517,226 @@ class AccountingLogicTest {
 
         assertFalse(AccountingEngine.chequearRecalculo(agosto + septiembre, "2026-09").permitido)
     }
+
+    // --- v7.7: cambio de dinero, devolución y transferencias sin devolución automática ------
+
+    private fun mov(
+        fecha: String, monto: Double, tipo: String, responsable: String, propietario: String = responsable,
+        metodo: String = "Billetera Virtual", categoria: String = "Otros", esComun: Boolean = false,
+        evitable: Boolean = false
+    ) = Movement(
+        fecha = fecha, monto = monto, tipo = tipo, categoria = categoria, responsable = responsable,
+        propietario = propietario, esComun = esComun, metodoPago = metodo, evitable = evitable
+    )
+
+    /** Rocío tiene 300k de Santiago en su cuenta ("Ro debe 300k"), como en septiembre 2026. */
+    private val rocioDebe300k = listOf(
+        mov("2026-09-01 10:00", 300000.0, "Aporte", "Santiago", categoria = "Ingreso"),
+        mov("2026-09-02 10:00", 300000.0, "Transferencia", "Santiago", "Santiago")
+    )
+
+    @Test
+    fun cambioDeDineroCruzaLosBucketsSinTocarSaldosNiDeuda() {
+        // Rocío le da 50k en efectivo a Santiago y él le transfiere: lo carga Santiago, que entrega
+        // la transferencia ("Billetera Virtual") y recibe el efectivo.
+        val previos = listOf(
+            mov("2026-10-01 09:00", 100000.0, "Aporte", "Santiago", categoria = "Ingreso"),
+            mov("2026-10-01 09:01", 100000.0, "Aporte", "Rocío", metodo = "Efectivo", categoria = "Ingreso")
+        )
+        val antes = AccountingEngine.compute(previos)
+        val cambio = mov("2026-10-02 10:00", 50000.0, AccountingEngine.TIPO_CAMBIO, "Santiago", metodo = "Billetera Virtual")
+        val b = AccountingEngine.compute(previos + cambio)
+
+        assertEquals(50000.0, b.santiagoVirtual, delta)
+        assertEquals(50000.0, b.santiagoEfectivo, delta)
+        assertEquals(50000.0, b.rocioEfectivo, delta)
+        assertEquals(50000.0, b.rocioVirtual, delta)
+        // Nadie gana ni pierde, nadie le debe nada a nadie, y no es un flujo del periodo.
+        assertEquals(antes.santiagoSaldoFinal, b.santiagoSaldoFinal, delta)
+        assertEquals(antes.rocioSaldoFinal, b.rocioSaldoFinal, delta)
+        assertEquals(antes.totalPozo, b.totalPozo, delta)
+        assertEquals(0.0, b.santiagoExterno, delta)
+        assertEquals(antes.totalAportesMes, b.totalAportesMes, delta)
+        assertEquals(0.0, b.totalGastosMes, delta)
+        assertEquals(0.0, b.santiagoTransfersEnviadas + b.rocioTransfersEnviadas, delta)
+    }
+
+    @Test
+    fun cambioDeDineroCargadoPorQuienEntregaEfectivo() {
+        // El mismo canje cargado por Rocío: entrega efectivo, recibe la transferencia.
+        val b = AccountingEngine.compute(listOf(
+            mov("2026-10-02 10:00", 50000.0, AccountingEngine.TIPO_CAMBIO, "Rocío", metodo = "Efectivo")
+        ))
+        assertEquals(-50000.0, b.rocioEfectivo, delta)
+        assertEquals(50000.0, b.rocioVirtual, delta)
+        assertEquals(50000.0, b.santiagoEfectivo, delta)
+        assertEquals(-50000.0, b.santiagoVirtual, delta)
+        assertEquals(0.0, b.rocioSaldoFinal, delta)
+        assertEquals(0.0, b.santiagoSaldoFinal, delta)
+    }
+
+    @Test
+    fun transferenciaEsDelOtroDespuesDelCorteNoTocaLaDeuda() {
+        // El problema que motivó el cambio: Rocío le transfiere 50k a Santiago como regalo y antes se
+        // descontaba sí o sí de los 300k que le debe.
+        val antes = AccountingEngine.compute(rocioDebe300k)
+        val regalo = mov("2026-10-05 10:00", 50000.0, "Transferencia", "Rocío", "Santiago")
+        val b = AccountingEngine.compute(rocioDebe300k + regalo)
+
+        assertEquals(300000.0, b.santiagoExterno, delta)          // la deuda sigue entera
+        assertEquals(antes.rocioEnMano - 50000.0, b.rocioEnMano, delta)
+        assertEquals(antes.santiagoEnMano + 50000.0, b.santiagoEnMano, delta)
+        assertEquals(antes.rocioSaldoFinal - 50000.0, b.rocioSaldoFinal, delta)
+        assertEquals(antes.santiagoSaldoFinal + 50000.0, b.santiagoSaldoFinal, delta)
+        assertEquals(50000.0, b.rocioTransfersEnviadas, delta)
+    }
+
+    @Test
+    fun transferenciaEsDelOtroAnteriorAlCorteSigueSaldandoDeuda() {
+        // Las anteriores al corte conservan la regla vieja: es el caso real del 06/08 (Santiago estaciona
+        // 60k en la cuenta de Rocío y ella se los devuelve con una transferencia "es de Santiago").
+        val agosto = listOf(
+            mov("2026-08-03 19:34", 60000.0, "Transferencia", "Santiago", "Santiago"),
+            mov("2026-08-06 21:48", 60000.0, "Transferencia", "Rocío", "Santiago")
+        )
+        assertTrue(agosto.last().fecha < AccountingEngine.CORTE_TRANSFERENCIA_SIN_DEVOLUCION)
+        val b = AccountingEngine.compute(agosto)
+
+        assertEquals(0.0, b.santiagoExterno, delta)
+        assertEquals(0.0, b.rocioTransfersEnviadas, delta)
+    }
+
+    @Test
+    fun transferenciaEsDelOtroDeSeptiembreYaNoSaldaDeuda() {
+        // Reportado probando la 7.7 el 30/09: con el corte en octubre, dividir una cuenta a medias
+        // ("es de Santiago") se descontaba de la deuda. Septiembre ya usa la regla nueva.
+        val mitad = mov("2026-09-30 21:00", 20000.0, "Transferencia", "Rocío", "Santiago")
+        val b = AccountingEngine.compute(rocioDebe300k + mitad)
+
+        assertEquals(300000.0, b.santiagoExterno, delta)
+        assertEquals(20000.0, b.rocioTransfersEnviadas, delta)
+    }
+
+    @Test
+    fun transferenciaSiEsMiaSigueNeteandoContraLaDeuda() {
+        // Decidido mantenerla: Rocío estaciona plata suya en la cuenta de Santiago y el neto baja.
+        val estaciona = mov("2026-10-05 10:00", 72067.42, "Transferencia", "Rocío", "Rocío")
+        val b = AccountingEngine.compute(rocioDebe300k + estaciona)
+        assertEquals(300000.0 - 72067.42, b.santiagoExterno, delta)
+        assertEquals(0.0, b.rocioTransfersEnviadas, delta)
+    }
+
+    @Test
+    fun devolucionPagaLaDeudaSinCambioDePatrimonio() {
+        val antes = AccountingEngine.compute(rocioDebe300k)
+        val pago = mov("2026-10-05 10:00", 100000.0, AccountingEngine.TIPO_DEVOLUCION, "Rocío", "Santiago")
+        val b = AccountingEngine.compute(rocioDebe300k + pago)
+
+        assertEquals(200000.0, b.santiagoExterno, delta)
+        assertEquals(antes.rocioVirtual - 100000.0, b.rocioVirtual, delta)
+        assertEquals(antes.santiagoVirtual + 100000.0, b.santiagoVirtual, delta)
+        assertEquals(antes.rocioSaldoFinal, b.rocioSaldoFinal, delta)
+        assertEquals(antes.santiagoSaldoFinal, b.santiagoSaldoFinal, delta)
+        assertEquals(0.0, b.rocioTransfersEnviadas, delta)
+        assertEquals(0.0, b.totalGastosMes, delta)
+    }
+
+    @Test
+    fun devolucionEnEfectivoMueveElEfectivo() {
+        val pago = mov("2026-10-05 10:00", 100000.0, AccountingEngine.TIPO_DEVOLUCION, "Rocío", "Santiago", metodo = "Efectivo")
+        val b = AccountingEngine.compute(rocioDebe300k + pago)
+        assertEquals(-100000.0, b.rocioEfectivo, delta)
+        assertEquals(100000.0, b.santiagoEfectivo, delta)
+        assertEquals(200000.0, b.santiagoExterno, delta)
+    }
+
+    @Test
+    fun devolucionDeMasElExcedenteEsRegaloYNoGeneraDeudaInversa() {
+        // Solo posible cargando a mano en la planilla: la UI capa el monto a la deuda.
+        val pago = mov("2026-10-05 10:00", 350000.0, AccountingEngine.TIPO_DEVOLUCION, "Rocío", "Santiago")
+        val b = AccountingEngine.compute(rocioDebe300k + pago)
+        assertEquals(0.0, b.santiagoExterno, delta)
+        assertEquals(0.0, b.rEnSantiago, delta)
+        assertEquals(50000.0, b.rocioTransfersEnviadas, delta)
+    }
+
+    @Test
+    fun devolucionYCambioSobrevivenAlArrastreDeMes() {
+        // El arrastre replaya con el mismo motor: lo que dejan de un mes al siguiente es exactamente
+        // su estado final.
+        val octubre = rocioDebe300k + listOf(
+            mov("2026-10-05 10:00", 100000.0, AccountingEngine.TIPO_DEVOLUCION, "Rocío", "Santiago"),
+            mov("2026-10-06 10:00", 20000.0, AccountingEngine.TIPO_CAMBIO, "Santiago", metodo = "Efectivo")
+        )
+        val fin = AccountingEngine.compute(octubre)
+        val apertura = AccountingEngine.openingFor(octubre, "2026-11")
+        assertEquals(fin.santiagoExterno, apertura.netSantiagoEnRocio, delta)
+        assertEquals(fin.santiagoEfectivo, apertura.santiagoEfectivo, delta)
+        assertEquals(fin.rocioVirtual, apertura.rocioVirtual, delta)
+    }
+
+    // --- v7.7: ingresos y gastos "reales" ---------------------------------------------------
+
+    @Test
+    fun ingresosSoloCuentanLaCategoriaIngresoOSueldo() {
+        val b = AccountingEngine.compute(listOf(
+            mov("2026-10-01", 100000.0, "Aporte", "Santiago", categoria = "Ingreso"),
+            mov("2026-10-02", 50000.0, "Aporte", "Santiago", categoria = "Sueldo"),   // nombre viejo
+            mov("2026-10-03", 30000.0, "Aporte", "Santiago", categoria = "Transferencias"),
+            mov("2026-10-04", 10000.0, "Aporte", "Rocío", categoria = "Corrección"),
+            mov("2026-10-05", 20000.0, "Aporte", "Rocío", "Ambos", categoria = "Ingreso")
+        ))
+        assertEquals(160000.0, b.santiagoIngresos, delta)
+        assertEquals(10000.0, b.rocioIngresos, delta)
+        // Los aportes (y el saldo) siguen contando todo.
+        assertEquals(190000.0, b.santiagoAportes, delta)
+        assertEquals(20000.0, b.rocioAportes, delta)
+    }
+
+    @Test
+    fun gastosRealesExcluyenLasCorrecciones() {
+        val b = AccountingEngine.compute(listOf(
+            mov("2026-10-01", 1000.0, "Gasto", "Santiago", categoria = "Supermercado"),
+            mov("2026-10-02", 200.0, "Gasto", "Santiago", categoria = "Corrección"),
+            mov("2026-10-03", 400.0, "Gasto", "Rocío", "Ambos", categoria = "Servicios", esComun = true),
+            mov("2026-10-04", 100.0, "Gasto", "Rocío", "Ambos", categoria = "Corrección", esComun = true)
+        ))
+        assertEquals(1200.0, b.santiagoGastosPersonales, delta)
+        assertEquals(1000.0, b.santiagoGastosPersonalesReales, delta)
+        assertEquals(500.0, b.gastosComunesTotales, delta)
+        assertEquals(400.0, b.gastosComunesReales, delta)
+        // La corrección sí mueve plata: el saldo la incluye.
+        assertEquals(1700.0, b.totalGastosMes, delta)
+    }
+
+    @Test
+    fun gastosPorEvitabilidadPartenComunesYExcluyenCorrecciones() {
+        val movs = listOf(
+            mov("2026-10-01", 1000.0, "Gasto", "Santiago", categoria = "Supermercado"),
+            mov("2026-10-02", 300.0, "Gasto", "Santiago", categoria = "Gustos", evitable = true),
+            mov("2026-10-03", 400.0, "Gasto", "Rocío", "Ambos", categoria = "Salidas", esComun = true, evitable = true),
+            mov("2026-10-04", 500.0, "Gasto", "Rocío", categoria = "Farmacia"),
+            mov("2026-10-05", 999.0, "Gasto", "Rocío", categoria = "Corrección", evitable = true),
+            mov("2026-10-06", 5000.0, "Aporte", "Rocío", categoria = "Ingreso")
+        )
+        val s = AccountingEngine.gastosPorEvitabilidad(movs, "Santiago")
+        val r = AccountingEngine.gastosPorEvitabilidad(movs, "Rocío")
+        assertEquals(1000.0, s.necesario, delta)
+        assertEquals(500.0, s.evitable, delta)     // 300 propio + la mitad del común
+        assertEquals(500.0, r.necesario, delta)
+        assertEquals(200.0, r.evitable, delta)
+        assertEquals(2200.0, s.total + r.total, delta)
+    }
+
+    @Test
+    fun evitableViajaEnLaColumnaOYVacioEsNoEvitable() {
+        val gasto = mov("2026-10-01 10:00", 1000.0, "Gasto", "Santiago", evitable = true)
+        val fila = gasto.toRowValues()
+        assertEquals(15, fila.size)
+        assertEquals("true", fila[14])
+        assertTrue(Movement.fromRowValues(fila)!!.evitable)
+        // Una fila de 14 columnas (anterior a la 7.7) se lee como no evitable.
+        assertFalse(Movement.fromRowValues(fila.take(14))!!.evitable)
+        assertFalse(Movement.fromRowValues(fila.take(14) + "")!!.evitable)
+    }
 }

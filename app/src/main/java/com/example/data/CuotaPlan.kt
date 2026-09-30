@@ -38,7 +38,13 @@ data class CuotaPlan(
      * reemplazo: recalcular el corte después de purgar vería menos movimientos y, reemplazando,
      * borraría el registro.
      */
-    val cuotasPagadasPrevias: List<Int> = emptyList()
+    val cuotasPagadasPrevias: List<Int> = emptyList(),
+    /**
+     * Columna L de la hoja "Planes": si la compra es evitable. Los pagos del plan **copian** este
+     * valor al `Movement` en el momento de pagar (no se deriva: los planes terminados no están
+     * cargados). Vacío = no evitable, igual que en los movimientos.
+     */
+    val evitable: Boolean = false
 ) {
     val montoTotal: Double get() = montoPorCuota * cantidadCuotas
 }

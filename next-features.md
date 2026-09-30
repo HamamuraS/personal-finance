@@ -1,6 +1,11 @@
 
 # Hecho
 
+- **Versión 7.7** (detalle en `features/version-7.7.md`): cambio de dinero, "Saldo externo"
+  (perdonar o pagar), transferencias "es del otro" sin devolución automática desde el corte,
+  gastos evitables + tablero "Gastos acumulados", categoría Corrección, edición de movimientos,
+  aporte solo a nombre propio, "Sueldo" → "Ingreso" (Inicio y Métricas cuentan solo ingresos).
+
 - **Condonación (perdón de deuda).** Tipo propio `Condonación` en los dos motores; submodo de la
   pestaña "Transf." con atajo "perdonar todo". No mueve plata: solo cancela propiedad cruzada.
 - **1 · Candado en el Apps Script.** `doPost` toma `LockService.getScriptLock()` y delega en

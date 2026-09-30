@@ -88,7 +88,10 @@ fun DashboardScreen(
      * Inicio a mano.
      */
     scrollAFiltros: Boolean = false,
-    onScrollAFiltrosConsumido: () -> Unit = {}
+    onScrollAFiltrosConsumido: () -> Unit = {},
+    /** Editar un movimiento desde su detalle (v7.7). [puedeEditar] decide si se ofrece el botón. */
+    onEditMovement: (Movement) -> Unit = {},
+    puedeEditar: (Movement) -> Boolean = { false }
 ) {
     // Se calcula acá arriba, y no dentro del LazyColumn, porque de esta tarjeta depende el índice
     // del panel de filtros (ver [indiceDeFiltros]).
@@ -236,8 +239,8 @@ fun DashboardScreen(
                             nombre = config.primario.nombre,
                             saldo = balance.santiagoSaldoFinal,
                             enMano = balance.santiagoEnMano,
-                            aportes = balance.santiagoAportes,
-                            personales = balance.santiagoGastosPersonales,
+                            aportes = balance.santiagoIngresos,
+                            personales = balance.santiagoGastosPersonalesReales,
                             formatMoney = formatMoney,
                             avatarColor = personaColor(config.primario.slotKey, userProfile)
                         )
@@ -246,8 +249,8 @@ fun DashboardScreen(
                             nombre = config.secundario.nombre,
                             saldo = balance.rocioSaldoFinal,
                             enMano = balance.rocioEnMano,
-                            aportes = balance.rocioAportes,
-                            personales = balance.rocioGastosPersonales,
+                            aportes = balance.rocioIngresos,
+                            personales = balance.rocioGastosPersonalesReales,
                             formatMoney = formatMoney,
                             avatarColor = personaColor(config.secundario.slotKey, userProfile)
                         )
@@ -256,7 +259,7 @@ fun DashboardScreen(
 
                 // Gasto común total (una sola vez; antes se repetía simétrico en rojo en cada tarjeta)
                 item {
-                    GastosComunesCard(total = balance.gastosComunesTotales, formatMoney = formatMoney)
+                    GastosComunesCard(total = balance.gastosComunesReales, formatMoney = formatMoney)
                 }
 
                 // Relación de propiedad cruzada (una sola vez, no redundante por tarjeta)
@@ -306,7 +309,8 @@ fun DashboardScreen(
                             "Gastos" -> m.tipo.equals("Gasto", ignoreCase = true)
                             "Aportes" -> m.tipo.equals("Aporte", ignoreCase = true)
                             "Transfer." -> m.tipo.equals("Transferencia", ignoreCase = true) ||
-                                    AccountingEngine.isCondonacion(m)
+                                    AccountingEngine.isCondonacion(m) || AccountingEngine.isDevolucion(m) ||
+                                    AccountingEngine.isCambio(m)
                             else -> true
                         }
                 }
@@ -378,7 +382,8 @@ fun DashboardScreen(
                             config = config,
                             onDelete = { onDeleteMovement(mov) },
                             onDuplicate = { onDuplicateMovement(mov) },
-                            intentosPendientes = pendingStates[mov.id]
+                            intentosPendientes = pendingStates[mov.id],
+                            onEdit = if (puedeEditar(mov)) ({ onEditMovement(mov) }) else null
                         )
                     }
                 }
@@ -399,7 +404,9 @@ fun SwipeableMovementItem(
     onDelete: () -> Unit,
     onDuplicate: () -> Unit,
     /** null = ya está en la planilla. 0 = subiendo. > 0 = falló y se está reintentando. */
-    intentosPendientes: Int? = null
+    intentosPendientes: Int? = null,
+    /** null = no se puede editar (no es propio o no es del mes en curso). */
+    onEdit: (() -> Unit)? = null
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var showDeleteDialog by remember { mutableStateOf(false) }
@@ -497,7 +504,8 @@ fun SwipeableMovementItem(
             config = config,
             onDelete = onDelete,
             onDuplicate = onDuplicate,
-            intentosPendientes = intentosPendientes
+            intentosPendientes = intentosPendientes,
+            onEdit = onEdit
         )
     }
 }
@@ -514,7 +522,8 @@ fun MovementItem(
     onDelete: () -> Unit,
     onDuplicate: () -> Unit,
     /** null = ya está en la planilla. 0 = subiendo. > 0 = falló y se está reintentando. */
-    intentosPendientes: Int? = null
+    intentosPendientes: Int? = null,
+    onEdit: (() -> Unit)? = null
 ) {
     var showDuplicateDialog by remember { mutableStateOf(false) }
     var showDetail by remember { mutableStateOf(false) }
@@ -525,7 +534,8 @@ fun MovementItem(
             config = config,
             currentUserProfile = currentUserProfile,
             formatMoney = formatMoney,
-            onDismiss = { showDetail = false }
+            onDismiss = { showDetail = false },
+            onEdit = onEdit?.let { editar -> { showDetail = false; editar() } }
         )
     }
 
@@ -575,6 +585,8 @@ fun MovementItem(
             val isGasto = movement.tipo.lowercase() == "gasto"
             val isAporte = movement.tipo.lowercase() == "aporte"
             val isCondonacion = AccountingEngine.isCondonacion(movement)
+            val isDevolucion = AccountingEngine.isDevolucion(movement)
+            val isCambio = AccountingEngine.isCambio(movement)
 
             // El color del aporte es el de identidad del aportante (estable ante el usuario activo).
             // Solo se usa cuando isAporte, y `responsable` siempre es un slotKey.
@@ -600,6 +612,8 @@ fun MovementItem(
                         isAporte -> Icons.Default.KeyboardArrowUp
                         isGasto -> Icons.Default.KeyboardArrowDown
                         isCondonacion -> Icons.Default.VolunteerActivism
+                        isDevolucion -> Icons.Default.Handshake
+                        isCambio -> Icons.Default.CurrencyExchange
                         else -> Icons.Default.Refresh
                     },
                     contentDescription = null,
@@ -630,11 +644,11 @@ fun MovementItem(
                     )
                     
                     Text(
-                        // Un perdón de deuda no mueve plata: mostrarlo con "-" haría pensar que
-                        // salió de la cuenta. Va sin signo.
+                        // Un perdón de deuda no mueve plata y un cambio de dinero no cambia cuánto
+                        // tiene cada uno: mostrarlos con "-" haría pensar que salió plata. Van sin signo.
                         text = when {
                             isAporte -> "+${formatMoney.format(movement.monto)}"
-                            isCondonacion -> formatMoney.format(movement.monto)
+                            isCondonacion || isCambio -> formatMoney.format(movement.monto)
                             else -> "-${formatMoney.format(movement.monto)}"
                         },
                         fontWeight = FontWeight.ExtraBold,
@@ -718,6 +732,11 @@ fun MovementItem(
                                 }
                             }
 
+                            // Gasto evitable (lujo, gusto, opcional).
+                            if (movement.evitable) {
+                                Text(text = "🍰", fontSize = 11.sp)
+                            }
+
                             if (movement.propietario != movement.responsable && movement.propietario != "Ambos") {
                                 // Tag que nombra al propietario: usa su color de identidad estable.
                                 val propietarioColor = personaColor(movement.propietario, currentUserProfile)
@@ -753,7 +772,7 @@ fun MovementItem(
                                 )
                             }
                         }
-                    } else if (isCondonacion) {
+                    } else if (isCondonacion || isDevolucion || isCambio) {
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(4.dp))
@@ -761,7 +780,11 @@ fun MovementItem(
                                 .padding(horizontal = 4.dp, vertical = 2.dp)
                         ) {
                             Text(
-                                text = "Perdón",
+                                text = when {
+                                    isCondonacion -> "Perdón"
+                                    isDevolucion -> "Pago deuda"
+                                    else -> "Cambio"
+                                },
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.tertiary
@@ -826,9 +849,12 @@ private fun MovementDetailDialog(
     config: UsuariosConfig,
     currentUserProfile: String,
     formatMoney: NumberFormat,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    /** Si no es null, se ofrece "Editar" a la izquierda de "Cerrar". */
+    onEdit: (() -> Unit)? = null
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val isCambio = AccountingEngine.isCambio(movement)
     val isAporte = movement.tipo.equals("Aporte", ignoreCase = true)
     val isGasto = movement.tipo.equals("Gasto", ignoreCase = true)
     val montoColor = when {
@@ -839,8 +865,15 @@ private fun MovementDetailDialog(
     }
     val signo = when {
         isAporte -> "+"
-        AccountingEngine.isCondonacion(movement) -> ""
+        AccountingEngine.isCondonacion(movement) || isCambio -> ""
         else -> "-"
+    }
+    // En el detalle se muestra el nombre de la UI, no el de la planilla.
+    val tipoVisible = when {
+        AccountingEngine.isCondonacion(movement) -> "Saldo externo (perdón)"
+        AccountingEngine.isDevolucion(movement) -> "Saldo externo (pago)"
+        isCambio -> "Cambio de dinero"
+        else -> movement.tipo
     }
 
     AlertDialog(
@@ -857,14 +890,19 @@ private fun MovementDetailDialog(
                     color = montoColor
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
-                DetailRow("Tipo", movement.tipo)
+                DetailRow("Tipo", tipoVisible)
                 DetailRow("Fecha", formatDateMinimal(movement.fecha))
                 DetailRow("Responsable", config.nombreDe(movement.responsable))
                 if (isGasto) {
                     DetailRow("Distribución", if (movement.esComun) "Común (50/50)" else "Personal")
+                    DetailRow("Tipo de gasto", if (movement.evitable) "🍰 Evitable" else "🍞 Necesario")
                 }
                 DetailRow("Propietario", config.nombreDe(movement.propietario))
-                DetailRow("Método de pago", movement.metodoPago)
+                if (isCambio) {
+                    DetailRow("Entregó", if (movement.metodoPago.contains("Efectivo", ignoreCase = true)) "💵 Efectivo" else "💳 Transferencia")
+                } else {
+                    DetailRow("Método de pago", movement.metodoPago)
+                }
                 // Descripción completa (el motivo de este popup): texto entero, con saltos de línea.
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(
@@ -899,6 +937,15 @@ private fun MovementDetailDialog(
         },
         confirmButton = {
             TextButton(onClick = onDismiss) { Text("Cerrar", fontWeight = FontWeight.Bold) }
+        },
+        dismissButton = onEdit?.let { editar ->
+            {
+                TextButton(onClick = editar) {
+                    Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Editar", fontWeight = FontWeight.Bold)
+                }
+            }
         }
     )
 }
@@ -1282,7 +1329,7 @@ fun DesgloseSocioCard(
             // Aportes (+)
             Column {
                 Text(
-                    text = "Aportes (+)",
+                    text = "Ingresos (+)",
                     fontSize = 10.sp,
                     color = textMainColor.copy(alpha = 0.5f)
                 )

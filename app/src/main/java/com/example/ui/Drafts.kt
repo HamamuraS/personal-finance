@@ -16,8 +16,25 @@ data class MovementDraft(
     val fecha: String = "",          // "yyyy-MM-dd"; "" -> hoy
     val hora: String = "",           // "HH:mm"; "" -> ahora
     val categoria: String = "",      // "" -> primera categoría del tipo
-    val ticketUriString: String? = null
-)
+    val ticketUriString: String? = null,
+    val evitable: Boolean = false,   // solo gastos; default no evitable
+    // --- Edición (v7.7). Con [editandoId] null el formulario es un alta. ---
+    /** Id del movimiento que se está editando: se guarda con el mismo id (upsert por PUT). */
+    val editandoId: String? = null,
+    /** Ticket ya subido del movimiento editado; se conserva si no se adjunta una foto nueva. */
+    val ticketUrlExistente: String = "",
+    /** Vínculo con una cuota: se conserva tal cual al editar un pago de cuota. */
+    val planId: String = "",
+    val cuotaNumero: Int = 0,
+    /** Propietario con el que estaba guardado (para avisar si la edición lo cambia). */
+    val propietarioOriginal: String = ""
+) {
+    val editando: Boolean get() = editandoId != null
+
+    /** True si hay algo cargado que se perdería al pisar el borrador. */
+    val tieneContenido: Boolean
+        get() = editando || monto.isNotBlank() || descripcion.isNotBlank() || ticketUriString != null
+}
 
 /** Borrador del alta de una compra en cuotas (solo para plan NUEVO; la edición se siembra del plan). */
 data class CuotaDraft(
@@ -26,7 +43,8 @@ data class CuotaDraft(
     val cantidadText: String = "",
     val categoria: String = "",      // "" -> primera categoría
     val tarjeta: String = "",
-    val primeraCuota: String = ""    // "yyyy-MM"; "" -> mes actual
+    val primeraCuota: String = "",   // "yyyy-MM"; "" -> mes actual
+    val evitable: Boolean = false
 ) {
     /** True si hay algo cargado (para decidir si conviene conservar/mostrar el borrador). */
     val tieneContenido: Boolean

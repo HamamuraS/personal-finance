@@ -175,9 +175,9 @@ fun CuotasScreen(viewModel: AhorroViewModel) {
                 onDraftChange = { viewModel.setCuotaDraft(it) },
                 onClearDraft = { viewModel.clearCuotaDraft() },
                 onBack = { route = CuotasRoute.List },
-                onSave = { descripcion, monto, cant, primera, propietario, categoria, tarjeta ->
+                onSave = { descripcion, monto, cant, primera, propietario, categoria, tarjeta, evitable ->
                     if (existing == null) {
-                        viewModel.addPlan(descripcion, monto, cant, primera, propietario, categoria, tarjeta) {
+                        viewModel.addPlan(descripcion, monto, cant, primera, propietario, categoria, tarjeta, evitable) {
                             viewModel.clearCuotaDraft()   // borrador consumido al crear
                             route = CuotasRoute.List
                         }
@@ -190,7 +190,9 @@ fun CuotasScreen(viewModel: AhorroViewModel) {
                                 fechaPrimeraCuota = primera,
                                 propietario = propietario,
                                 categoria = categoria,
-                                tarjeta = tarjeta
+                                tarjeta = tarjeta,
+                                // No reescribe los pagos ya hechos: cada pago copió el valor al pagarse.
+                                evitable = evitable
                             )
                         ) { route = CuotasRoute.List }
                     }
@@ -1303,7 +1305,7 @@ private fun PlanFormContent(
     onDraftChange: (CuotaDraft) -> Unit,
     onClearDraft: () -> Unit,
     onBack: () -> Unit,
-    onSave: (descripcion: String, monto: Double, cantidad: Int, fechaPrimeraCuota: String, propietario: String, categoria: String, tarjeta: String) -> Unit
+    onSave: (descripcion: String, monto: Double, cantidad: Int, fechaPrimeraCuota: String, propietario: String, categoria: String, tarjeta: String, evitable: Boolean) -> Unit
 ) {
     val scrollState = rememberScrollState()
     val isNew = existing == null
@@ -1321,12 +1323,14 @@ private fun PlanFormContent(
     var categoria by remember { mutableStateOf(existing?.categoria ?: draft.categoria.ifEmpty { CATEGORIAS_CUOTAS.first() }) }
     var tarjeta by remember { mutableStateOf(existing?.tarjeta ?: draft.tarjeta) }
     var primeraCuota by remember { mutableStateOf(existing?.fechaPrimeraCuota ?: draft.primeraCuota.ifEmpty { currentYyyyMm() }) }
+    // Los pagos del plan heredan este valor (se copia al pagar cada cuota).
+    var evitable by remember { mutableStateOf(existing?.evitable ?: draft.evitable) }
     var showMonthPicker by remember { mutableStateOf(false) }
 
     // Volcar el borrador (solo en alta) para que sobreviva el cambio de pestaña.
     if (isNew) {
-        LaunchedEffect(descripcion, montoText, cantidadText, categoria, tarjeta, primeraCuota) {
-            onDraftChange(CuotaDraft(descripcion, montoText, cantidadText, categoria, tarjeta, primeraCuota))
+        LaunchedEffect(descripcion, montoText, cantidadText, categoria, tarjeta, primeraCuota, evitable) {
+            onDraftChange(CuotaDraft(descripcion, montoText, cantidadText, categoria, tarjeta, primeraCuota, evitable))
         }
     }
 
@@ -1334,6 +1338,7 @@ private fun PlanFormContent(
     fun limpiarFormulario() {
         descripcion = ""; montoText = ""; cantidadText = ""
         categoria = CATEGORIAS_CUOTAS.first(); tarjeta = ""; primeraCuota = currentYyyyMm()
+        evitable = false
         onClearDraft()
     }
 
@@ -1357,6 +1362,8 @@ private fun PlanFormContent(
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Volver") }
                 },
                 actions = {
+                    // Mismo switch que el alta de gastos, a la izquierda de "Limpiar".
+                    EvitableToggle(evitable = evitable, onToggle = { evitable = !evitable })
                     if (isNew) {
                         TextButton(onClick = { limpiarFormulario() }) {
                             Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -1544,7 +1551,8 @@ private fun PlanFormContent(
                         primeraCuota,
                         propietario,
                         categoria,
-                        tarjeta.trim()
+                        tarjeta.trim(),
+                        evitable
                     )
                 },
                 enabled = formValido,

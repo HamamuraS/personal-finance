@@ -285,8 +285,19 @@ class PreferencesHelper(context: Context) {
         }
     }
 
-    /** Saca un pendiente de la cola. Se llama cuando la planilla confirmó la escritura, o cuando
-     *  el usuario borra la fila antes de que se llegara a subir. */
+    /**
+     * Saca de la cola la versión [subido] de un movimiento, si nadie la editó mientras se subía.
+     * Devuelve `true` si la sacó.
+     */
+    fun removeUploadedPendingMovement(subido: Movement): Boolean = synchronized(COLA_LOCK) {
+        val actuales = getPendingMovements()
+        val restantes = quitarSiNoCambio(actuales, subido)
+        writePendingMovements(restantes)
+        restantes.size != actuales.size
+    }
+
+    /** Saca un pendiente de la cola. Se llama cuando el usuario borra la fila antes de que se
+     *  llegara a subir. */
     fun removePendingMovement(movementId: String) = synchronized(COLA_LOCK) {
         writePendingMovements(getPendingMovements().filterNot { it.movement.id == movementId })
     }
@@ -324,8 +335,8 @@ class PreferencesHelper(context: Context) {
     // Genera datos iniciales hermosos para que la app no empiece vacía
     private fun getMockMovements(): List<Movement> {
         return listOf(
-            Movement(fecha = "2026-05-01", monto = 5000000.0, tipo = "Aporte", categoria = "Sueldo Santiago", responsable = "Santiago", esComun = false, descripcion = "Aporte de sueldo regular"),
-            Movement(fecha = "2026-05-02", monto = 3000000.0, tipo = "Aporte", categoria = "Sueldo Rocío", responsable = "Rocío", esComun = false, descripcion = "Aporte de sueldo regular"),
+            Movement(fecha = "2026-05-01", monto = 5000000.0, tipo = "Aporte", categoria = "Ingreso", responsable = "Santiago", esComun = false, descripcion = "Aporte de sueldo regular"),
+            Movement(fecha = "2026-05-02", monto = 3000000.0, tipo = "Aporte", categoria = "Ingreso", responsable = "Rocío", esComun = false, descripcion = "Aporte de sueldo regular"),
             Movement(fecha = "2026-05-05", monto = 1200000.0, tipo = "Gasto", categoria = "Alquiler", responsable = "Santiago", esComun = true, descripcion = "Pago de alquiler compartido"),
             Movement(fecha = "2026-05-10", monto = 350000.0, tipo = "Gasto", categoria = "Supermercado", responsable = "Rocío", esComun = true, descripcion = "Compras semanales de víveres"),
             Movement(fecha = "2026-05-12", monto = 500000.0, tipo = "Gasto", categoria = "Ropa", responsable = "Santiago", esComun = false, descripcion = "Zapatillas nuevas (Personal)"),

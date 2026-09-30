@@ -143,6 +143,9 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     private val _balance = MutableStateFlow(AccountingEngine.compute(emptyList()))
     val balance: StateFlow<BalanceBreakdown> = _balance.asStateFlow()
 
+    /** Arrastre del mes seleccionado tal como lo usó el último [updateFilteredData]. */
+    private var _aperturaDelMes = OpeningBalance()
+
     init {
         observarSubidas()
         loadConfigAndData()
@@ -234,18 +237,19 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
         val actualCurrent = java.text.SimpleDateFormat("yyyy-MM", java.util.Locale.US).format(java.util.Date())
         _isCurrentMonth.value = (currentSel == actualCurrent)
 
-        // Altas encoladas que la planilla todavía no confirmó: se muestran y se computan como
-        // cualquier otro movimiento (fila optimista). El de-duplicado por id evita contarlas dos
-        // veces en la ventana entre que el server confirma y la cola se vacía.
-        val pendientes = _pendingMovements.value
-            .map { it.movement }
-            .filter { p -> _cachedAllMovements.none { it.id == p.id } }
+        // Altas y ediciones encoladas que la planilla todavía no confirmó: se muestran y se computan
+        // como cualquier otro movimiento (fila optimista). Con el mismo id, el pendiente **pisa** al
+        // cacheado: en una edición el id siempre está en el cache, y descartar el pendiente (como se
+        // hacía cuando solo había altas) escondía la edición hasta el próximo refresh. Tampoco se
+        // cuenta dos veces en la ventana entre que el server confirma y la cola se vacía.
+        val pendientes = _pendingMovements.value.map { it.movement }
+        val idsPendientes = pendientes.map { it.id }.toSet()
 
         // Movimientos reales (sin las filas legacy de arrastre automático de versiones <= 7.1).
         // Se reordena después de mezclar: `_cachedAllMovements` ya viene ordenado, pero concatenar
         // los pendientes al final los mandaba al pie del historial — justo la fila que se quiere
         // mostrar recién registrada quedaba fuera de pantalla.
-        val relevant = (_cachedAllMovements + pendientes)
+        val relevant = (_cachedAllMovements.filter { it.id !in idsPendientes } + pendientes)
             .filter { !AccountingEngine.isLegacyCarryover(it) && monthOf(it).isNotEmpty() }
             .sortedWith(compareByDescending<Movement> { it.fecha }.thenByDescending { it.id })
 
@@ -257,9 +261,18 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
 
         // La apertura es stock: no se lista como movimiento ni suma a los flujos del periodo.
         val filtered = delMes.filter { !AccountingEngine.isOpeningRow(it) }
+        _aperturaDelMes = opening
         _movements.value = filtered
         _balance.value = AccountingEngine.compute(filtered, opening)
     }
+
+    /**
+     * Balance del mes seleccionado **sin** el movimiento [movementId]. Lo usa la edición: el tope del
+     * "Saldo externo" se calcula con la deuda que había antes de ese movimiento; con el balance a
+     * secas, editar un perdón que canceló toda la deuda daba deuda cero y no dejaba guardar.
+     */
+    fun balanceSin(movementId: String): BalanceBreakdown =
+        AccountingEngine.compute(_movements.value.filter { it.id != movementId }, _aperturaDelMes)
 
     /**
      * Materializa el saldo inicial del mes seleccionado: calcula el arrastre replayando los meses
@@ -449,24 +462,71 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
         descripcion: String,
         metodoPago: String,
         ticketUri: android.net.Uri? = null,
+        evitable: Boolean = false,
+        /** Borrador de origen: si es una edición, se conservan id, vínculo con la cuota y ticket. */
+        edicion: MovementDraft? = null,
         onEncolado: () -> Unit
     ) {
-        encolar(
-            Movement(
-                fecha = fecha,
-                monto = monto,
-                tipo = tipo,
-                categoria = categoria,
-                responsable = responsable,
-                esComun = if (tipo == "Gasto") esComun else false,
-                propietario = propietario,
-                descripcion = descripcion,
-                metodoPago = metodoPago,
-                ticketUrl = "" // El script lo llenará si hay imagen
-            ),
-            ticketUri,
-            onEncolado
+        val esGasto = tipo == "Gasto"
+        val base = Movement(
+            fecha = fecha,
+            monto = monto,
+            tipo = tipo,
+            categoria = categoria,
+            responsable = responsable,
+            esComun = if (esGasto) esComun else false,
+            propietario = propietario,
+            descripcion = descripcion,
+            metodoPago = metodoPago,
+            ticketUrl = "", // El script lo llenará si hay imagen
+            evitable = esGasto && evitable
         )
+        // Una edición es el mismo alta con el mismo id: la cola sube con PUT (upsert por id), así que
+        // la fila optimista, el reintento y la notificación salen por el mismo camino. El ticket ya
+        // subido viaja en el movimiento y el script lo conserva si no llega una foto nueva.
+        val nuevo = edicion?.editandoId?.let { id ->
+            base.copy(
+                id = id,
+                ticketUrl = edicion.ticketUrlExistente,
+                planId = edicion.planId,
+                cuotaNumero = edicion.cuotaNumero
+            )
+        } ?: base
+        encolar(nuevo, ticketUri, onEncolado)
+    }
+
+    /**
+     * Carga [movement] en el borrador del alta para editarlo. La pantalla Nuevo se siembra de ahí
+     * como con cualquier borrador; al guardar, [encolarMovimiento] reusa el id.
+     */
+    fun cargarParaEditar(movement: Movement) {
+        val partes = movement.fecha.trim().split(" ")
+        _movementDraft.value = MovementDraft(
+            monto = java.math.BigDecimal.valueOf(movement.monto)
+                .setScale(2, java.math.RoundingMode.HALF_UP).stripTrailingZeros().toPlainString(),
+            tipo = movement.tipo,
+            esComun = movement.esComun,
+            metodoPago = movement.metodoPago,
+            propietario = movement.propietario,
+            descripcion = movement.descripcion,
+            fecha = partes.getOrNull(0)?.take(10).orEmpty(),
+            hora = partes.getOrNull(1)?.take(5).orEmpty(),
+            categoria = movement.categoria,
+            evitable = movement.evitable,
+            editandoId = movement.id,
+            ticketUrlExistente = movement.ticketUrl,
+            planId = movement.planId,
+            cuotaNumero = movement.cuotaNumero,
+            propietarioOriginal = movement.propietario
+        )
+    }
+
+    /** ¿[movement] se puede editar? Solo lo propio y del mes en curso (ver features/version-7.7.md). */
+    fun puedeEditar(movement: Movement): Boolean {
+        val mesActual = java.text.SimpleDateFormat("yyyy-MM", java.util.Locale.US).format(java.util.Date())
+        return movement.responsable.equals(_currentUserProfile.value, ignoreCase = true) &&
+            monthOf(movement) == mesActual &&
+            !AccountingEngine.isOpeningRow(movement)
     }
 
     /**
@@ -483,8 +543,13 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
         // La cola se persiste antes que nada: si el proceso muere en el próximo milisegundo, el
         // movimiento ya está a salvo y se sube en el siguiente arranque. Con foto queda marcado
         // como `esperandoTicket` para que ningún drenado se lo lleve a medio comprimir.
+        // Si se está editando un alta que todavía no se subió y no se eligió foto nueva, conserva la
+        // foto que ya esperaba en la cola (si no, la edición la descartaba sin avisar).
+        val ticketPrevio = if (ticketUri == null) {
+            _pendingMovements.value.firstOrNull { it.movement.id == nuevo.id }?.ticketPath.orEmpty()
+        } else ""
         prefsHelper.upsertPendingMovement(
-            PendingMovement(nuevo, esperandoTicket = ticketUri != null)
+            PendingMovement(nuevo, ticketPath = ticketPrevio, esperandoTicket = ticketUri != null)
         )
         refrescarPendientes()
         onEncolado()
@@ -717,6 +782,7 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
         propietario: String,
         categoria: String,
         tarjeta: String,
+        evitable: Boolean = false,
         onSuccess: () -> Unit = {}
     ) {
         viewModelScope.launch {
@@ -731,7 +797,8 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
                 fechaPrimeraCuota = fechaPrimeraCuota,
                 propietario = propietario,
                 categoria = categoria,
-                tarjeta = tarjeta
+                tarjeta = tarjeta,
+                evitable = evitable
             )
             val success = repository.savePlan(_spreadsheetId.value, plan)
             if (success) {
@@ -807,7 +874,9 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
                     descripcion = "Cuota $numero/${plan.cantidadCuotas} — ${plan.descripcion}",
                     metodoPago = metodoPago,
                     planId = plan.id,
-                    cuotaNumero = numero
+                    cuotaNumero = numero,
+                    // El pago hereda la evitabilidad del plan (se copia, no se deriva: ver CuotaPlan).
+                    evitable = plan.evitable
                 )
                 val ok = repository.saveMovement(
                     _spreadsheetId.value, movimiento, null, _folderId.value, action = "PUT"
@@ -853,7 +922,8 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
                 descripcion = "Cuota $numero/${plan.cantidadCuotas} — ${plan.descripcion}",
                 metodoPago = metodoPago,
                 planId = plan.id,
-                cuotaNumero = numero
+                cuotaNumero = numero,
+                evitable = plan.evitable          // hereda del plan, igual que `pagarCuotas`
             )
             val success = repository.saveMovement(
                 _spreadsheetId.value, movimiento, null, _folderId.value, action = "PUT"

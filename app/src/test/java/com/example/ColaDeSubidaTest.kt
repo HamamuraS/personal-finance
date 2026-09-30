@@ -1,6 +1,8 @@
 package com.example
 
 import com.example.data.Movement
+import com.example.data.PendingMovement
+import com.example.data.quitarSiNoCambio
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -69,5 +71,28 @@ class ColaDeSubidaTest {
         val filas = (1..20).map { mov("id-$it", monto = it.toDouble()) }
         assertEquals(filas.size, normalizar(filas).size)
         assertEquals(filas.sumOf { it.monto }, normalizar(filas).sumOf { it.monto }, 0.001)
+    }
+
+    // --- v7.7: edición mientras se sube ------------------------------------------------------
+
+    @Test
+    fun subirUnaVersionNoBorraLaEdicionQueLlegoMientrasTanto() {
+        // El drenado sube la versión original; mientras tanto el usuario la edita (mismo id). Al
+        // confirmar la subida, la edición tiene que quedar en la cola para el próximo drenado.
+        val original = mov("a", monto = 100.0)
+        val editada = original.copy(monto = 150.0)
+        val cola = listOf(PendingMovement(editada), PendingMovement(mov("b")))
+
+        val restante = quitarSiNoCambio(cola, subido = original)
+
+        assertEquals(listOf("a", "b"), restante.map { it.movement.id })
+        assertEquals(150.0, restante.first().movement.monto, 0.001)
+    }
+
+    @Test
+    fun subirLaVersionVigenteLaSacaDeLaCola() {
+        val m = mov("a")
+        val restante = quitarSiNoCambio(listOf(PendingMovement(m, intentos = 2), PendingMovement(mov("b"))), subido = m)
+        assertEquals(listOf("b"), restante.map { it.movement.id })
     }
 }

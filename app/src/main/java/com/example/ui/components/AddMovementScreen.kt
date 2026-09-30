@@ -38,6 +38,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.filled.AddAPhoto
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Collections
+import androidx.compose.material.icons.filled.Handshake
 import androidx.compose.material.icons.filled.VolunteerActivism
 import androidx.core.content.FileProvider
 import coil.compose.AsyncImage
@@ -160,6 +161,11 @@ fun AddMovementScreen(
     var hora by remember { mutableStateOf(savedDraft.hora.ifEmpty { horaActual }) }
     var ticketUri by remember { mutableStateOf(savedDraft.ticketUriString?.let { Uri.parse(it) }) }
     var tempPhotoUri by remember { mutableStateOf<Uri?>(null) }
+    var evitable by remember { mutableStateOf(savedDraft.evitable) }
+    // Edición (v7.7): el borrador trae el id y lo que hay que conservar del movimiento original.
+    // null = alta. "Cancelar" lo vuelve a null.
+    var edicion by remember { mutableStateOf(savedDraft.takeIf { it.editando }) }
+    val esPagoDeCuota = edicion?.planId?.isNotEmpty() == true
 
     val cameraPermissionState = rememberPermissionState(
         android.Manifest.permission.CAMERA
@@ -182,16 +188,45 @@ fun AddMovementScreen(
         }
     }
 
-    // "Perdonar deuda" es un submodo de Transferencia en la UI, pero un tipo propio en la planilla
-    // (`AccountingEngine.TIPO_CONDONACION`). Vive en `tipo`, así que el borrador lo arrastra solo.
+    // Los submodos de la pestaña "Transf." son tipos propios en la planilla: "Cambio" (cambio de
+    // dinero) y el "Saldo externo", que es una `Condonación` (perdonar, con saldo a favor) o una
+    // `Devolución` (pagar, con saldo en contra). Viven en `tipo`, así que el borrador los arrastra solo.
     val esCondonacion = tipo == AccountingEngine.TIPO_CONDONACION
+    val esDevolucion = tipo == AccountingEngine.TIPO_DEVOLUCION
+    val esSaldoExterno = esCondonacion || esDevolucion
+    val esCambio = tipo == AccountingEngine.TIPO_CAMBIO
+    val esModoTransferencia = tipo == "Transferencia" || esSaldoExterno || esCambio
     val otroSlot = usuarios.elOtro(currentUserProfile).slotKey
     val otroNombre = usuarios.nombreDe(otroSlot)
-    // Lo que el otro tiene tuyo hoy. El motor guarda un único neto con signo desde el punto de
-    // vista del slot primario, así que hay que leerlo del lado que corresponde al usuario activo.
-    val deudaAFavor = if (currentUserProfile == usuarios.primario.slotKey) balance.santiagoExterno
-                      else balance.rocioExterno
+    // Posición cruzada del usuario activo. Al editar se mira el mes SIN el movimiento editado: si no,
+    // un perdón que canceló toda la deuda se ve a sí mismo y no deja guardar (deuda cero).
+    val balanceRef = remember(balance, edicion) {
+        edicion?.editandoId?.let { viewModel.balanceSin(it) } ?: balance
+    }
+    // El motor guarda un único neto con signo desde el punto de vista del slot primario, así que hay
+    // que leerlo del lado que corresponde al usuario activo. + = el otro tiene plata tuya.
+    val miExterno = if (currentUserProfile == usuarios.primario.slotKey) balanceRef.santiagoExterno
+                    else balanceRef.rocioExterno
+    val deudaAFavor = maxOf(0.0, miExterno)
+    val deudaEnContra = maxOf(0.0, -miExterno)
     val hayDeudaAFavor = deudaAFavor >= 1.0
+    val hayDeudaEnContra = deudaEnContra >= 1.0
+    // Qué tipo corresponde al "Saldo externo" según de qué lado está la deuda.
+    val tipoSaldoExterno = if (hayDeudaEnContra) AccountingEngine.TIPO_DEVOLUCION else AccountingEngine.TIPO_CONDONACION
+    // Máximo que se puede perdonar / pagar en el modo actual (0 si no hay deuda de ese lado).
+    val topeSaldoExterno = when {
+        esCondonacion -> deudaAFavor
+        esDevolucion -> deudaEnContra
+        else -> 0.0
+    }
+
+    // Si la deuda cambia de lado con el formulario abierto (llegó un refresh), el "Saldo externo"
+    // se acomoda: perdonar solo tiene sentido con saldo a favor y pagar, con saldo en contra.
+    LaunchedEffect(esSaldoExterno, hayDeudaAFavor, hayDeudaEnContra) {
+        if (esSaldoExterno && (hayDeudaAFavor || hayDeudaEnContra) && tipo != tipoSaldoExterno) {
+            tipo = tipoSaldoExterno
+        }
+    }
 
     // Reset de categoría/propietario SOLO cuando el usuario cambia tipo/comunalidad (no en la primera
     // composición, para no pisar el borrador restaurado).
@@ -205,42 +240,56 @@ fun AddMovementScreen(
         categoria = categoriaDefault(tipo)
         propietario = when {
             tipo == "Gasto" && esComun -> "Ambos"
-            // En una condonación el propietario es el beneficiario: a quién se le perdona.
-            tipo == AccountingEngine.TIPO_CONDONACION -> otroSlot
+            // En el saldo externo el propietario es el otro: a quién se le perdona o se le paga.
+            tipo == AccountingEngine.TIPO_CONDONACION || tipo == AccountingEngine.TIPO_DEVOLUCION -> otroSlot
             else -> currentUserProfile
         }
     }
 
     // Volcar el estado al borrador del VM para que sobreviva el cambio de pestaña.
-    LaunchedEffect(monto, tipo, esComun, metodoPago, propietario, descripcion, categoria, fecha, ticketUri) {
+    LaunchedEffect(monto, tipo, esComun, metodoPago, propietario, descripcion, categoria, fecha, hora, ticketUri, evitable, edicion) {
+        val base = edicion ?: MovementDraft()
         viewModel.setMovementDraft(
-            MovementDraft(
+            base.copy(
                 monto = monto, tipo = tipo, esComun = esComun, metodoPago = metodoPago,
                 propietario = propietario, descripcion = descripcion, fecha = fecha, hora = hora,
-                categoria = categoria, ticketUriString = ticketUri?.toString()
+                categoria = categoria, ticketUriString = ticketUri?.toString(), evitable = evitable
             )
         )
     }
 
-    // Limpia el formulario (botón "Limpiar" del top bar).
+    // Limpia el formulario (botón "Limpiar" del top bar). En edición es "Cancelar": descarta los
+    // cambios y deja un alta vacía.
     fun limpiarFormulario() {
         monto = ""; tipo = "Gasto"; esComun = false; metodoPago = "Billetera Virtual"
         descripcion = ""; ticketUri = null; tempPhotoUri = null
         fecha = hoyIso; hora = horaActual
         propietario = currentUserProfile
         categoria = categoriaDefault("Gasto")
+        evitable = false
+        edicion = null
         viewModel.clearMovementDraft()
     }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Registrar Movimiento", fontWeight = FontWeight.Bold, fontSize = 20.sp) },
+                title = {
+                    Text(
+                        if (edicion != null) "Editar Movimiento" else "Registrar Movimiento",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 20.sp
+                    )
+                },
                 actions = {
+                    // Evitable / no evitable: solo para gastos, a la izquierda de "Limpiar".
+                    if (tipo == "Gasto") {
+                        EvitableToggle(evitable = evitable, onToggle = { evitable = !evitable })
+                    }
                     TextButton(onClick = { limpiarFormulario() }) {
                         Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Limpiar", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        Text(if (edicion != null) "Cancelar" else "Limpiar", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -342,12 +391,14 @@ fun AddMovementScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     listOf("Gasto", "Aporte", "Transferencia").forEach { item ->
-                        // La condonación se elige en el submodo de abajo, no acá: mientras se carga
-                        // una, la pestaña "Transf." se queda marcada y volver a tocarla no la anula.
-                        val isSelected = tipo == item || (item == "Transferencia" && esCondonacion)
+                        // Los submodos (cambio, saldo externo) se eligen abajo, no acá: mientras se
+                        // carga uno, la pestaña "Transf." se queda marcada y volver a tocarla no lo anula.
+                        val isSelected = tipo == item || (item == "Transferencia" && esModoTransferencia)
                         val label = if (item == "Transferencia") "Transf." else item
                         Button(
                             onClick = { if (!isSelected) tipo = item },
+                            // Un pago de cuota es siempre un gasto: cambiarle el tipo rompería el vínculo.
+                            enabled = !esPagoDeCuota || item == "Gasto",
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
                                 contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
@@ -364,9 +415,27 @@ fun AddMovementScreen(
                 }
             }
 
-            // Submodo de la transferencia: mover plata (lo de siempre) o perdonar deuda. Se guarda
+            // Avisos de la edición.
+            if (edicion != null) {
+                val mesActual = remember { SimpleDateFormat("yyyy-MM", Locale.US).format(Date()) }
+                val avisos = buildList {
+                    if (esPagoDeCuota) add("Es el pago de la cuota ${edicion?.cuotaNumero}: el tipo queda fijo en Gasto.")
+                    val original = edicion?.propietarioOriginal.orEmpty()
+                    if (tipo == "Aporte" && original.isNotBlank() && !original.equals(currentUserProfile, ignoreCase = true)) {
+                        add("Este aporte estaba a nombre de ${usuarios.nombreDe(original)}: al guardarlo pasa a ser tuyo.")
+                    }
+                    if (fecha.take(7) < mesActual) {
+                        add("La fecha cae en un mes cerrado: después de guardar, recalculá el saldo inicial en Ajustes.")
+                    }
+                }
+                avisos.forEach { aviso ->
+                    Text(text = aviso, fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
+                }
+            }
+
+            // Submodo de la transferencia: mover plata, cambio de dinero o saldo externo. Se guarda
             // directamente en `tipo`, así que no hace falta un campo nuevo en el borrador.
-            if (tipo == "Transferencia" || esCondonacion) {
+            if (esModoTransferencia) {
                 Column {
                     Text(
                         text = "¿Qué estás haciendo?",
@@ -381,25 +450,75 @@ fun AddMovementScreen(
                     ) {
                         ModoTransferenciaBoton(
                             titulo = "Mover plata",
-                            bajada = "Sale de tu cuenta",
-                            seleccionado = !esCondonacion,
+                            bajada = "No toca la deuda",
+                            seleccionado = tipo == "Transferencia",
                             modifier = Modifier.weight(1f),
                             onClick = { tipo = "Transferencia" }
                         )
                         ModoTransferenciaBoton(
-                            titulo = "Perdonar deuda",
-                            bajada = "No mueve plata",
-                            seleccionado = esCondonacion,
+                            titulo = "Cambio",
+                            bajada = "💵 ↔ 💳",
+                            seleccionado = esCambio,
                             modifier = Modifier.weight(1f),
-                            onClick = { tipo = AccountingEngine.TIPO_CONDONACION }
+                            onClick = { tipo = AccountingEngine.TIPO_CAMBIO }
+                        )
+                        ModoTransferenciaBoton(
+                            titulo = "Saldo externo",
+                            bajada = when {
+                                hayDeudaAFavor -> "Perdonar deuda"
+                                hayDeudaEnContra -> "Pagar deuda"
+                                else -> "Sin deuda"
+                            },
+                            seleccionado = esSaldoExterno,
+                            modifier = Modifier.weight(1f),
+                            onClick = { if (!esSaldoExterno) tipo = tipoSaldoExterno }
                         )
                     }
                 }
             }
 
-            // Contexto del perdón: cuánto tiene el otro que es tuyo, con el atajo para perdonarlo
-            // todo (el caso de uso real) sin perder la opción de perdonar solo una parte.
-            if (esCondonacion) {
+            // Cambio de dinero: qué entrega quien lo carga. Se guarda en `metodoPago` (lo que sale de
+            // tus manos); lo que recibís es el otro medio.
+            if (esCambio) {
+                Column {
+                    Text(
+                        text = "¿Qué le das a $otroNombre?",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        ModoTransferenciaBoton(
+                            titulo = "💵 Efectivo",
+                            bajada = "Recibís una transferencia",
+                            seleccionado = metodoPago == "Efectivo",
+                            modifier = Modifier.weight(1f),
+                            onClick = { metodoPago = "Efectivo" }
+                        )
+                        ModoTransferenciaBoton(
+                            titulo = "💳 Transferencia",
+                            bajada = "Recibís efectivo",
+                            seleccionado = metodoPago != "Efectivo",
+                            modifier = Modifier.weight(1f),
+                            onClick = { metodoPago = "Billetera Virtual" }
+                        )
+                    }
+                    Text(
+                        text = "Nadie gana ni pierde plata y la deuda no cambia: solo cambia cómo la tiene cada uno.",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                }
+            }
+
+            // Contexto del saldo externo: cuánto le debe uno al otro, con el atajo para saldarlo todo
+            // (el caso de uso real) sin perder la opción de hacerlo solo en parte.
+            if (esSaldoExterno) {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
@@ -422,7 +541,7 @@ fun AddMovementScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
-                                imageVector = Icons.Default.VolunteerActivism,
+                                imageVector = if (esDevolucion) Icons.Default.Handshake else Icons.Default.VolunteerActivism,
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.tertiary,
                                 modifier = Modifier.size(20.dp)
@@ -430,41 +549,48 @@ fun AddMovementScreen(
                         }
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = if (hayDeudaAFavor) "$otroNombre tiene ${formatMoney.format(deudaAFavor)} tuyos"
-                                else "No hay deuda a tu favor",
+                                text = when {
+                                    esCondonacion && hayDeudaAFavor -> "$otroNombre tiene ${formatMoney.format(deudaAFavor)} tuyos"
+                                    esDevolucion && hayDeudaEnContra -> "Tenés ${formatMoney.format(deudaEnContra)} de $otroNombre"
+                                    else -> "No hay saldo externo entre ustedes"
+                                },
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = if (hayDeudaAFavor) "No se mueve plata: deja de debértelos."
-                                else "$otroNombre no tiene plata tuya para perdonar.",
+                                text = when {
+                                    esCondonacion && hayDeudaAFavor -> "Perdonar: no se mueve plata, deja de debértelos."
+                                    esDevolucion && hayDeudaEnContra -> "Pagar: la plata sale de tu cuenta y salda la deuda."
+                                    else -> "Nadie tiene plata del otro para perdonar o devolver."
+                                },
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                             )
                         }
-                        if (hayDeudaAFavor) {
-                            TextButton(onClick = { monto = montoParaInput(deudaAFavor) }) {
+                        if (topeSaldoExterno >= 1.0) {
+                            TextButton(onClick = { monto = montoParaInput(topeSaldoExterno) }) {
                                 Text("Todo", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                             }
                         }
                     }
                 }
 
-                // Perdonar de más no puede generar deuda en el sentido contrario, así que se capa.
-                val excedido = hayDeudaAFavor && (monto.toDoubleOrNull() ?: 0.0) > deudaAFavor
+                // Perdonar o pagar de más no puede generar deuda en el sentido contrario: se capa.
+                val excedido = topeSaldoExterno >= 1.0 && (monto.toDoubleOrNull() ?: 0.0) > topeSaldoExterno
                 if (excedido) {
                     Text(
-                        text = "Es más de lo que te debe: se van a perdonar ${formatMoney.format(deudaAFavor)}.",
+                        text = if (esCondonacion) "Es más de lo que te debe: se van a perdonar ${formatMoney.format(topeSaldoExterno)}."
+                        else "Es más de lo que debés: se van a pagar ${formatMoney.format(topeSaldoExterno)}.",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.error
                     )
                 }
             }
 
-            // Método de Pago (Efectivo o Billetera Virtual). Una condonación no mueve plata de una
-            // cuenta a la otra, así que no hay medio de pago que elegir.
-            if (!esCondonacion) Column {
+            // Método de Pago (Efectivo o Billetera Virtual). Un perdón no mueve plata de una cuenta a
+            // la otra, y en el cambio de dinero el medio se elige arriba ("¿Qué le das?").
+            if (!esCondonacion && !esCambio) Column {
                 Text(
                     text = "Método de Pago",
                     fontWeight = FontWeight.Bold,
@@ -563,12 +689,12 @@ fun AddMovementScreen(
                 }
             }
 
-            // Propiedad del Dinero (Solo si no es Común). En una condonación tampoco hay nada que
-            // elegir: el propietario es el beneficiario (el otro) y lo fija el reset de tipo.
-            if (!esCondonacion && !(tipo == "Gasto" && esComun)) {
+            // Propiedad del Dinero: solo en transferencias ("mover plata") y gastos personales. Un
+            // aporte es siempre de quien lo carga (v7.7); en el saldo externo el propietario es el
+            // otro y en el cambio de dinero nadie cambia de dueño, así que no hay nada que elegir.
+            if (tipo == "Transferencia" || (tipo == "Gasto" && !esComun)) {
                 Column {
                     val label = when(tipo) {
-                        "Aporte" -> "¿En qué cuenta entra?"
                         "Transferencia" -> "¿La plata sigue siendo de $miNombre?"
                         else -> "¿Quién debe pagar realmente?"
                     }
@@ -616,7 +742,6 @@ fun AddMovementScreen(
                         ) {
                             val text = when(tipo) {
                                 "Transferencia" -> "No, es de $otherNombre"
-                                "Aporte" -> "De $otherNombre"
                                 else -> "De $otherNombre"
                             }
                             Text(text, fontSize = 12.sp, fontWeight = FontWeight.Bold)
@@ -625,8 +750,10 @@ fun AddMovementScreen(
                 }
             }
 
-            // Categoría (Chips seleccionables dinámicos)
-            Column {
+            // Categoría (Chips seleccionables dinámicos). El saldo externo y el cambio de dinero no
+            // tienen nada que elegir: el tipo ya dice qué es, y la categoría queda en la default
+            // ("Perdón de deuda" / "Pago de deuda" / "Cambio de dinero") por el reset de tipo.
+            if (!esSaldoExterno && !esCambio) Column {
                 Text(
                     text = "Categoría",
                     fontWeight = FontWeight.Bold,
@@ -864,10 +991,16 @@ fun AddMovementScreen(
                 onClick = {
                     val ingresado = monto.toDoubleOrNull() ?: 0.0
                     // El motor también clampea, pero se capa acá para que la planilla guarde el
-                    // monto que realmente se aplicó y no uno mayor que nunca llegó a perdonarse.
-                    val doubleMonto = if (esCondonacion) minOf(ingresado, deudaAFavor) else ingresado
+                    // monto que realmente se aplicó y no uno mayor que nunca llegó a perdonarse/pagarse.
+                    val doubleMonto = if (esSaldoExterno) minOf(ingresado, topeSaldoExterno) else ingresado
                     if (doubleMonto <= 0.0) {
                         return@Button
+                    }
+                    val propietarioFinal = when {
+                        // Aportes y cambios son siempre de quien los carga.
+                        tipo == "Aporte" || esCambio -> currentUserProfile
+                        esSaldoExterno -> otroSlot
+                        else -> propietario
                     }
 
                     // El alta es asincrónica: se encola, aparece al instante en Inicio como fila
@@ -881,10 +1014,12 @@ fun AddMovementScreen(
                         categoria = categoria,
                         responsable = responsable,
                         esComun = if (tipo == "Gasto") esComun else false,
-                        propietario = propietario,
+                        propietario = propietarioFinal,
                         descripcion = descripcion,
                         metodoPago = metodoPago,
                         ticketUri = ticketUri,
+                        evitable = evitable,
+                        edicion = edicion,
                         onEncolado = {
                             limpiarFormulario()
                             onSuccess()
@@ -892,7 +1027,7 @@ fun AddMovementScreen(
                     )
                 },
                 enabled = monto.isNotEmpty() && monto.toDoubleOrNull() != null &&
-                        (monto.toDoubleOrNull() ?: 0.0) > 0 && (!esCondonacion || hayDeudaAFavor),
+                        (monto.toDoubleOrNull() ?: 0.0) > 0 && (!esSaldoExterno || topeSaldoExterno >= 1.0),
                 shape = RoundedCornerShape(16.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.primary
@@ -903,9 +1038,36 @@ fun AddMovementScreen(
             ) {
                 Icon(Icons.Default.Check, contentDescription = null)
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Registrar en " + if (useLocalDemo) "Base Local" else "Nube", fontWeight = FontWeight.ExtraBold, fontSize = 15.sp)
+                Text(
+                    if (edicion != null) "Guardar cambios"
+                    else "Registrar en " + if (useLocalDemo) "Base Local" else "Nube",
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 15.sp
+                )
             }
         }
+    }
+}
+
+/**
+ * Switch de gasto evitable / no evitable del TopAppBar. Emoji + palabra para que no haya que adivinar
+ * qué significa cada estado: 🍞 Necesario (default) ↔ 🍰 Evitable.
+ */
+@Composable
+internal fun EvitableToggle(evitable: Boolean, onToggle: () -> Unit) {
+    val color = if (evitable) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+    TextButton(
+        onClick = onToggle,
+        colors = ButtonDefaults.textButtonColors(
+            containerColor = color.copy(alpha = 0.1f),
+            contentColor = color
+        ),
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+        modifier = Modifier.padding(end = 4.dp)
+    ) {
+        Text(if (evitable) "🍰" else "🍞", fontSize = 15.sp)
+        Spacer(modifier = Modifier.width(4.dp))
+        Text(if (evitable) "Evitable" else "Necesario", fontWeight = FontWeight.Bold, fontSize = 12.sp)
     }
 }
 

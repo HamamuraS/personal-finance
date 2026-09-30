@@ -6,7 +6,7 @@ data class Movement(
     val id: String = UUID.randomUUID().toString(),
     val fecha: String,
     val monto: Double,
-    val tipo: String, // "Aporte", "Gasto", "Transferencia", "Condonación", "Apertura"
+    val tipo: String, // "Aporte", "Gasto", "Transferencia", "Condonación", "Devolución", "Cambio", "Apertura"
     val categoria: String,
     val responsable: String, // "Santiago", "Rocío"
     val esComun: Boolean, // Si es compartido o personal (para gastos)
@@ -17,7 +17,17 @@ data class Movement(
     val eliminado: Boolean = false, // Columna K
     // --- Vínculo con el módulo de cuotas (retrocompatible; vacío/0 en filas viejas) ---
     val planId: String = "",    // Columna M (índice 12): plan de cuotas que este gasto paga
-    val cuotaNumero: Int = 0    // Columna N (índice 13): número de cuota (1..N) que paga
+    val cuotaNumero: Int = 0,   // Columna N (índice 13): número de cuota (1..N) que paga
+    /**
+     * Columna O (índice 14): gasto evitable (gusto, lujo, opcional) vs. no evitable (mínimo
+     * indispensable). Solo tiene sentido en gastos. Vacío en la planilla = **no evitable**.
+     *
+     * Se modela como `evitable` y no como `indispensable` a propósito: si algún deserializador ignora
+     * los defaults de Kotlin (Gson lo hace), un campo ausente queda en `false`. Así el JSON de un script
+     * viejo, la cola de pendientes, el cache y la base demo de versiones anteriores se leen como no
+     * evitables, que es el default pedido.
+     */
+    val evitable: Boolean = false
 ) {
     // Convierte el movimiento en una fila para Google Sheets
     fun toRowValues(): List<String> {
@@ -35,7 +45,8 @@ data class Movement(
             eliminado.toString(),
             propietario,
             planId,
-            cuotaNumero.toString()
+            cuotaNumero.toString(),
+            evitable.toString()
         )
     }
 
@@ -58,7 +69,8 @@ data class Movement(
                     eliminado = row.getOrNull(10)?.toBooleanStrictOrNull() ?: false,
                     propietario = row.getOrNull(11) ?: row.getOrNull(5) ?: "Santiago",
                     planId = row.getOrNull(12) ?: "",
-                    cuotaNumero = row.getOrNull(13)?.toIntOrNull() ?: 0
+                    cuotaNumero = row.getOrNull(13)?.toIntOrNull() ?: 0,
+                    evitable = row.getOrNull(14)?.trim()?.equals("true", ignoreCase = true) ?: false
                 )
             } catch (e: Exception) {
                 null

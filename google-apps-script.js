@@ -1,8 +1,20 @@
 /**
  * Script de Google Apps Script para la sincronización de la App de Finanzas Personales.
  *
- * Versión: 7.2 (Saldo inicial materializado por hoja)
+ * Versión: 7.7 (Cambio de dinero, pago de deuda, gastos evitables, edición de movimientos)
  * @description Este script requiere acceso a Google Drive para guardar los tickets.
+ *
+ * Novedades v7.7:
+ *  - Tipos nuevos de movimiento en `aplicarMovimientos` (port de `AccountingEngine.compute`):
+ *    "Cambio" (canje efectivo <-> transferencia entre los dos, solo cruza buckets) y "Devolución"
+ *    (pago de deuda: mueve plata y cancela propiedad cruzada).
+ *  - Una "Transferencia" que cambia de dueño YA NO salda deuda desde CORTE_TRANSFERENCIA_SIN_DEVOLUCION;
+ *    las anteriores conservan la regla vieja para no alterar aperturas ya calculadas.
+ *  - Columna O "Evitable" en las hojas de movimientos y columna L "Evitable" en "Planes". Vacío =
+ *    no evitable.
+ *  - El PUT de movimientos busca el id en TODAS las hojas: si la edición cambió la fecha de mes,
+ *    borra la fila vieja y escribe en la hoja del mes nuevo (antes quedaba duplicado).
+ *  - renombrarSueldoAIngreso(): opcional, para correr a mano (la app ya lee "Sueldo" como "Ingreso").
  *
  * Novedades v7.2:
  *  - Filas de apertura por hoja (tipo "Apertura", categoría "Saldo inicial"): cada mes lleva su
@@ -50,6 +62,72 @@ function jsonOutput(obj) {
 /** True si el valor de una celda "eliminado" representa verdadero. */
 function isEliminado(v) {
   return v === true || v === 'true' || v === 'VERDADERO';
+}
+
+/** True si una celda booleana (Es Común, Evitable) representa verdadero. Vacío = false. */
+function esVerdadero(v) {
+  return v === true || v === 'true' || v === 'TRUE' || v === 'VERDADERO';
+}
+
+/** Encabezados de una hoja de movimientos (A..O). */
+const MOVEMENT_HEADERS = ["ID", "Fecha", "Monto", "Tipo", "Categoría", "Responsable", "Es Común", "Descripción", "Metodo Pago", "Ticket URL", "Eliminado", "Propietario", "Plan ID", "Cuota N°", "Evitable"];
+const MOVEMENT_COLS = MOVEMENT_HEADERS.length;
+
+/** Devuelve la hoja de movimientos [nombre], creándola con sus encabezados si no existe. */
+function hojaDeMovimientos(ss, nombre) {
+  let sheet = ss.getSheetByName(nombre);
+  if (!sheet) {
+    sheet = ss.insertSheet(nombre);
+    sheet.appendRow(MOVEMENT_HEADERS);
+    sheet.getRange(1, 1, 1, MOVEMENT_COLS).setFontWeight("bold").setBackground("#e2e8f0");
+    sheet.setFrozenRows(1);
+  }
+  asegurarColumnaEvitable(sheet);
+  return sheet;
+}
+
+/** Escribe el encabezado de la columna O en hojas de mes anteriores a la v7.7. */
+function asegurarColumnaEvitable(sheet) {
+  if (sheet.getMaxColumns() < MOVEMENT_COLS) {
+    sheet.insertColumnsAfter(sheet.getMaxColumns(), MOVEMENT_COLS - sheet.getMaxColumns());
+  }
+  const celda = sheet.getRange(1, MOVEMENT_COLS);
+  if (!celda.getValue()) {
+    celda.setValue("Evitable").setFontWeight("bold").setBackground("#e2e8f0");
+  }
+}
+
+/** Nombre de la hoja de mes donde va un movimiento con fecha "yyyy-MM-dd…" ("Movimientos" si no parsea). */
+function hojaDeFecha(fecha) {
+  const dateParts = String(fecha || "").split("-");
+  if (dateParts.length >= 2) {
+    const monthNum = parseInt(dateParts[1], 10) - 1;
+    if (monthNum >= 0 && monthNum <= 11) return monthNames[monthNum] + " " + dateParts[0];
+  }
+  return "Movimientos";
+}
+
+/**
+ * Busca un movimiento por id en todas las hojas de movimientos, empezando por [preferida] (la del mes
+ * de la fecha, donde está casi siempre: todas las altas de la cola son PUT y no conviene leer todas
+ * las hojas en cada una). null si no existe.
+ */
+function buscarMovimiento(ss, id, preferida) {
+  const hojas = ss.getSheets().filter(function (sh) {
+    return sh.getName() !== PLANS_SHEET && sh.getName() !== USERS_SHEET;
+  });
+  hojas.sort(function (a, b) { return (a.getName() === preferida.getName() ? 0 : 1) - (b.getName() === preferida.getName() ? 0 : 1); });
+  for (let h = 0; h < hojas.length; h++) {
+    const sheet = hojas[h];
+    const ids = sheet.getRange(1, 1, Math.max(sheet.getLastRow(), 1), 1).getValues();
+    for (let i = 1; i < ids.length; i++) {
+      if (ids[i][0] == id) {
+        const fila = sheet.getRange(i + 1, 1, 1, Math.max(sheet.getLastColumn(), 1)).getValues()[0];
+        return { sheet: sheet, fila: i + 1, valores: fila };
+      }
+    }
+  }
+  return null;
 }
 
 /** Devuelve "yyyy-MM". Si Sheets guardó la celda como Date, la formatea; si no, la pasa a string. */
@@ -110,7 +188,8 @@ function doGet(e) {
           eliminado: false,
           propietario: row[11] ? row[11].toString() : (row[5] ? row[5].toString() : ""),
           planId: row[12] ? row[12].toString() : "",
-          cuotaNumero: Number(row[13]) || 0
+          cuotaNumero: Number(row[13]) || 0,
+          evitable: esVerdadero(row[14])
         };
       }).filter(r => r !== null);
       allData = allData.concat(rows);
@@ -184,7 +263,8 @@ function getPlans(e) {
         categoria: row[7] ? row[7].toString() : "",
         tarjeta: row[8] ? row[8].toString() : "",
         eliminado: false,
-        cuotasPagadasPrevias: previas
+        cuotasPagadasPrevias: previas,
+        evitable: esVerdadero(row.length > 11 ? row[11] : "")
       });
     }
   }
@@ -286,55 +366,49 @@ function handlePost(e) {
         }
       }
 
-      const dateParts = mov.fecha.split("-");
-      let sheetName = "Movimientos";
-      if (dateParts.length >= 2) {
-        const year = dateParts[0];
-        const monthNum = parseInt(dateParts[1], 10) - 1;
-        if (monthNum >= 0 && monthNum <= 11) {
-            sheetName = monthNames[monthNum] + " " + year;
+      const ss = SpreadsheetApp.getActiveSpreadsheet();
+      const sheet = hojaDeMovimientos(ss, hojaDeFecha(mov.fecha));
+
+      const filaDe = function (ticketUrlAnterior) {
+        return [
+          mov.id,
+          mov.fecha,
+          mov.monto,
+          mov.tipo,
+          mov.categoria,
+          mov.responsable,
+          mov.esComun,
+          mov.descripcion,
+          mov.metodoPago || "Billetera Virtual",
+          mov.ticketUrl || ticketUrlAnterior || "",
+          false, // Columna Eliminado
+          mov.propietario || mov.responsable,
+          mov.planId || "",          // Columna M
+          mov.cuotaNumero || 0,      // Columna N
+          mov.evitable === true      // Columna O
+        ];
+      };
+
+      // PUT = upsert por id. Se busca en TODAS las hojas y no solo en la del mes de la fecha: una
+      // edición puede haber cambiado la fecha de mes, y buscando solo en la hoja nueva la fila vieja
+      // quedaba viva y el movimiento contaba dos veces.
+      if (action === 'PUT') {
+        const existente = buscarMovimiento(ss, mov.id, sheet);
+        if (existente) {
+          const ticketAnterior = existente.valores.length > 9 ? existente.valores[9] : "";
+          if (existente.sheet.getName() === sheet.getName()) {
+            existente.sheet.getRange(existente.fila, 1, 1, MOVEMENT_COLS).setValues([filaDe(ticketAnterior)]);
+            return jsonOutput({ status: "SUCCESS", message: "Actualizado OK" });
+          }
+          // Cambió de mes: se borra físicamente la fila vieja (una baja lógica dejaría dos filas
+          // con el mismo id, y el listado de la app usa el id como clave) y se escribe en la nueva.
+          existente.sheet.deleteRow(existente.fila);
+          sheet.appendRow(filaDe(ticketAnterior));
+          return jsonOutput({ status: "SUCCESS", message: "Movido de " + existente.sheet.getName() + " a " + sheet.getName() });
         }
       }
 
-      const ss = SpreadsheetApp.getActiveSpreadsheet();
-      let sheet = ss.getSheetByName(sheetName);
-
-      if (!sheet) {
-        sheet = ss.insertSheet(sheetName);
-        sheet.appendRow(["ID", "Fecha", "Monto", "Tipo", "Categoría", "Responsable", "Es Común", "Descripción", "Metodo Pago", "Ticket URL", "Eliminado", "Propietario", "Plan ID", "Cuota N°"]);
-        sheet.getRange(1, 1, 1, 14).setFontWeight("bold").setBackground("#e2e8f0");
-        sheet.setFrozenRows(1);
-      }
-
-      // Si es un PUT, buscar por ID y reemplazar
-      if (action === 'PUT') {
-          const data = sheet.getDataRange().getValues();
-          for (let i = 1; i < data.length; i++) {
-              if (data[i][0] == mov.id) {
-                  sheet.getRange(i + 1, 1, 1, 14).setValues([[
-                      mov.id, mov.fecha, mov.monto, mov.tipo, mov.categoria, mov.responsable, mov.esComun, mov.descripcion, mov.metodoPago, mov.ticketUrl || data[i][9], false, mov.propietario || mov.responsable, mov.planId || "", mov.cuotaNumero || 0
-                  ]]);
-                  return jsonOutput({ status: "SUCCESS", message: "Actualizado OK" });
-              }
-          }
-      }
-
-      sheet.appendRow([
-        mov.id,
-        mov.fecha,
-        mov.monto,
-        mov.tipo,
-        mov.categoria,
-        mov.responsable,
-        mov.esComun,
-        mov.descripcion,
-        mov.metodoPago || "Billetera Virtual",
-        mov.ticketUrl || "",
-        false, // Columna Eliminado
-        mov.propietario || mov.responsable,
-        mov.planId || "",       // Columna M
-        mov.cuotaNumero || 0    // Columna N
-      ]);
+      sheet.appendRow(filaDe(""));
 
       return jsonOutput({ status: "SUCCESS", message: imgStatus });
     }
@@ -357,8 +431,8 @@ function handlePlanUpsert(action, plan) {
   let sheet = ss.getSheetByName(PLANS_SHEET);
   if (!sheet) {
     sheet = ss.insertSheet(PLANS_SHEET);
-    sheet.appendRow(["ID", "Fecha Creación", "Descripción", "Monto Por Cuota", "Cantidad Cuotas", "Primera Cuota", "Propietario", "Categoría", "Tarjeta", "Eliminado", COLUMNA_PREVIAS]);
-    sheet.getRange(1, 1, 1, 11).setFontWeight("bold").setBackground("#e2e8f0");
+    sheet.appendRow(["ID", "Fecha Creación", "Descripción", "Monto Por Cuota", "Cantidad Cuotas", "Primera Cuota", "Propietario", "Categoría", "Tarjeta", "Eliminado", COLUMNA_PREVIAS, COLUMNA_EVITABLE_PLAN]);
+    sheet.getRange(1, 1, 1, 12).setFontWeight("bold").setBackground("#e2e8f0");
     sheet.setFrozenRows(1);
     // Forzar texto en las columnas de fecha para preservar el formato "yyyy-MM"/"yyyy-MM-dd HH:mm".
     sheet.getRange("B:B").setNumberFormat("@");
@@ -366,6 +440,7 @@ function handlePlanUpsert(action, plan) {
   }
 
   asegurarColumnaPrevias(sheet);
+  asegurarColumnaEvitablePlan(sheet);
   const delPayload = parsePrevias(plan.cuotasPagadasPrevias);
 
   const rowValues = function (previas) {
@@ -380,7 +455,8 @@ function handlePlanUpsert(action, plan) {
       plan.categoria,
       plan.tarjeta || "",
       false,
-      formatPrevias(previas)
+      formatPrevias(previas),
+      plan.evitable === true
     ];
   };
 
@@ -392,7 +468,7 @@ function handlePlanUpsert(action, plan) {
         // cacheado de antes del corte mandaría una lista más corta y, reemplazando, borraría el
         // registro de cuotas pagadas cuyos movimientos ya no existen.
         const previas = unirPrevias(parsePrevias(data[i].length > 10 ? data[i][10] : ""), delPayload);
-        sheet.getRange(i + 1, 1, 1, 11).setValues([rowValues(previas)]);
+        sheet.getRange(i + 1, 1, 1, 12).setValues([rowValues(previas)]);
         return jsonOutput({ status: "SUCCESS", message: "Plan actualizado OK" });
       }
     }
@@ -405,6 +481,18 @@ function handlePlanUpsert(action, plan) {
 
 /** Encabezado de la columna K de la hoja "Planes" (snapshot de cuotas del corte de mes). */
 const COLUMNA_PREVIAS = "Cuotas Pagadas Previas";
+
+/** Encabezado de la columna L de la hoja "Planes" (compra evitable; vacío = no evitable). */
+const COLUMNA_EVITABLE_PLAN = "Evitable";
+
+/** Escribe el encabezado de la columna L si la hoja "Planes" es anterior a la v7.7. */
+function asegurarColumnaEvitablePlan(sheet) {
+  if (sheet.getMaxColumns() < 12) sheet.insertColumnsAfter(sheet.getMaxColumns(), 12 - sheet.getMaxColumns());
+  const celda = sheet.getRange(1, 12);
+  if (!celda.getValue()) {
+    celda.setValue(COLUMNA_EVITABLE_PLAN).setFontWeight("bold").setBackground("#e2e8f0");
+  }
+}
 
 /** "1,2,3" (o un array) -> [1,2,3]. Tolera vacío, espacios y basura. */
 function parsePrevias(v) {
@@ -628,6 +716,14 @@ const AMBOS = "Ambos";
 const EFECTIVO = "Efectivo";
 const VIRTUAL = "Billetera Virtual";
 
+/**
+ * Desde esta fecha una "Transferencia" que cambia de dueño es regalo completo y NO salda la deuda del
+ * receptor (eso ahora es una "Devolución" explícita). Las anteriores conservan la regla vieja porque
+ * ya saldaron deuda en la planilla (julio y agosto 2026). Espejo de
+ * `AccountingEngine.CORTE_TRANSFERENCIA_SIN_DEVOLUCION`: si se cambia, cambiarlo en los dos lados.
+ */
+const CORTE_TRANSFERENCIA_SIN_DEVOLUCION = "2026-09-01";
+
 function esFilaApertura(tipo) {
   return String(tipo || "").toLowerCase() === TIPO_APERTURA.toLowerCase();
 }
@@ -675,7 +771,8 @@ function leerTodosLosMovimientos() {
         metodoPago: row[8] ? row[8].toString() : VIRTUAL,
         propietario: row[11] ? row[11].toString() : (row[5] ? row[5].toString() : ""),
         planId: row[12] ? row[12].toString() : "",
-        cuotaNumero: Number(row[13]) || 0
+        cuotaNumero: Number(row[13]) || 0,
+        evitable: esVerdadero(row[14])
       });
     }
   });
@@ -727,17 +824,42 @@ function aplicarMovimientos(movs, estado) {
         break;
       }
 
-      case "transferencia":
+      case "transferencia": {
+        // Antes del corte, la que cambia de dueño primero saldaba deuda; después es regalo puro.
+        const saldaPrimero = String(m.fecha) < CORTE_TRANSFERENCIA_SIN_DEVOLUCION;
         if (respS) {
           if (efec) { sEfec -= monto; rEfec += monto; } else { sVirt -= monto; rVirt += monto; }
           if (propS) netSR += monto;
-          else if (propR) netSR += Math.min(monto, Math.max(0, -netSR)); // devolución
+          else if (propR && saldaPrimero) netSR += Math.min(monto, Math.max(0, -netSR)); // devolución
         } else {
           if (efec) { rEfec -= monto; sEfec += monto; } else { rVirt -= monto; sVirt += monto; }
           if (propR) netSR -= monto;
-          else if (propS) netSR -= Math.min(monto, Math.max(0, netSR)); // devolución
+          else if (propS && saldaPrimero) netSR -= Math.min(monto, Math.max(0, netSR)); // devolución
         }
         break;
+      }
+
+      // Pago de deuda: la plata sale de la cuenta del responsable y cancela lo que el otro tenía
+      // estacionado en ella (clampeado; el excedente es regalo y no toca la propiedad cruzada).
+      case "devolución":
+      case "devolucion":
+        if (respS) {
+          if (efec) { sEfec -= monto; rEfec += monto; } else { sVirt -= monto; rVirt += monto; }
+          netSR += Math.min(monto, Math.max(0, -netSR));
+        } else {
+          if (efec) { rEfec -= monto; sEfec += monto; } else { rVirt -= monto; sVirt += monto; }
+          netSR -= Math.min(monto, Math.max(0, netSR));
+        }
+        break;
+
+      // Cambio de dinero: el responsable entrega el medio de `metodoPago` y recibe el otro. Se cruzan
+      // los buckets de cada uno; la propiedad cruzada no cambia.
+      case "cambio": {
+        const entregaS = respS ? monto : -monto;
+        if (efec) { sEfec -= entregaS; sVirt += entregaS; rEfec += entregaS; rVirt -= entregaS; }
+        else { sVirt -= entregaS; sEfec += entregaS; rVirt += entregaS; rEfec -= entregaS; }
+        break;
+      }
 
       // Perdón de deuda: el responsable (acreedor) renuncia a lo que el otro tiene de él. NO toca
       // ningún bucket físico, solo cancela propiedad cruzada; clampeado para que perdonar de más no
@@ -1051,13 +1173,7 @@ function escribirAperturaDeMes(mes, estado) {
   if (!nombre) { Logger.log("Mes inválido, se omite: " + mes); return 0; }
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  let sheet = ss.getSheetByName(nombre);
-  if (!sheet) {
-    sheet = ss.insertSheet(nombre);
-    sheet.appendRow(["ID", "Fecha", "Monto", "Tipo", "Categoría", "Responsable", "Es Común", "Descripción", "Metodo Pago", "Ticket URL", "Eliminado", "Propietario", "Plan ID", "Cuota N°"]);
-    sheet.getRange(1, 1, 1, 14).setFontWeight("bold").setBackground("#e2e8f0");
-    sheet.setFrozenRows(1);
-  }
+  const sheet = hojaDeMovimientos(ss, nombre);
 
   // Índice id -> nº de fila, para pisar en vez de duplicar.
   const data = sheet.getDataRange().getValues();
@@ -1116,4 +1232,28 @@ function borrarLegacySaldoInicial() {
     }
   });
   Logger.log("Filas legacy de 'Saldo inicial' borradas: " + borradas);
+}
+
+/**
+ * OPCIONAL (v7.7) - Renombra la categoría "Sueldo" a "Ingreso" en los aportes de todas las hojas.
+ * No hace falta: la app ya trata "Sueldo" como "Ingreso". Es solo para dejar la planilla prolija.
+ * Idempotente.
+ */
+function renombrarSueldoAIngreso() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let cambiadas = 0;
+  ss.getSheets().forEach(function (sheet) {
+    const nombre = sheet.getName();
+    if (nombre === PLANS_SHEET || nombre === USERS_SHEET) return;
+    const data = sheet.getDataRange().getValues();
+    for (let i = 1; i < data.length; i++) {
+      const tipo = String(data[i][3] || "").toLowerCase();
+      const categoria = String(data[i][4] || "").trim().toLowerCase();
+      if (tipo === "aporte" && categoria === "sueldo") {
+        sheet.getRange(i + 1, 5).setValue("Ingreso");
+        cambiadas++;
+      }
+    }
+  });
+  Logger.log("Aportes renombrados de Sueldo a Ingreso: " + cambiadas);
 }

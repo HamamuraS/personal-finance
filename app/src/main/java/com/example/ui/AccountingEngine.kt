@@ -1,5 +1,6 @@
 package com.example.ui
 
+import com.example.data.Categorias
 import com.example.data.Movement
 
 /**
@@ -42,7 +43,16 @@ data class BalanceBreakdown(
     val santiagoEnMano: Double,
     val rocioEnMano: Double,
     val santiagoExterno: Double,
-    val rocioExterno: Double
+    val rocioExterno: Double,
+    // --- Flujos "reales" (v7.7): lo que muestran Inicio y Métricas. No intervienen en ningún saldo;
+    // existen para separar la plata nueva de los movimientos internos entre los dos. ---
+    // Aportes de categoría Ingreso (o "Sueldo", su nombre anterior), atribuidos por propietario.
+    val santiagoIngresos: Double = 0.0,
+    val rocioIngresos: Double = 0.0,
+    // Gastos personales / comunes sin las correcciones (ajustes para cuadrar con el banco).
+    val santiagoGastosPersonalesReales: Double = 0.0,
+    val rocioGastosPersonalesReales: Double = 0.0,
+    val gastosComunesReales: Double = 0.0
 )
 
 /**
@@ -72,8 +82,13 @@ data class OpeningBalance(
  *    responsable; la mitad del otro genera un reclamo a favor del responsable.
  *  - Transferencia: mueve dinero físicamente del responsable al otro. Si conserva propietario,
  *    solo cambia de ubicación (genera propiedad cruzada). Si cambia de dueño, es un regalo.
+ *    Desde [CORTE_TRANSFERENCIA_SIN_DEVOLUCION], la que cambia de dueño ya no salda deuda.
  *  - Condonación: el responsable perdona lo que el otro tiene de él. No mueve nada físico: solo
  *    cancela propiedad cruzada. Ver [TIPO_CONDONACION].
+ *  - Devolución: el responsable le paga al otro lo que tiene de él. Mueve plata y cancela propiedad
+ *    cruzada, sin cambio de patrimonio. Ver [TIPO_DEVOLUCION].
+ *  - Cambio: canje de efectivo por transferencia entre los dos. Solo cambia la forma en que cada uno
+ *    tiene su plata. Ver [TIPO_CAMBIO].
  *
  * El stock (físico + propiedad cruzada) arranca en [opening]; los flujos del periodo
  * (aportes, gastos, etc.) siempre arrancan en cero para reflejar solo el mes en curso.
@@ -112,6 +127,67 @@ object AccountingEngine {
     /** ¿[m] es una condonación? Tolera la forma sin tilde por si se carga a mano en la planilla. */
     fun isCondonacion(m: Movement): Boolean =
         m.tipo.equals(TIPO_CONDONACION, ignoreCase = true) || m.tipo.equals("Condonacion", ignoreCase = true)
+
+    /**
+     * Tipo de la **devolución** ("pagar deuda", v7.7): el responsable le devuelve al otro la plata
+     * que tiene de él. La plata se mueve físicamente de la cuenta del responsable a la del otro y la
+     * propiedad cruzada baja en lo mismo, así que nadie gana ni pierde patrimonio.
+     *
+     * Es la regla que antes aplicaba sola cualquier transferencia "es del otro" (saldar primero). Pasó
+     * a ser un tipo explícito porque esa devolución automática hacía imposible transferirle plata al
+     * otro sin que se descontara de la deuda. En la UI es el "Saldo externo" de quien debe; con saldo a
+     * favor, el "Saldo externo" es una [TIPO_CONDONACION].
+     *
+     * Por qué no un único tipo "Saldo externo" que el motor resuelva por el signo de la deuda: el
+     * significado de una fila no puede depender del estado al replayar. Corregir un movimiento
+     * anterior podría dar vuelta el signo y convertir un perdón en un pago que mueve plata física.
+     */
+    const val TIPO_DEVOLUCION = "Devolución"
+
+    /** ¿[m] es una devolución? Tolera la forma sin tilde. */
+    fun isDevolucion(m: Movement): Boolean =
+        m.tipo.equals(TIPO_DEVOLUCION, ignoreCase = true) || m.tipo.equals("Devolucion", ignoreCase = true)
+
+    /**
+     * Tipo del **cambio de dinero** (v7.7): el responsable le da efectivo al otro y recibe una
+     * transferencia, o al revés. `metodoPago` es **lo que entrega el responsable**. Nadie gana ni
+     * pierde y nadie le debe nada a nadie: no toca la propiedad cruzada ni los flujos del periodo.
+     */
+    const val TIPO_CAMBIO = "Cambio"
+
+    fun isCambio(m: Movement): Boolean = m.tipo.equals(TIPO_CAMBIO, ignoreCase = true)
+
+    /**
+     * Desde esta fecha una transferencia "es del otro" es **regalo completo** y ya no salda la deuda
+     * que el receptor tuviera en la cuenta del emisor (eso ahora es una [TIPO_DEVOLUCION] explícita).
+     *
+     * Las anteriores conservan la regla vieja porque ya saldaron deuda en la planilla real: al
+     * 2026-09-30 hay dos devoluciones de 60k (31/07 y 06/08) que, recalculadas con la regla nueva,
+     * subirían 60k la deuda al regenerar las aperturas de agosto o septiembre. Ver
+     * `features/version-7.7.md`, punto 3. Se compara como texto contra `fecha` ("yyyy-MM-dd HH:mm").
+     * Espejado en `CORTE_TRANSFERENCIA_SIN_DEVOLUCION` del Apps Script.
+     *
+     * Es el 1° de septiembre y no una fecha futura porque septiembre no tiene ninguna transferencia
+     * "es del otro" viva (las 3 que hay están eliminadas), así que la regla nueva ya vale para el mes
+     * en curso sin alterar nada. Con el corte en octubre, una transferencia cargada el 30/09 seguía
+     * descontándose de la deuda. Agosto y antes quedan con la regla vieja, igual que la apertura de
+     * septiembre que salió de ellos.
+     */
+    const val CORTE_TRANSFERENCIA_SIN_DEVOLUCION = "2026-09-01"
+
+    /** ¿La transferencia "es del otro" [m] salda deuda primero (regla anterior a la v7.7)? */
+    private fun saldaDeudaPrimero(m: Movement): Boolean = m.fecha < CORTE_TRANSFERENCIA_SIN_DEVOLUCION
+
+    /**
+     * ¿[m] cuenta como gasto "real" en Inicio y Métricas? Todo gasto salvo las correcciones, que son
+     * ajustes para que la app cuadre con el banco y no un consumo.
+     */
+    fun esGastoReal(m: Movement): Boolean =
+        m.tipo.equals("Gasto", ignoreCase = true) && !Categorias.esCorreccion(m.categoria)
+
+    /** ¿[m] es un ingreso (aporte de categoría Ingreso, o "Sueldo" en filas viejas)? */
+    fun esIngreso(m: Movement): Boolean =
+        m.tipo.equals("Aporte", ignoreCase = true) && Categorias.esIngreso(m.categoria)
 
     fun isOpeningRow(m: Movement): Boolean = m.tipo.equals(TIPO_APERTURA, ignoreCase = true)
 
@@ -315,6 +391,11 @@ object AccountingEngine {
         var rTransfers = 0.0
         var totalAportes = 0.0
         var totalGastos = 0.0
+        var sIngresos = 0.0
+        var rIngresos = 0.0
+        var sPersReales = 0.0
+        var rPersReales = 0.0
+        var comunesReales = 0.0
 
         for (m in ordered) {
             // Las filas de apertura son stock, no flujo: entran por [opening], nunca por acá.
@@ -335,6 +416,7 @@ object AccountingEngine {
                     if (respS) { if (efec) sEfec += m.monto else sVirt += m.monto }
                     else { if (efec) rEfec += m.monto else rVirt += m.monto }
 
+                    val ingreso = Categorias.esIngreso(m.categoria)
                     when {
                         propAmbos -> {
                             val half = m.monto / 2.0
@@ -342,13 +424,16 @@ object AccountingEngine {
                             if (respS) netSR -= half else netSR += half
                             sAportes += half
                             rAportes += half
+                            if (ingreso) { sIngresos += half; rIngresos += half }
                         }
                         propS -> {
                             sAportes += m.monto
+                            if (ingreso) sIngresos += m.monto
                             if (respR) netSR += m.monto // Santiago posee dinero en cuenta de Rocío
                         }
                         propR -> {
                             rAportes += m.monto
+                            if (ingreso) rIngresos += m.monto
                             if (respS) netSR -= m.monto // Rocío posee dinero en cuenta de Santiago
                         }
                     }
@@ -357,12 +442,14 @@ object AccountingEngine {
 
                 "gasto" -> {
                     val comun = m.esComun || propAmbos
+                    val real = !Categorias.esCorreccion(m.categoria)
                     // El gasto sale físicamente de la cuenta del responsable
                     if (respS) { if (efec) sEfec -= m.monto else sVirt -= m.monto }
                     else { if (efec) rEfec -= m.monto else rVirt -= m.monto }
 
                     if (comun) {
                         comunes += m.monto
+                        if (real) comunesReales += m.monto
                         val half = m.monto / 2.0
                         // La mitad del no-responsable la financió el responsable -> reclamo a su favor
                         if (respS) netSR += half else netSR -= half
@@ -370,10 +457,12 @@ object AccountingEngine {
                         when {
                             propS -> {
                                 sPers += m.monto
+                                if (real) sPersReales += m.monto
                                 if (respR) netSR -= m.monto // gasto de Santiago pagado desde cuenta de Rocío
                             }
                             propR -> {
                                 rPers += m.monto
+                                if (real) rPersReales += m.monto
                                 if (respS) netSR += m.monto // gasto de Rocío pagado desde cuenta de Santiago
                             }
                         }
@@ -388,11 +477,12 @@ object AccountingEngine {
                         when {
                             // "Sigue siendo mía": Santiago estaciona SU plata en la cuenta de Rocío.
                             propS -> netSR += m.monto
-                            // "Es de Rocío": la plata es de Rocío y llega a SU cuenta. Primero salda lo
-                            // que Rocío tenga estacionado en la cuenta de Santiago (devolución, sin cambio
-                            // de patrimonio); el excedente es un regalo real (baja el patrimonio de Santiago).
+                            // "Es de Rocío": la plata pasa a ser de Rocío -> regalo (baja el patrimonio
+                            // de Santiago) y la deuda no se toca. Antes del corte, primero saldaba lo que
+                            // Rocío tuviera estacionado en la cuenta de Santiago; hoy eso es una
+                            // Devolución explícita.
                             propR -> {
-                                val devolucion = minOf(m.monto, maxOf(0.0, -netSR)) // rEnSantiago
+                                val devolucion = if (saldaDeudaPrimero(m)) minOf(m.monto, maxOf(0.0, -netSR)) else 0.0
                                 netSR += devolucion
                                 sTransfers += (m.monto - devolucion) // porción regalada
                             }
@@ -402,11 +492,43 @@ object AccountingEngine {
                         when {
                             propR -> netSR -= m.monto
                             propS -> {
-                                val devolucion = minOf(m.monto, maxOf(0.0, netSR)) // sEnRocio
+                                val devolucion = if (saldaDeudaPrimero(m)) minOf(m.monto, maxOf(0.0, netSR)) else 0.0
                                 netSR -= devolucion
                                 rTransfers += (m.monto - devolucion)
                             }
                         }
+                    }
+                }
+
+                // Pago de deuda: la plata sale de la cuenta del responsable hacia la del otro y cancela
+                // lo que el otro tenía estacionado en la cuenta del responsable, sin cambio de
+                // patrimonio. El excedente sobre la deuda (solo posible cargando a mano: la UI lo capa)
+                // es regalo, igual que en la transferencia vieja.
+                "devolución", "devolucion" -> {
+                    if (respS) {
+                        if (efec) { sEfec -= m.monto; rEfec += m.monto } else { sVirt -= m.monto; rVirt += m.monto }
+                        val pagado = minOf(m.monto, maxOf(0.0, -netSR)) // rEnSantiago
+                        netSR += pagado
+                        sTransfers += (m.monto - pagado)
+                    } else {
+                        if (efec) { rEfec -= m.monto; sEfec += m.monto } else { rVirt -= m.monto; sVirt += m.monto }
+                        val pagado = minOf(m.monto, maxOf(0.0, netSR)) // sEnRocio
+                        netSR -= pagado
+                        rTransfers += (m.monto - pagado)
+                    }
+                }
+
+                // Cambio de dinero: el responsable entrega el medio de `metodoPago` y recibe el otro.
+                // Los dos buckets de cada uno se cruzan; ni el pozo, ni los saldos, ni la propiedad
+                // cruzada cambian.
+                "cambio" -> {
+                    val entregaS = if (respS) m.monto else -m.monto // lo que Santiago entrega del medio elegido
+                    if (efec) {
+                        sEfec -= entregaS; sVirt += entregaS
+                        rEfec += entregaS; rVirt -= entregaS
+                    } else {
+                        sVirt -= entregaS; sEfec += entregaS
+                        rVirt += entregaS; rEfec -= entregaS
                     }
                 }
 
@@ -461,7 +583,12 @@ object AccountingEngine {
             santiagoEnMano = sEnMano,
             rocioEnMano = rEnMano,
             santiagoExterno = sExterno,
-            rocioExterno = rExterno
+            rocioExterno = rExterno,
+            santiagoIngresos = sIngresos,
+            rocioIngresos = rIngresos,
+            santiagoGastosPersonalesReales = sPersReales,
+            rocioGastosPersonalesReales = rPersReales,
+            gastosComunesReales = comunesReales
         )
     }
 
@@ -484,6 +611,27 @@ object AccountingEngine {
         val prop = normalizePropietario(m)
         if (m.esComun || prop == AMBOS) return m.monto / 2.0
         return if (prop.equals(slotKey, ignoreCase = true)) m.monto else 0.0
+    }
+
+    /** Gastos de una persona partidos por evitabilidad (tablero "Gastos acumulados"). */
+    data class GastosPorEvitabilidad(val necesario: Double, val evitable: Double) {
+        val total: Double get() = necesario + evitable
+    }
+
+    /**
+     * Suma lo que [slotKey] gastó en [movs], separando lo no evitable de lo evitable. Mismo criterio
+     * de atribución que el resto de Métricas ([porcionDelGasto]: comunes 50/50) y mismas exclusiones
+     * que los gastos de Inicio ([esGastoReal]: sin correcciones).
+     */
+    fun gastosPorEvitabilidad(movs: List<Movement>, slotKey: String): GastosPorEvitabilidad {
+        var necesario = 0.0
+        var evitable = 0.0
+        for (m in movs) {
+            if (!esGastoReal(m)) continue
+            val porcion = porcionDelGasto(m, slotKey)
+            if (m.evitable) evitable += porcion else necesario += porcion
+        }
+        return GastosPorEvitabilidad(necesario, evitable)
     }
 
     /**

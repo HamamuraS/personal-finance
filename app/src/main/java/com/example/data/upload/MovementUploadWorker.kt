@@ -83,8 +83,11 @@ class MovementUploadWorker(
                 }
 
                 if (ok) {
-                    borrarTicket(pendiente.ticketPath)
-                    prefs.removePendingMovement(pendiente.movement.id)
+                    // Condicional: si se editó mientras subía, la versión nueva se queda en la cola
+                    // (y su ticket, que vive en el mismo path, no se borra).
+                    if (prefs.removeUploadedPendingMovement(pendiente.movement)) {
+                        borrarTicket(pendiente.ticketPath)
+                    }
                     MovementNotifier.notificarGuardado(context, pendiente.movement)
                 } else {
                     registrarFallo(prefs, pendiente, "La planilla rechazó la escritura")
