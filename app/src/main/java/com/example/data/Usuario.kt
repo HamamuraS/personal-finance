@@ -12,12 +12,17 @@ package com.example.data
  * - [nombre] es la etiqueta visible en toda la UI (editable).
  * - [colorId] es el id de un preset curado (ver ui/theme/UserColorPalette.kt).
  * - [orden] 0 = slot primario (verde histórico / Santiago), 1 = secundario (azul / Rocío).
+ * - [mensaje] / [mensajeFecha]: el "mensaje del día" (v7.7.1) que el Apps Script genera con Gemini
+ *   todas las madrugadas (columnas E y F de la hoja `Usuarios`, ver `generarMensajesDelDia`). La app
+ *   solo lo lee; [mensajeFecha] ("yyyy-MM-dd") dice de qué día es, para no mostrar uno viejo.
  */
 data class Usuario(
     val slotKey: String,
     val nombre: String,
     val colorId: String,
-    val orden: Int = 0
+    val orden: Int = 0,
+    val mensaje: String = "",
+    val mensajeFecha: String = ""
 )
 
 /**
@@ -62,10 +67,25 @@ data class UsuariosConfig(val primario: Usuario, val secundario: Usuario) {
                     ?: return def
                 return def.copy(
                     nombre = match.nombre.ifBlank { def.nombre },
-                    colorId = match.colorId.ifBlank { def.colorId }
+                    colorId = match.colorId.ifBlank { def.colorId },
+                    mensaje = match.mensaje,
+                    mensajeFecha = match.mensajeFecha
                 )
             }
             return UsuariosConfig(primario = pick(DEFAULT.primario), secundario = pick(DEFAULT.secundario))
         }
     }
+}
+
+/**
+ * El mensaje del día de [usuario] **si corresponde mostrarlo**, o null para dejar el encabezado de
+ * Inicio como siempre: cuando la función está apagada ([activo]), cuando no hay mensaje, o cuando no
+ * es de [hoy] ("yyyy-MM-dd"). Esto último importa: el mensaje comenta lo de ayer ("¡Debe haber estado
+ * bueno ese café!"), así que si el disparador dejó de correr, uno viejo diría cosas que ya no son.
+ */
+fun mensajeDelDiaVisible(usuario: Usuario?, hoy: String, activo: Boolean): String? {
+    if (!activo || usuario == null) return null
+    val texto = usuario.mensaje.trim()
+    if (texto.isEmpty() || usuario.mensajeFecha.trim() != hoy) return null
+    return texto
 }

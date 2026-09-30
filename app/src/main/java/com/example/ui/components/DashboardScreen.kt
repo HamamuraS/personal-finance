@@ -29,7 +29,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import com.example.data.AppConfig
 import com.example.data.CuotaPlan
+import com.example.data.mensajeDelDiaVisible
 import com.example.data.Movement
 import com.example.data.UsuariosConfig
 import com.example.ui.AccountingEngine
@@ -122,75 +124,60 @@ fun DashboardScreen(
         }
     }
 
+    // Mensaje del día (lo genera el Apps Script con Gemini). null = encabezado de siempre: función
+    // apagada en el `.env`, sin mensaje, o uno que no es de hoy.
+    val hoyIso = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+    val mensajeDelDia = mensajeDelDiaVisible(config.byKey(userProfile), hoyIso, AppConfig.MENSAJE_DEL_DIA_ACTIVO)
+
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    var expanded by remember { mutableStateOf(false) }
-                    Column {
-                        // Siempre el día real, aunque se esté mirando un mes viejo: es un saludo, no
-                        // un dato del periodo.
-                        Text(
-                            text = saludoDeHoy(),
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 20.sp
+            val botonRecargar: @Composable () -> Unit = {
+                IconButton(onClick = onRefresh, enabled = !isLoading) {
+                    if (isLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(24.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.primary
                         )
-                        // Selector de mes: debajo del saludo, chico y en tipografía secundaria.
-                        Box {
-                            Row(
-                                modifier = Modifier.clickable { expanded = true },
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = buildString {
-                                        append(if (selectedMonth.isNotEmpty()) formatMonthLabel(selectedMonth) else "Elegí un mes")
-                                        if (useLocalDemo) append(" · Modo local (demo)")
-                                    },
-                                    fontSize = 12.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    fontWeight = FontWeight.Medium
-                                )
-                                Icon(
-                                    Icons.Default.ArrowDropDown,
-                                    contentDescription = "Cambiar de mes",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                            DropdownMenu(
-                                expanded = expanded,
-                                onDismissRequest = { expanded = false }
-                            ) {
-                                availableMonths.forEach { month ->
-                                    DropdownMenuItem(
-                                        text = { Text(formatMonthLabel(month)) },
-                                        onClick = {
-                                            onMonthSelected(month)
-                                            expanded = false
-                                        }
-                                    )
-                                }
-                            }
-                        }
+                    } else {
+                        Icon(Icons.Default.Refresh, contentDescription = "Recargar")
                     }
-                },
-                actions = {
-                    IconButton(onClick = onRefresh, enabled = !isLoading) {
-                        if (isLoading) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(24.dp),
-                                strokeWidth = 2.dp,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        } else {
-                            Icon(Icons.Default.Refresh, contentDescription = "Recargar")
-                        }
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background
+                }
+            }
+            val titulo: @Composable () -> Unit = {
+                TituloInicio(
+                    mensajeDelDia = mensajeDelDia,
+                    selectedMonth = selectedMonth,
+                    useLocalDemo = useLocalDemo,
+                    availableMonths = availableMonths,
+                    onMonthSelected = onMonthSelected
                 )
-            )
+            }
+            if (mensajeDelDia == null) {
+                TopAppBar(
+                    title = titulo,
+                    actions = { botonRecargar() },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.background
+                    )
+                )
+            } else {
+                // Con mensaje son tres niveles y la frase puede ocupar dos renglones: no entra en la
+                // altura fija del TopAppBar. Mismas medidas (16dp a la izquierda, botón a la derecha)
+                // pero la altura la define el contenido.
+                Surface(color = MaterialTheme.colorScheme.background) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .windowInsetsPadding(TopAppBarDefaults.windowInsets)
+                            .padding(start = 16.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(modifier = Modifier.weight(1f)) { titulo() }
+                        botonRecargar()
+                    }
+                }
+            }
         }
     ) { innerPadding ->
         PullToRefreshBox(
@@ -844,6 +831,80 @@ fun MovementItem(
                     color = com.example.ui.theme.appTextMuted,
                     modifier = Modifier.padding(top = 2.dp)
                 )
+            }
+        }
+    }
+}
+
+/**
+ * Encabezado de Inicio: el saludo del día como título, el mensaje del día (si hay) como subtítulo y el
+ * selector de mes debajo. Sin mensaje queda en dos niveles, con el selector en tipografía secundaria;
+ * con mensaje el selector pasa a terciario (más chico y más tenue) para que la jerarquía se lea sola.
+ */
+@Composable
+private fun TituloInicio(
+    mensajeDelDia: String?,
+    selectedMonth: String,
+    useLocalDemo: Boolean,
+    availableMonths: List<String>,
+    onMonthSelected: (String) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Column {
+        // Siempre el día real, aunque se esté mirando un mes viejo: es un saludo, no un dato del periodo.
+        Text(
+            text = saludoDeHoy(),
+            fontWeight = FontWeight.Bold,
+            fontSize = 20.sp
+        )
+        if (mensajeDelDia != null) {
+            // Alineado a la izquierda; si no entra en un renglón baja al siguiente con el mismo
+            // aire arriba y abajo.
+            Text(
+                text = mensajeDelDia,
+                fontSize = 13.sp,
+                lineHeight = 17.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Start,
+                modifier = Modifier.padding(top = 2.dp, bottom = 4.dp)
+            )
+        }
+        val colorSelector = if (mensajeDelDia != null) com.example.ui.theme.appTextMuted
+                            else MaterialTheme.colorScheme.onSurfaceVariant
+        Box {
+            Row(
+                modifier = Modifier.clickable { expanded = true },
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = buildString {
+                        append(if (selectedMonth.isNotEmpty()) formatMonthLabel(selectedMonth) else "Elegí un mes")
+                        if (useLocalDemo) append(" · Modo local (demo)")
+                    },
+                    fontSize = if (mensajeDelDia != null) 11.sp else 12.sp,
+                    color = colorSelector,
+                    fontWeight = FontWeight.Medium
+                )
+                Icon(
+                    Icons.Default.ArrowDropDown,
+                    contentDescription = "Cambiar de mes",
+                    tint = colorSelector,
+                    modifier = Modifier.size(if (mensajeDelDia != null) 16.dp else 18.dp)
+                )
+            }
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false }
+            ) {
+                availableMonths.forEach { month ->
+                    DropdownMenuItem(
+                        text = { Text(formatMonthLabel(month)) },
+                        onClick = {
+                            onMonthSelected(month)
+                            expanded = false
+                        }
+                    )
+                }
             }
         }
     }

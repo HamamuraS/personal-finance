@@ -41,6 +41,8 @@ jobs:
         env:
           SCRIPT_URL: ${{ secrets.SCRIPT_URL }}
           DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+          # Variable (no secret) del repo. Sin definir = prendido.
+          MENSAJE_DEL_DIA: ${{ vars.MENSAJE_DEL_DIA }}
         run: |
           if [ -z "$SCRIPT_URL" ] || [ -z "$DRIVE_FOLDER_ID" ]; then
             echo "Faltan los secrets SCRIPT_URL y/o DRIVE_FOLDER_ID."
@@ -52,6 +54,7 @@ jobs:
             echo "GEMINI_API_KEY=MY_GEMINI_API_KEY"
             echo "SCRIPT_URL=$SCRIPT_URL"
             echo "DRIVE_FOLDER_ID=$DRIVE_FOLDER_ID"
+            echo "MENSAJE_DEL_DIA=${MENSAJE_DEL_DIA:-true}"
           } > "${{ github.workspace }}/.env"
 
       - name: Compilar el APK de release y subirlo a Firebase App Distribution

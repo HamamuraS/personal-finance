@@ -16,6 +16,11 @@
  *    borra la fila vieja y escribe en la hoja del mes nuevo (antes quedaba duplicado).
  *  - renombrarSueldoAIngreso(): opcional, para correr a mano (la app ya lee "Sueldo" como "Ingreso").
  *
+ * Novedades v7.7.1:
+ *  - Mensaje del día con Gemini: generarMensajesDelDia() (trigger ~2 AM) escribe un mensaje por
+ *    persona en la hoja "Usuarios" (E/F) y GET_USERS lo devuelve. Requiere la propiedad del script
+ *    GEMINI_API_KEY; ver el bloque "MENSAJE DEL DÍA" al final del archivo.
+ *
  * Novedades v7.2:
  *  - Filas de apertura por hoja (tipo "Apertura", categoría "Saldo inicial"): cada mes lleva su
  *    propio arrastre desagregado por persona × medio de pago × propietario, así que su saldo deja
@@ -639,7 +644,12 @@ function getUsers(e) {
         slotKey: slotKey,
         nombre: row[1] ? row[1].toString() : slotKey,
         colorId: row[2] ? row[2].toString() : "",
-        orden: Number(row[3]) || 0
+        orden: Number(row[3]) || 0,
+        // Mensaje del día (v7.7.1, columnas E/F): lo escribe generarMensajesDelDia().
+        mensaje: row.length > 4 && row[4] ? row[4].toString() : "",
+        mensajeFecha: row.length > 5 && row[5]
+          ? (row[5] instanceof Date ? Utilities.formatDate(row[5], "America/Argentina/Buenos_Aires", "yyyy-MM-dd") : row[5].toString())
+          : ""
       });
     }
   }
@@ -1256,4 +1266,297 @@ function renombrarSueldoAIngreso() {
     }
   });
   Logger.log("Aportes renombrados de Sueldo a Ingreso: " + cambiadas);
+}
+
+// =================================================================================================
+// MENSAJE DEL DÍA (v7.7.1)
+// =================================================================================================
+//
+// Todas las madrugadas (~2 AM, hora Argentina) se le pide a Gemini UN mensaje corto y amistoso por
+// persona a partir de sus movimientos del mes actual y del anterior, y se guarda en la hoja
+// "Usuarios" (columna E "Mensaje", F "Fecha mensaje"), pisando el del día anterior. La app lo lee
+// con GET_USERS, que ya pedía al arrancar: no suma ningún request.
+//
+// Configuración (Configuración del proyecto > Propiedades de la secuencia de comandos):
+//   GEMINI_API_KEY   (obligatoria)  la clave de Google AI Studio. NUNCA en el código ni en el repo.
+//   GEMINI_MODELO    (opcional)     lista separada por comas, en orden de preferencia. Si un modelo
+//                                   da error de cuota, no existe o devuelve algo inservible, se
+//                                   prueba el siguiente. Default: MSG_MODELOS_DEFAULT.
+//   MENSAJES_ACTIVOS (opcional)     "false" apaga la generación (no se llama a Gemini).
+//
+// Para empezar: cargar la clave, correr probarMensajesDelDia() (loguea y escribe los mensajes) y
+// después instalarTriggerDeMensajes() UNA vez.
+//
+// Qué se manda: SOLO gastos y aportes vivos de las hojas del mes actual y del anterior, con día,
+// quién, tipo, categoría, monto, descripción (recortada) y si fue evitable. Nada de ids, tickets,
+// aperturas, transferencias ni de otras hojas.
+
+const MSG_ZONA = "America/Argentina/Buenos_Aires";
+const MSG_COL_MENSAJE = 5;        // E
+const MSG_COL_FECHA = 6;          // F
+const MSG_MAX_CARACTERES = 90;    // tope duro; al modelo se le piden <= 60
+const TRIGGER_MENSAJES = "generarMensajesDelDia";
+
+/**
+ * Modelos por defecto, del preferido al de respaldo: el Flash más nuevo (mejor humor), el Flash-Lite
+ * más nuevo (el más económico) y el 2.5 Flash como último recurso. Google renombra y retira modelos
+ * seguido: con la lista, que uno desaparezca o pierda el nivel gratuito no deja a nadie sin mensaje.
+ */
+const MSG_MODELOS_DEFAULT = "gemini-3.8-flash,gemini-3.5-flash-lite,gemini-2.5-flash";
+
+/** Lo que corre el trigger diario. No tira excepciones: si algo falla, queda el mensaje de ayer. */
+function generarMensajesDelDia() {
+  try {
+    const r = calcularMensajesDelDia_();
+    Logger.log(r);
+  } catch (err) {
+    Logger.log("Mensaje del día: falló, se conservan los anteriores. " + err);
+  }
+}
+
+/** Para probar a mano desde el editor: genera, escribe y muestra lo que quedó. */
+function probarMensajesDelDia() {
+  Logger.log(calcularMensajesDelDia_());
+}
+
+function instalarTriggerDeMensajes() {
+  desinstalarTriggerDeMensajes();
+  ScriptApp.newTrigger(TRIGGER_MENSAJES).timeBased().atHour(2).everyDays(1).inTimezone(MSG_ZONA).create();
+  Logger.log("Trigger diario instalado (~2 AM Argentina): " + TRIGGER_MENSAJES + "().");
+}
+
+function desinstalarTriggerDeMensajes() {
+  let n = 0;
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === TRIGGER_MENSAJES) { ScriptApp.deleteTrigger(t); n++; }
+  });
+  Logger.log("Triggers de mensajes quitados: " + n);
+}
+
+function calcularMensajesDelDia_() {
+  const props = PropertiesService.getScriptProperties();
+  if (String(props.getProperty("MENSAJES_ACTIVOS") || "true").toLowerCase() === "false") {
+    return "Mensajes apagados (MENSAJES_ACTIVOS=false): no se llamó a Gemini.";
+  }
+  const clave = props.getProperty("GEMINI_API_KEY");
+  if (!clave) return "Falta la propiedad GEMINI_API_KEY: no se generó nada.";
+  const modelos = String(props.getProperty("GEMINI_MODELO") || MSG_MODELOS_DEFAULT)
+    .split(",").map(function (m) { return m.trim(); }).filter(function (m) { return m; });
+
+  const ahora = new Date();
+  const hoy = Utilities.formatDate(ahora, MSG_ZONA, "yyyy-MM-dd");
+  const mesActual = hoy.substring(0, 7);
+  const mesAnterior = mesAnteriorDe_(mesActual);
+
+  const sheet = getUsersSheetSeeded();
+  asegurarColumnasDeMensaje_(sheet);
+  const filasUsuarios = sheet.getDataRange().getValues().slice(1).filter(function (r) { return r[0]; });
+  const usuarios = filasUsuarios.map(function (r) {
+    return {
+      slotKey: String(r[0]),
+      nombre: r[1] ? String(r[1]) : String(r[0]),
+      anterior: r.length >= MSG_COL_MENSAJE && r[MSG_COL_MENSAJE - 1] ? String(r[MSG_COL_MENSAJE - 1]) : ""
+    };
+  });
+  if (usuarios.length === 0) return "La hoja Usuarios está vacía.";
+
+  const movimientos = [mesAnterior, mesActual]
+    .map(function (mes) { return movimientosParaMensaje_(mes, usuarios); })
+    .join("\n");
+
+  const prompt = promptDeMensajes_(hoy, ahora, usuarios, movimientos);
+  const claves = usuarios.map(function (u) { return u.slotKey; });
+  const resultado = pedirConRespaldo_(clave, modelos, prompt, claves);
+  const mensajes = resultado.mensajes;
+  const modelo = resultado.modelo;
+
+  // Solo se pisa el mensaje de quien recibió uno válido: si el modelo omite a alguien, le queda el
+  // de ayer (que la app deja de mostrar porque su fecha ya no es la de hoy).
+  const data = sheet.getDataRange().getValues();
+  const escritos = [];
+  for (let i = 1; i < data.length; i++) {
+    const slot = String(data[i][0] || "");
+    const texto = limpiarMensaje_(mensajes[slot]);
+    if (!slot || !texto) continue;
+    sheet.getRange(i + 1, MSG_COL_MENSAJE).setValue(texto);
+    sheet.getRange(i + 1, MSG_COL_FECHA).setNumberFormat("@").setValue(hoy);
+    escritos.push(slot + ": " + texto);
+  }
+  const intentos = resultado.fallos.length ? "\nModelos descartados:\n" + resultado.fallos.join("\n") : "";
+  return "Mensajes del " + hoy + " (" + modelo + "):\n" + (escritos.join("\n") || "(ninguno válido)") + intentos;
+}
+
+/** "2026-01" -> "2025-12". */
+function mesAnteriorDe_(mes) {
+  const y = parseInt(mes.substring(0, 4), 10), m = parseInt(mes.substring(5, 7), 10);
+  return m === 1 ? (y - 1) + "-12" : y + "-" + ("0" + (m - 1)).slice(-2);
+}
+
+/**
+ * Los gastos y aportes vivos de la hoja de [mes], uno por renglón y con lo mínimo:
+ * "dd|quién|tipo|categoría|monto|descripción|evitable". "quién" es el nombre visible del dueño
+ * (o "ambos" en los comunes). Los montos van redondeados: para comentar alcanza.
+ */
+function movimientosParaMensaje_(mes, usuarios) {
+  const nombre = nombreHojaDeMes(mes);
+  const sheet = nombre ? SpreadsheetApp.getActiveSpreadsheet().getSheetByName(nombre) : null;
+  if (!sheet) return "# " + mes + ": sin datos";
+  const nombreDe = {};
+  usuarios.forEach(function (u) { nombreDe[u.slotKey.toLowerCase()] = u.nombre; });
+
+  const lineas = ["# " + mes];
+  sheet.getDataRange().getValues().slice(1).forEach(function (row) {
+    if (!row[0] || isEliminado(row[10])) return;
+    const tipo = String(row[3] || "").toLowerCase();
+    if (tipo !== "gasto" && tipo !== "aporte") return;
+    const categoria = String(row[4] || "");
+    if (esLegacySaldoInicial(row[3], categoria)) return;
+    const comun = esVerdadero(row[6]) || String(row[11] || "").toLowerCase() === "ambos";
+    const dueno = comun ? "ambos" : (nombreDe[normalizarPropietario(row[11], row[5]).toLowerCase()] || String(row[5] || ""));
+    const dia = toDateTime(row[1]).substring(8, 10);
+    const descripcion = String(row[7] || "").replace(/[|\n\r]+/g, " ").trim().substring(0, 40);
+    lineas.push([dia, dueno, tipo, categoria, Math.round(Number(row[2]) || 0), descripcion, esVerdadero(row[14]) ? "evitable" : ""].join("|"));
+  });
+  return lineas.join("\n");
+}
+
+function promptDeMensajes_(hoy, ahora, usuarios, movimientos) {
+  const dias = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
+  const diaSemana = dias[parseInt(Utilities.formatDate(ahora, MSG_ZONA, "u"), 10) % 7];
+  const quienes = usuarios.map(function (u) { return '"' + u.slotKey + '" (' + u.nombre + ')'; }).join(" y ");
+  const anteriores = usuarios
+    .filter(function (u) { return u.anterior; })
+    .map(function (u) { return "- " + u.nombre + ": " + u.anterior; }).join("\n");
+  return [
+    "Sos el amigo buena onda de una app de finanzas que usa una pareja en Argentina.",
+    "Hoy es " + diaSemana + " " + hoy + ". Abajo están sus gastos y aportes del mes pasado y del actual,",
+    "un renglón por movimiento: día|de quién|tipo|categoría|monto en pesos|descripción|evitable.",
+    "\"ambos\" = gasto compartido. \"evitable\" = lo marcaron como gusto o lujo; sin marca = necesario.",
+    "",
+    "Escribí UN mensaje para cada una de estas personas: " + quienes + ".",
+    "",
+    "Qué comentar: elegí UNA sola cosa, la más interesante de cada persona, preferentemente de los",
+    "últimos días. En este orden de preferencia:",
+    "1. Algo puntual con nombre propio en la descripción, sobre todo gustos o compras poco habituales",
+    "   (un bar, un antojo, un regalo, un hobby, una salida).",
+    "2. Una novedad: algo que no aparece el mes anterior, o un día fuera de lo común.",
+    "3. Una buena noticia: un ingreso, menos gustos que el mes pasado, unos días tranquilos.",
+    "",
+    "Qué NO comentar:",
+    "- Gastos de rutina o necesarios, aunque se repitan muchísimo: transporte, servicios, supermercado,",
+    "  verdulería, farmacia, animales, alquiler, cosas de trabajo o de salud. No se pueden evitar y",
+    "  comentarlos queda tonto. Que algo sea lo más frecuente NO lo hace interesante.",
+    "- Las advertencias en broma (\"¡cuidado con…!\") son solo para gustos o evitables, nunca para",
+    "  necesidades.",
+    "- Sermones, retos, culpa, consejos genéricos de ahorro, montos o cifras exactas.",
+    "- Datos del otro en el mensaje de cada uno.",
+    "",
+    "Ejemplos buenos: \"¡Cuidado con tantas medialunas!\", \"¡Debe haber estado bueno ese café Martínez!\",",
+    "\"Esa provoleta del sábado pintaba bárbara 🧀\", \"Semana tranqui de gustos, ¡bien ahí!\".",
+    "Ejemplos malos, NO los hagas: \"¡Cuidado con tanto transporte!\" (lo necesita para trabajar),",
+    "\"¡Cuánto supermercado!\" (hay que comer), \"Gastaste mucho este mes\" (sermón genérico).",
+    "",
+    "Forma: máximo 60 caracteres, español rioplatense, de vos, a lo sumo un emoji. Simpático y",
+    "amistoso, como un amigo que te conoce. Si casi no hay movimientos, un saludo o ánimo corto.",
+    anteriores ? "No repitas la idea de los mensajes de ayer:\n" + anteriores : "",
+    "",
+    "Respondé SOLO con JSON, sin texto alrededor, con las claves exactas: {" +
+      usuarios.map(function (u) { return '"' + u.slotKey + '": "..."'; }).join(", ") + "}",
+    "",
+    movimientos
+  ].join("\n");
+}
+
+/**
+ * Prueba los [modelos] en orden hasta que uno devuelva al menos un mensaje válido para alguna de las
+ * [claves]. Devuelve {mensajes, modelo, fallos}; tira solo si fallaron todos (y ahí queda el de ayer).
+ */
+function pedirConRespaldo_(clave, modelos, prompt, claves) {
+  const fallos = [];
+  for (let i = 0; i < modelos.length; i++) {
+    try {
+      const mensajes = pedirMensajesAGemini_(clave, modelos[i], prompt);
+      const utiles = claves.filter(function (k) { return limpiarMensaje_(mensajes[k]); });
+      if (utiles.length > 0) return { mensajes: mensajes, modelo: modelos[i], fallos: fallos };
+      fallos.push(modelos[i] + ": respondió sin mensajes válidos");
+    } catch (err) {
+      fallos.push(modelos[i] + ": " + String(err).substring(0, 200));
+    }
+  }
+  throw new Error("Ningún modelo sirvió.\n" + fallos.join("\n"));
+}
+
+/**
+ * Configuración de generación según la familia del modelo.
+ *
+ * El "thinking" cuenta dentro de maxOutputTokens: con un tope chico, un modelo que piensa se queda
+ * sin lugar y devuelve el JSON cortado. En la 2.5 se apaga del todo (thinkingBudget 0); en la 3.x se
+ * pide lo mínimo (thinkingLevel "low") y además se deja margen de sobra. [conThinking] = false manda
+ * la config sin thinkingConfig, para modelos que no aceptan ese campo.
+ */
+function configDeGeneracion_(modelo, conThinking) {
+  const es25 = modelo.indexOf("gemini-2.5") === 0;
+  const config = { responseMimeType: "application/json", temperature: 1.0, maxOutputTokens: es25 ? 400 : 2048 };
+  if (conThinking) config.thinkingConfig = es25 ? { thinkingBudget: 0 } : { thinkingLevel: "low" };
+  return config;
+}
+
+/**
+ * Llama a [modelo] y devuelve {slotKey: mensaje}. Tira si la respuesta no sirve. Si el modelo rechaza
+ * la thinkingConfig (400 que la menciona), reintenta una vez sin ella antes de darlo por perdido.
+ */
+function pedirMensajesAGemini_(clave, modelo, prompt) {
+  let resp = llamarGemini_(clave, modelo, prompt, true);
+  if (resp.getResponseCode() === 400 && /thinking/i.test(resp.getContentText())) {
+    resp = llamarGemini_(clave, modelo, prompt, false);
+  }
+  const codigo = resp.getResponseCode();
+  if (codigo !== 200) throw new Error("respondió " + codigo + ": " + resp.getContentText().substring(0, 200));
+
+  const cuerpo = JSON.parse(resp.getContentText());
+  const candidato = cuerpo.candidates && cuerpo.candidates[0];
+  const partes = candidato && candidato.content && candidato.content.parts;
+  // Las partes de "pensamiento" (thought: true) no son la respuesta.
+  const texto = partes ? partes.filter(function (p) { return !p.thought; }).map(function (p) { return p.text || ""; }).join("") : "";
+  if (!texto) throw new Error("respuesta vacía (finishReason: " + (candidato && candidato.finishReason) + ")");
+  const json = texto.replace(/^[^{]*/, "").replace(/[^}]*$/, ""); // por si viene envuelto en ```json
+  return JSON.parse(json);
+}
+
+function llamarGemini_(clave, modelo, prompt, conThinking) {
+  return UrlFetchApp.fetch(
+    "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(modelo) + ":generateContent",
+    {
+      method: "post",
+      contentType: "application/json",
+      headers: { "x-goog-api-key": clave },
+      payload: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: configDeGeneracion_(modelo, conThinking)
+      }),
+      muteHttpExceptions: true
+    }
+  );
+}
+
+/** Recorta y sanea lo que devolvió el modelo. "" si no sirve. */
+function limpiarMensaje_(v) {
+  if (typeof v !== "string") return "";
+  let t = v.replace(/[\r\n]+/g, " ").replace(/^["'«“\s]+|["'»”\s]+$/g, "").trim();
+  if (t.length > MSG_MAX_CARACTERES) {
+    t = t.substring(0, MSG_MAX_CARACTERES);
+    t = t.substring(0, t.lastIndexOf(" ") > 40 ? t.lastIndexOf(" ") : MSG_MAX_CARACTERES).trim() + "…";
+  }
+  return t;
+}
+
+/** Encabezados de E/F en la hoja Usuarios (y F como texto, para que la fecha no se vuelva Date). */
+function asegurarColumnasDeMensaje_(sheet) {
+  if (sheet.getMaxColumns() < MSG_COL_FECHA) sheet.insertColumnsAfter(sheet.getMaxColumns(), MSG_COL_FECHA - sheet.getMaxColumns());
+  const encabezados = [[MSG_COL_MENSAJE, "Mensaje"], [MSG_COL_FECHA, "Fecha mensaje"]];
+  encabezados.forEach(function (e) {
+    const celda = sheet.getRange(1, e[0]);
+    if (!celda.getValue()) celda.setValue(e[1]).setFontWeight("bold").setBackground("#e2e8f0");
+  });
+  sheet.getRange(1, MSG_COL_FECHA, sheet.getMaxRows(), 1).setNumberFormat("@");
 }

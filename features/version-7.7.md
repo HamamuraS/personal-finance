@@ -472,3 +472,23 @@ cosa.
   real aunque se mire un mes viejo. El selector de mes va debajo, chico y en tipografía secundaria, con
   los meses escritos ("Septiembre 2026"). El cartel "Sincronizado con Google Sheets" se sacó; "Modo
   local (demo)" se sigue mostrando al lado del mes.
+- **Mensaje del día (Gemini):** `generarMensajesDelDia()` en el Apps Script, con disparador diario
+  ~2 AM hora Argentina (`instalarTriggerDeMensajes()`). Hace **un** request por día con los gastos y
+  aportes vivos de la hoja del mes actual y la del anterior, solo día|de quién|tipo|categoría|monto
+  redondeado|descripción (40 caracteres)|evitable: unos 4.000 tokens con los datos de sep-2026. Pide un
+  mensaje de hasta 60 caracteres por persona, en JSON, y lo escribe en la hoja `Usuarios` (E
+  "Mensaje", F "Fecha mensaje"), pisando el anterior. Si falla, queda el de ayer y la app no lo
+  muestra (solo muestra el de **hoy**: `mensajeDelDiaVisible`).
+  - Clave en las propiedades del script (`GEMINI_API_KEY`), nunca en el APK ni en el repo. Opcionales:
+    `GEMINI_MODELO` (lista en orden de preferencia; default `gemini-3.8-flash,gemini-3.5-flash-lite,gemini-2.5-flash`: si uno da error de cuota, no existe o devuelve JSON inservible, se prueba el siguiente; thinking al mínimo y 2048 tokens de salida en 3.x, apagado en 2.5) y `MENSAJES_ACTIVOS=false`
+    para dejar de llamar a Gemini.
+  - En la app: `MENSAJE_DEL_DIA=false` en `.env` (o la variable del repo `MENSAJE_DEL_DIA` en CI) lo
+    apaga. Sin mensaje de hoy, el encabezado es el de siempre (TopAppBar); con mensaje pasa a un
+    encabezado de alto variable: día (20sp) · mensaje (13sp, hasta 2 renglones, alineado a la
+    izquierda) · selector de mes (11sp, atenuado).
+  - Privacidad: en el nivel gratuito de Gemini, Google puede usar lo enviado para mejorar sus
+    productos. Se aceptó a cambio de los comentarios sobre descripciones concretas.
+  - Prompt ajustado tras el primer resultado real ("¡Cuidado con tanto transporte, Rou!"): elige UNA
+    cosa por persona con prioridad descripción puntual/gusto > novedad > buena noticia; prohíbe
+    comentar gastos de rutina o necesarios (lo más frecuente no es lo más interesante) y limita las
+    advertencias en broma a lo evitable. Incluye ejemplos buenos y malos.

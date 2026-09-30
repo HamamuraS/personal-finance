@@ -25,6 +25,15 @@ object AppConfig {
     val DRIVE_FOLDER_ID: String = BuildConfig.DRIVE_FOLDER_ID.trim()
 
     /**
+     * ¿Se muestra el "mensaje del día" en Inicio? `MENSAJE_DEL_DIA=false` en `.env` lo apaga en el
+     * APK (el encabezado queda como siempre). Cualquier otro valor, o no definirlo, lo deja prendido:
+     * sin mensaje generado en la planilla tampoco se ve nada, así que prendido por defecto es seguro.
+     * Para dejar de llamar a Gemini hay que apagarlo en el script (ver `generarMensajesDelDia`).
+     */
+    val MENSAJE_DEL_DIA_ACTIVO: Boolean =
+        !BuildConfig.MENSAJE_DEL_DIA.trim().equals("false", ignoreCase = true)
+
+    /**
      * ¿El build trae una configuración usable? Si no (por ejemplo un clone sin `.env`), la app
      * arranca en Modo Local (Demo) en vez de fallar contra una URL inválida.
      */
