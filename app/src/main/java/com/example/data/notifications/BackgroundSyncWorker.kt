@@ -15,12 +15,13 @@ import java.util.TimeZone
 
 /**
  * Sincronización periódica en segundo plano. Corre cada 12 horas (06:00 y 18:00 hora argentina, ver
- * [BackgroundSyncScheduler]) aunque el usuario no abra la app, y hace tres cosas en orden:
+ * [BackgroundSyncScheduler]) aunque el usuario no abra la app, y hace cuatro cosas en orden:
  *
  *  1. **Drena la cola de altas pendientes.** Es la red de seguridad de los movimientos que no se
  *     pudieron subir en su momento (ver [com.example.data.PendingMovement]).
- *  2. **Refresca la planilla.** Esto renueva `lastFetchAt`, así que abrir la app después de una
- *     corrida no dispara ningún fetch: el arranque es instantáneo contra el cache.
+ *  2. **Refresca la planilla** (movimientos, planes y usuarios). Esto renueva `lastFetchAt`, así
+ *     que abrir la app después de una corrida no dispara ningún fetch: el arranque es instantáneo
+ *     contra el cache. Por eso tiene que traer **todo** lo que la app muestra al arrancar.
  *  3. **Materializa el corte del mes** si el mes en curso todavía no tiene su apertura.
  *  4. **Evalúa los recordatorios de cuotas** (cierre de mes y atrasos de los lunes).
  *
@@ -69,6 +70,10 @@ class BackgroundSyncWorker(
             } else {
                 repo.fetchPlans(prefs.scriptUrl).also { prefs.savePlansCache(it) }
             }
+            // Usuarios: traen el mensaje del día que el Apps Script escribe a las ~2 AM. Sin esto,
+            // el fetch de arriba renueva `lastFetchAt`, la app arranca contra el cache y muestra la
+            // config de ayer — con un mensaje de otra fecha, que se oculta. Guarda el cache solo.
+            repo.fetchUsuarios(prefs.scriptUrl)
 
             // 3. Corte del mes (plata + cuotas). Escribir el saldo inicial salía de un botón en
             //    Ajustes que hay que acordarse de tocar, así que en la práctica las hojas seguían
