@@ -89,6 +89,8 @@ data class OpeningBalance(
  *    cruzada, sin cambio de patrimonio. Ver [TIPO_DEVOLUCION].
  *  - Cambio: canje de efectivo por transferencia entre los dos. Solo cambia la forma en que cada uno
  *    tiene su plata. Ver [TIPO_CAMBIO].
+ *  - Cambio propio: el mismo canje pero con alguien de afuera (familia, cajero): solo se cruzan el
+ *    efectivo y la cuenta de quien lo carga. Ver [TIPO_CAMBIO_PROPIO].
  *
  * El stock (físico + propiedad cruzada) arranca en [opening]; los flujos del periodo
  * (aportes, gastos, etc.) siempre arrancan en cero para reflejar solo el mes en curso.
@@ -155,7 +157,23 @@ object AccountingEngine {
      */
     const val TIPO_CAMBIO = "Cambio"
 
-    fun isCambio(m: Movement): Boolean = m.tipo.equals(TIPO_CAMBIO, ignoreCase = true)
+    /**
+     * Tipo del **cambio propio** (v8.0): canje de efectivo por transferencia con alguien de afuera
+     * (abuela, hermana, un cajero). `metodoPago` es lo que entrega el responsable, como en
+     * [TIPO_CAMBIO], pero solo se mueven **sus** dos buckets: el otro integrante no participa.
+     *
+     * Es un tipo aparte y no una variante guardada en otra columna: los [TIPO_CAMBIO] cargados desde
+     * la 7.7 tienen propietario = responsable, así que reinterpretar ese campo como "con un tercero"
+     * cambiaba en silencio el significado de filas ya escritas.
+     */
+    const val TIPO_CAMBIO_PROPIO = "Cambio propio"
+
+    /** ¿[m] es un cambio de dinero, con el otro o propio? (para la UI: ícono, signo, filtro). */
+    fun isCambio(m: Movement): Boolean =
+        m.tipo.equals(TIPO_CAMBIO, ignoreCase = true) || isCambioPropio(m)
+
+    /** ¿[m] es un cambio de dinero con alguien de afuera? */
+    fun isCambioPropio(m: Movement): Boolean = m.tipo.equals(TIPO_CAMBIO_PROPIO, ignoreCase = true)
 
     /**
      * Desde esta fecha una transferencia "es del otro" es **regalo completo** y ya no salda la deuda
@@ -521,6 +539,17 @@ object AccountingEngine {
                 // Cambio de dinero: el responsable entrega el medio de `metodoPago` y recibe el otro.
                 // Los dos buckets de cada uno se cruzan; ni el pozo, ni los saldos, ni la propiedad
                 // cruzada cambian.
+                // Cambio propio: lo mismo pero con alguien de afuera. Solo se cruzan los dos buckets
+                // del responsable; ni el otro, ni el pozo, ni la propiedad cruzada cambian.
+                "cambio propio" -> {
+                    val entrega = m.monto
+                    if (respS) {
+                        if (efec) { sEfec -= entrega; sVirt += entrega } else { sVirt -= entrega; sEfec += entrega }
+                    } else {
+                        if (efec) { rEfec -= entrega; rVirt += entrega } else { rVirt -= entrega; rEfec += entrega }
+                    }
+                }
+
                 "cambio" -> {
                     val entregaS = if (respS) m.monto else -m.monto // lo que Santiago entrega del medio elegido
                     if (efec) {

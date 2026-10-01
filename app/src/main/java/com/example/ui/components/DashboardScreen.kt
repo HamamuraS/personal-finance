@@ -959,6 +959,7 @@ private fun MovementDetailDialog(
     val tipoVisible = when {
         AccountingEngine.isCondonacion(movement) -> "Saldo externo (perdón)"
         AccountingEngine.isDevolucion(movement) -> "Saldo externo (pago)"
+        AccountingEngine.isCambioPropio(movement) -> "Cambio de dinero (con otra persona)"
         isCambio -> "Cambio de dinero"
         else -> movement.tipo
     }
@@ -986,6 +987,11 @@ private fun MovementDetailDialog(
                 }
                 DetailRow("Propietario", config.nombreDe(movement.propietario))
                 if (isCambio) {
+                    DetailRow(
+                        "Con",
+                        if (AccountingEngine.isCambioPropio(movement)) "Otra persona"
+                        else config.nombreDe(config.elOtro(movement.responsable).slotKey)
+                    )
                     DetailRow("Entregó", if (movement.metodoPago.contains("Efectivo", ignoreCase = true)) "💵 Efectivo" else "💳 Transferencia")
                 } else {
                     DetailRow("Método de pago", movement.metodoPago)

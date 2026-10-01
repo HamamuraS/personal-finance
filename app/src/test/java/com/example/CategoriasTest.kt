@@ -29,7 +29,7 @@ class CategoriasTest {
         assertEquals(Categorias.GASTOS - Categorias.CORRECCION, Categorias.CUOTAS)
     }
 
-    // --- Rubros (v7.7.1) -----------------------------------------------------------------------
+    // --- Rubros (v7.8) -----------------------------------------------------------------------
 
     @Test
     fun losRubrosCubrenExactamenteElCatalogoDeGastos() {
@@ -101,6 +101,7 @@ class CategoriasTest {
         assertEquals(Categorias.CONDONACIONES, Categorias.deTipo("Condonación"))
         assertEquals(Categorias.DEVOLUCIONES, Categorias.deTipo("Devolución"))
         assertEquals(Categorias.CAMBIOS, Categorias.deTipo("Cambio"))
+        assertEquals(Categorias.CAMBIOS, Categorias.deTipo("Cambio propio"))
         assertEquals(Categorias.GASTOS, Categorias.deTipo("Gasto"))
         // Tipo desconocido: cae a gastos en vez de romper.
         assertEquals(Categorias.GASTOS, Categorias.deTipo("Cualquiera"))

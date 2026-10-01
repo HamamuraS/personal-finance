@@ -1,5 +1,8 @@
 # Versión 7.7 — análisis y plan
 
+> Este archivo sigue también la 7.8 y la 8.0 (al final). Hasta el 2026-09-30 la 7.8 se llamó
+> "7.7.1" y la 8.0 "7.7.2" (los commits de la 7.8 dicen "Versión: 7.7.1").
+
 > Estado: **implementado (2026-09-30), sin commitear**. Compila, los tests unitarios pasan y el port
 > del motor al Apps Script se verificó contra el motor Kotlin con node. **Falta:** probar la UI en un
 > teléfono y desplegar la v7.7 del Apps Script. Las decisiones que estaban abiertas quedaron resueltas
@@ -437,7 +440,7 @@ cosa.
 
 ---
 
-# 7.7.1
+# 7.8
 
 - **Modo claro (traído de la rama 7.6):** `Color.kt`/`Theme.kt` con roles Material 3 completos,
   `LocalIsDarkTheme` en vez de comparar `background == DarkBackground`, textos secundarios con
@@ -496,3 +499,15 @@ cosa.
     amistosa, comentario puntual, frase de ánimo genérica, observación/buena noticia del mes). Si no hay
     datos que encajen, cae a una pregunta genérica o una frase de ánimo. Se pide variar la puntuación
     (el modelo se clavaba en exclamaciones sobre algo puntual).
+
+# 8.0
+
+- **Cambio propio:** tipo nuevo `Cambio propio` (`AccountingEngine.TIPO_CAMBIO_PROPIO`) para canjear
+  efectivo por transferencia con alguien de afuera (familia, amigos, cajero). Solo cruza los dos
+  buckets de quien lo carga; no es gasto, aporte ni deuda. En el alta es el mismo submodo "Cambio" con
+  "¿Con quién?": [Con {otro}] [Con otra persona]. Tipo aparte (y no un campo reinterpretado) porque los
+  `Cambio` cargados desde la 7.7 tienen propietario = responsable. Espejado en `aplicarMovimientos`.
+- **Mensaje del día y fechas:** cada renglón lleva "hace N días" y el día de la semana, y el prompt
+  repite aparte LO RECIENTE (`MSG_DIAS_RECIENTES` = 3 días). Solo se puede preguntar/comentar algo
+  puntual si es reciente; lo más viejo, como mucho en una observación del mes. Motivo: preguntó por
+  "ese ramen en el barrio chino" de la semana anterior. ~5.100 tokens por request.

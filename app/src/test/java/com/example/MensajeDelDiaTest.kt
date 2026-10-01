@@ -11,7 +11,7 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * Mensaje del día (v7.7.1): lo genera el Apps Script y viaja en la hoja Usuarios. Sin mensaje válido
+ * Mensaje del día (v7.8): lo genera el Apps Script y viaja en la hoja Usuarios. Sin mensaje válido
  * de hoy, Inicio tiene que quedar exactamente como antes.
  */
 class MensajeDelDiaTest {
@@ -39,7 +39,7 @@ class MensajeDelDiaTest {
 
     @Test
     fun elCacheViejoSinMensajeSigueLeyendose() {
-        // JSON de usuarios guardado por versiones anteriores (y el de un script sin la v7.7.1).
+        // JSON de usuarios guardado por versiones anteriores (y el de un script sin la v7.8).
         val adapter = Moshi.Builder().add(KotlinJsonAdapterFactory()).build()
             .adapter<List<Usuario>>(Types.newParameterizedType(List::class.java, Usuario::class.java))
         val viejo = """[{"slotKey":"Santiago","nombre":"Santi","colorId":"green","orden":0}]"""

@@ -739,4 +739,43 @@ class AccountingLogicTest {
         assertFalse(Movement.fromRowValues(fila.take(14))!!.evitable)
         assertFalse(Movement.fromRowValues(fila.take(14) + "")!!.evitable)
     }
+
+    // --- v8.0: cambio de dinero con alguien de afuera ----------------------------------------
+
+    @Test
+    fun cambioPropioSoloCruzaLosBucketsDeQuienLoCarga() {
+        // Ro le da 30k en efectivo a la abuela y recibe una transferencia.
+        val previos = listOf(
+            mov("2026-10-01 09:00", 100000.0, "Aporte", "Rocío", metodo = "Efectivo", categoria = "Ingreso"),
+            mov("2026-10-01 09:01", 50000.0, "Aporte", "Santiago", categoria = "Ingreso")
+        )
+        val antes = AccountingEngine.compute(previos)
+        val cambio = mov("2026-10-02 10:00", 30000.0, AccountingEngine.TIPO_CAMBIO_PROPIO, "Rocío", metodo = "Efectivo")
+        val b = AccountingEngine.compute(previos + cambio)
+
+        assertEquals(70000.0, b.rocioEfectivo, delta)
+        assertEquals(30000.0, b.rocioVirtual, delta)
+        // Santiago no participa.
+        assertEquals(antes.santiagoEfectivo, b.santiagoEfectivo, delta)
+        assertEquals(antes.santiagoVirtual, b.santiagoVirtual, delta)
+        // Ni saldos, ni pozo, ni deuda, ni flujos.
+        assertEquals(antes.rocioSaldoFinal, b.rocioSaldoFinal, delta)
+        assertEquals(antes.totalPozo, b.totalPozo, delta)
+        assertEquals(0.0, b.santiagoExterno, delta)
+        assertEquals(antes.totalAportesMes, b.totalAportesMes, delta)
+        assertEquals(0.0, b.totalGastosMes, delta)
+        assertEquals(0.0, b.rocioIngresos - antes.rocioIngresos, delta)
+    }
+
+    @Test
+    fun cambioPropioEnSentidoContrarioComoRetiroDeCajero() {
+        // Santiago saca 20k del cajero: entrega "transferencia" (sale de la cuenta) y recibe efectivo.
+        val b = AccountingEngine.compute(listOf(
+            mov("2026-10-02 10:00", 20000.0, AccountingEngine.TIPO_CAMBIO_PROPIO, "Santiago", metodo = "Billetera Virtual")
+        ))
+        assertEquals(-20000.0, b.santiagoVirtual, delta)
+        assertEquals(20000.0, b.santiagoEfectivo, delta)
+        assertEquals(0.0, b.rocioEfectivo + b.rocioVirtual, delta)
+        assertTrue(AccountingEngine.isCambio(mov("2026-10-02", 1.0, AccountingEngine.TIPO_CAMBIO_PROPIO, "Santiago")))
+    }
 }

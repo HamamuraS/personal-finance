@@ -198,7 +198,9 @@ fun AddMovementScreen(
     val esCondonacion = tipo == AccountingEngine.TIPO_CONDONACION
     val esDevolucion = tipo == AccountingEngine.TIPO_DEVOLUCION
     val esSaldoExterno = esCondonacion || esDevolucion
-    val esCambio = tipo == AccountingEngine.TIPO_CAMBIO
+    // Cambio de dinero: con el otro (`Cambio`) o con alguien de afuera (`Cambio propio`).
+    val esCambioPropio = tipo == AccountingEngine.TIPO_CAMBIO_PROPIO
+    val esCambio = tipo == AccountingEngine.TIPO_CAMBIO || esCambioPropio
     val esModoTransferencia = tipo == "Transferencia" || esSaldoExterno || esCambio
     val otroSlot = usuarios.elOtro(currentUserProfile).slotKey
     val otroNombre = usuarios.nombreDe(otroSlot)
@@ -463,7 +465,7 @@ fun AddMovementScreen(
                             bajada = "💵 ↔ 💳",
                             seleccionado = esCambio,
                             modifier = Modifier.weight(1f),
-                            onClick = { tipo = AccountingEngine.TIPO_CAMBIO }
+                            onClick = { if (!esCambio) tipo = AccountingEngine.TIPO_CAMBIO }
                         )
                         ModoTransferenciaBoton(
                             titulo = "Saldo externo",
@@ -480,12 +482,41 @@ fun AddMovementScreen(
                 }
             }
 
-            // Cambio de dinero: qué entrega quien lo carga. Se guarda en `metodoPago` (lo que sale de
-            // tus manos); lo que recibís es el otro medio.
+            // Cambio de dinero: primero con quién (el otro integrante, o alguien de afuera: familia,
+            // cajero), después qué entrega quien lo carga. Lo entregado se guarda en `metodoPago`; lo
+            // que se recibe es el otro medio.
             if (esCambio) {
                 Column {
                     Text(
-                        text = "¿Qué le das a $otroNombre?",
+                        text = "¿Con quién?",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        ModoTransferenciaBoton(
+                            titulo = "Con $otroNombre",
+                            bajada = "Cambian entre ustedes",
+                            seleccionado = !esCambioPropio,
+                            modifier = Modifier.weight(1f),
+                            onClick = { tipo = AccountingEngine.TIPO_CAMBIO }
+                        )
+                        ModoTransferenciaBoton(
+                            titulo = "Con otra persona",
+                            bajada = "Familia, amigos o cajero",
+                            seleccionado = esCambioPropio,
+                            modifier = Modifier.weight(1f),
+                            onClick = { tipo = AccountingEngine.TIPO_CAMBIO_PROPIO }
+                        )
+                    }
+                }
+                Column {
+                    Text(
+                        text = if (esCambioPropio) "¿Qué das?" else "¿Qué le das a $otroNombre?",
                         fontWeight = FontWeight.Bold,
                         fontSize = 14.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -511,7 +542,8 @@ fun AddMovementScreen(
                         )
                     }
                     Text(
-                        text = "Nadie gana ni pierde plata y la deuda no cambia: solo cambia cómo la tiene cada uno.",
+                        text = if (esCambioPropio) "No es gasto ni aporte: solo cambia cómo tenés tu plata."
+                        else "Nadie gana ni pierde plata y la deuda no cambia: solo cambia cómo la tiene cada uno.",
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 6.dp)

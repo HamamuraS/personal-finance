@@ -15,7 +15,7 @@ import androidx.compose.ui.graphics.Color
 // (surface / surfaceVariant / onSurfaceVariant / outline / outlineVariant) en vez de alphas sobre
 // onSurface. Cada rol de texto se eligió contra su fondo real, no contra blanco puro.
 //
-// v7.7.1: el claro pasó de verde-gris frío a **cálido y pastel** (crema, arena, durazno). Se
+// v7.8: el claro pasó de verde-gris frío a **cálido y pastel** (crema, arena, durazno). Se
 // mantuvo la regla de contraste: todo texto >= 4.5:1 contra el fondo más oscuro sobre el que va
 // (surfaceVariant), y el blanco sobre los rellenos de marca >= 5.5:1.
 // ---------------------------------------------------------------------------------------------

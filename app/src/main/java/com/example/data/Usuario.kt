@@ -12,7 +12,7 @@ package com.example.data
  * - [nombre] es la etiqueta visible en toda la UI (editable).
  * - [colorId] es el id de un preset curado (ver ui/theme/UserColorPalette.kt).
  * - [orden] 0 = slot primario (verde histórico / Santiago), 1 = secundario (azul / Rocío).
- * - [mensaje] / [mensajeFecha]: el "mensaje del día" (v7.7.1) que el Apps Script genera con Gemini
+ * - [mensaje] / [mensajeFecha]: el "mensaje del día" (v7.8) que el Apps Script genera con Gemini
  *   todas las madrugadas (columnas E y F de la hoja `Usuarios`, ver `generarMensajesDelDia`). La app
  *   solo lo lee; [mensajeFecha] ("yyyy-MM-dd") dice de qué día es, para no mostrar uno viejo.
  */

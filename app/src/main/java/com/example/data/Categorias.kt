@@ -21,7 +21,7 @@ data class Rubro(val nombre: String, val emoji: String, val categorias: List<Str
  * Apps Script), así que agregar una acá es seguro y retrocompatible: los movimientos viejos
  * conservan la suya aunque deje de estar en la lista.
  *
- * Gastos en dos niveles (v7.7.1): [RUBROS_GASTOS] agrupa las categorías para el selector y para
+ * Gastos en dos niveles (v7.8): [RUBROS_GASTOS] agrupa las categorías para el selector y para
  * Métricas. **La lista plana [GASTOS] sigue siendo la fuente de verdad** (su primera categoría es
  * el default de un gasto nuevo) y los rubros son una vista sobre ella; `CategoriasTest` verifica que
  * cubran exactamente el catálogo, así que una categoría sin rubro rompe el build en vez de quedar
@@ -48,7 +48,7 @@ object Categorias {
     )
 
     /**
-     * Rubros de gastos. "Gustos" dejó de ser una categoría (v7.7.1): eso ahora lo dice el switch
+     * Rubros de gastos. "Gustos" dejó de ser una categoría (v7.8): eso ahora lo dice el switch
      * 🍰 Evitable, que es ortogonal al "en qué". Los gastos viejos con "Gustos" caen en 🎉 Salidas
      * (ver [rubroDe]). [CORRECCION] no tiene rubro a propósito: es un ajuste técnico, no un consumo.
      */
@@ -91,7 +91,7 @@ object Categorias {
         // Literales a propósito: `AccountingEngine` vive en la capa de UI y `data` no depende de ella.
         "Condonación" -> CONDONACIONES
         "Devolución" -> DEVOLUCIONES
-        "Cambio" -> CAMBIOS
+        "Cambio", "Cambio propio" -> CAMBIOS
         else -> GASTOS
     }
 

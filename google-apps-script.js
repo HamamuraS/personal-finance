@@ -1,8 +1,19 @@
 /**
  * Script de Google Apps Script para la sincronización de la App de Finanzas Personales.
  *
- * Versión: 7.7 (Cambio de dinero, pago de deuda, gastos evitables, edición de movimientos)
+ * Versión: 8.0 (Cambio de dinero con otras personas, mensaje del día atento a las fechas)
  * @description Este script requiere acceso a Google Drive para guardar los tickets.
+ *
+ * Novedades v8.0:
+ *  - Tipo "Cambio propio" en `aplicarMovimientos`: canje de efectivo por transferencia con alguien de
+ *    afuera (familia, cajero). Solo cruza los buckets de quien lo carga.
+ *  - Mensaje del día: cada movimiento va con "hace N días" y lo de los últimos días se manda aparte;
+ *    solo sobre eso puede preguntar o comentar algo puntual.
+ *
+ * Novedades v7.8:
+ *  - Mensaje del día con Gemini: generarMensajesDelDia() (trigger ~2 AM) escribe un mensaje por
+ *    persona en la hoja "Usuarios" (E/F) y GET_USERS lo devuelve. Requiere la propiedad del script
+ *    GEMINI_API_KEY; ver el bloque "MENSAJE DEL DÍA" al final del archivo.
  *
  * Novedades v7.7:
  *  - Tipos nuevos de movimiento en `aplicarMovimientos` (port de `AccountingEngine.compute`):
@@ -15,11 +26,6 @@
  *  - El PUT de movimientos busca el id en TODAS las hojas: si la edición cambió la fecha de mes,
  *    borra la fila vieja y escribe en la hoja del mes nuevo (antes quedaba duplicado).
  *  - renombrarSueldoAIngreso(): opcional, para correr a mano (la app ya lee "Sueldo" como "Ingreso").
- *
- * Novedades v7.7.1:
- *  - Mensaje del día con Gemini: generarMensajesDelDia() (trigger ~2 AM) escribe un mensaje por
- *    persona en la hoja "Usuarios" (E/F) y GET_USERS lo devuelve. Requiere la propiedad del script
- *    GEMINI_API_KEY; ver el bloque "MENSAJE DEL DÍA" al final del archivo.
  *
  * Novedades v7.2:
  *  - Filas de apertura por hoja (tipo "Apertura", categoría "Saldo inicial"): cada mes lleva su
@@ -645,7 +651,7 @@ function getUsers(e) {
         nombre: row[1] ? row[1].toString() : slotKey,
         colorId: row[2] ? row[2].toString() : "",
         orden: Number(row[3]) || 0,
-        // Mensaje del día (v7.7.1, columnas E/F): lo escribe generarMensajesDelDia().
+        // Mensaje del día (v7.8, columnas E/F): lo escribe generarMensajesDelDia().
         mensaje: row.length > 4 && row[4] ? row[4].toString() : "",
         mensajeFecha: row.length > 5 && row[5]
           ? (row[5] instanceof Date ? Utilities.formatDate(row[5], "America/Argentina/Buenos_Aires", "yyyy-MM-dd") : row[5].toString())
@@ -864,6 +870,15 @@ function aplicarMovimientos(movs, estado) {
 
       // Cambio de dinero: el responsable entrega el medio de `metodoPago` y recibe el otro. Se cruzan
       // los buckets de cada uno; la propiedad cruzada no cambia.
+      // Cambio propio (con alguien de afuera): solo se cruzan los buckets del responsable.
+      case "cambio propio":
+        if (respS) {
+          if (efec) { sEfec -= monto; sVirt += monto; } else { sVirt -= monto; sEfec += monto; }
+        } else {
+          if (efec) { rEfec -= monto; rVirt += monto; } else { rVirt -= monto; rEfec += monto; }
+        }
+        break;
+
       case "cambio": {
         const entregaS = respS ? monto : -monto;
         if (efec) { sEfec -= entregaS; sVirt += entregaS; rEfec += entregaS; rVirt -= entregaS; }
@@ -1269,7 +1284,7 @@ function renombrarSueldoAIngreso() {
 }
 
 // =================================================================================================
-// MENSAJE DEL DÍA (v7.7.1)
+// MENSAJE DEL DÍA (v7.8)
 // =================================================================================================
 //
 // Todas las madrugadas (~2 AM, hora Argentina) se le pide a Gemini UN mensaje corto y amistoso por
@@ -1296,6 +1311,13 @@ const MSG_COL_MENSAJE = 5;        // E
 const MSG_COL_FECHA = 6;          // F
 const MSG_MAX_CARACTERES = 90;    // tope duro; al modelo se le piden <= 60
 const TRIGGER_MENSAJES = "generarMensajesDelDia";
+
+/**
+ * Hasta cuántos días atrás un movimiento cuenta como "reciente": lo único sobre lo que el mensaje
+ * puede preguntar o comentar como si acabara de pasar. Sin este corte preguntaba "¿qué tal ese ramen
+ * en el barrio chino?" por algo de la semana pasada. Se genera de madrugada, así que 1 = ayer.
+ */
+const MSG_DIAS_RECIENTES = 3;
 
 /**
  * Modelos por defecto, del preferido al de respaldo: el Flash más nuevo (mejor humor), el Flash-Lite
@@ -1361,10 +1383,15 @@ function calcularMensajesDelDia_() {
   if (usuarios.length === 0) return "La hoja Usuarios está vacía.";
 
   const movimientos = [mesAnterior, mesActual]
-    .map(function (mes) { return movimientosParaMensaje_(mes, usuarios); })
+    .map(function (mes) { return movimientosParaMensaje_(mes, usuarios, hoy); })
     .join("\n");
+  // Los renglones empiezan con "hace" (días): se repiten aparte los recientes para que el modelo no
+  // tenga que deducirlos y para que quede claro sobre qué puede preguntar.
+  const recientes = movimientos.split("\n").filter(function (l) {
+    return /^\d+\|/.test(l) && parseInt(l, 10) <= MSG_DIAS_RECIENTES;
+  }).join("\n");
 
-  const prompt = promptDeMensajes_(hoy, ahora, usuarios, movimientos);
+  const prompt = promptDeMensajes_(hoy, ahora, usuarios, movimientos, recientes);
   const claves = usuarios.map(function (u) { return u.slotKey; });
   const resultado = pedirConRespaldo_(clave, modelos, prompt, claves);
   const mensajes = resultado.mensajes;
@@ -1392,12 +1419,26 @@ function mesAnteriorDe_(mes) {
   return m === 1 ? (y - 1) + "-12" : y + "-" + ("0" + (m - 1)).slice(-2);
 }
 
+/** Días entre dos fechas "yyyy-MM-dd" (hasta - desde). NaN si alguna no parsea. */
+function diasEntre_(desde, hasta) {
+  const a = String(desde).split("-").map(Number), b = String(hasta).split("-").map(Number);
+  return Math.round((Date.UTC(b[0], b[1] - 1, b[2]) - Date.UTC(a[0], a[1] - 1, a[2])) / 86400000);
+}
+
+/** "2026-09-26" -> "sáb 26". */
+function diaCorto_(fecha) {
+  const p = String(fecha).split("-").map(Number);
+  const dias = ["dom", "lun", "mar", "mié", "jue", "vie", "sáb"];
+  return dias[new Date(Date.UTC(p[0], p[1] - 1, p[2])).getUTCDay()] + " " + ("0" + p[2]).slice(-2);
+}
+
 /**
  * Los gastos y aportes vivos de la hoja de [mes], uno por renglón y con lo mínimo:
- * "dd|quién|tipo|categoría|monto|descripción|evitable". "quién" es el nombre visible del dueño
- * (o "ambos" en los comunes). Los montos van redondeados: para comentar alcanza.
+ * "hace|día|quién|tipo|categoría|monto|descripción|evitable". "hace" son los días hasta [hoy]
+ * (0 = hoy, 1 = ayer) y "quién" el nombre visible del dueño (o "ambos" en los comunes). Los montos
+ * van redondeados: para comentar alcanza. Lo fechado en el futuro (si lo hubiera) no se manda.
  */
-function movimientosParaMensaje_(mes, usuarios) {
+function movimientosParaMensaje_(mes, usuarios, hoy) {
   const nombre = nombreHojaDeMes(mes);
   const sheet = nombre ? SpreadsheetApp.getActiveSpreadsheet().getSheetByName(nombre) : null;
   if (!sheet) return "# " + mes + ": sin datos";
@@ -1413,9 +1454,11 @@ function movimientosParaMensaje_(mes, usuarios) {
     if (esLegacySaldoInicial(row[3], categoria)) return;
     const comun = esVerdadero(row[6]) || String(row[11] || "").toLowerCase() === "ambos";
     const dueno = comun ? "ambos" : (nombreDe[normalizarPropietario(row[11], row[5]).toLowerCase()] || String(row[5] || ""));
-    const dia = toDateTime(row[1]).substring(8, 10);
+    const fecha = toDateTime(row[1]).substring(0, 10);
+    const hace = diasEntre_(fecha, hoy);
+    if (isNaN(hace) || hace < 0) return;
     const descripcion = String(row[7] || "").replace(/[|\n\r]+/g, " ").trim().substring(0, 40);
-    lineas.push([dia, dueno, tipo, categoria, Math.round(Number(row[2]) || 0), descripcion, esVerdadero(row[14]) ? "evitable" : ""].join("|"));
+    lineas.push([hace, diaCorto_(fecha), dueno, tipo, categoria, Math.round(Number(row[2]) || 0), descripcion, esVerdadero(row[14]) ? "evitable" : ""].join("|"));
   });
   return lineas.join("\n");
 }
@@ -1425,9 +1468,9 @@ function movimientosParaMensaje_(mes, usuarios) {
  * entre ellas): librado a su criterio, el modelo se clavaba en exclamaciones sobre algo puntual.
  */
 const MSG_FORMATOS = [
-  "una PREGUNTA amistosa y curiosa sobre algo de sus movimientos, como un amigo que se interesa " +
+  "una PREGUNTA amistosa y curiosa sobre algo RECIENTE de sus movimientos, como un amigo que se interesa " +
     "(ej: \"¿Cómo andan los perritos?\", \"¿Cómo estuvo esa salida?\", \"¿Valió la pena esa pizza?\")",
-  "un COMENTARIO simpático o gracioso sobre algo puntual con nombre propio " +
+  "un COMENTARIO simpático o gracioso sobre algo puntual y RECIENTE con nombre propio " +
     "(ej: \"Esa provoleta del sábado pintaba bárbara 🧀\", \"Debe haber estado bueno ese café Martínez\")",
   "una FRASE DE ÁNIMO corta y genérica, sin mencionar gastos, para arrancar el día " +
     "(ej: \"Que hoy te salga todo redondo\", \"Arrancá tranqui, que viene un lindo día\")",
@@ -1445,7 +1488,7 @@ function formatosDelDia_(usuarios) {
   return usuarios.map(function (u, k) { return MSG_FORMATOS[orden[k % orden.length]]; });
 }
 
-function promptDeMensajes_(hoy, ahora, usuarios, movimientos) {
+function promptDeMensajes_(hoy, ahora, usuarios, movimientos, recientes) {
   const dias = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
   const diaSemana = dias[parseInt(Utilities.formatDate(ahora, MSG_ZONA, "u"), 10) % 7];
   const quienes = usuarios.map(function (u) { return '"' + u.slotKey + '" (' + u.nombre + ')'; }).join(" y ");
@@ -1458,7 +1501,8 @@ function promptDeMensajes_(hoy, ahora, usuarios, movimientos) {
   return [
     "Sos el amigo buena onda de una app de finanzas que usa una pareja en Argentina.",
     "Hoy es " + diaSemana + " " + hoy + ". Abajo están sus gastos y aportes del mes pasado y del actual,",
-    "un renglón por movimiento: día|de quién|tipo|categoría|monto en pesos|descripción|evitable.",
+    "un renglón por movimiento: hace (días)|día|de quién|tipo|categoría|monto en pesos|descripción|evitable.",
+    "\"hace\" = cuántos días pasaron: 0 = hoy, 1 = ayer, 7 = hace una semana.",
     "\"ambos\" = gasto compartido. \"evitable\" = lo marcaron como gusto o lujo; sin marca = necesario.",
     "",
     "Escribí UN mensaje para cada una de estas personas: " + quienes + ".",
@@ -1466,8 +1510,18 @@ function promptDeMensajes_(hoy, ahora, usuarios, movimientos) {
     "Formato de hoy para cada uno (respetalo):",
     formatoDeCadaUno,
     "",
-    "Si el formato pide algo puntual y no hay nada que encaje bien, cambiá a una pregunta genérica",
-    "(\"¿Cómo estuvo esa salida?\") o a una frase de ánimo. Mejor algo simple y cálido que forzado.",
+    "Fechas, MUY importante: solo podés preguntar o comentar algo puntual (\"ese ramen\", \"esa salida\")",
+    "si está en LO RECIENTE (hace " + MSG_DIAS_RECIENTES + " días o menos). Algo de hace más tiempo NO se",
+    "pregunta ni se comenta como si hubiera sido ayer: como mucho entra en una observación del mes",
+    "(\"este mes hubo varias salidas\") o directamente no se menciona. Si decís cuándo fue, que sea",
+    "correcto (\"ayer\", \"el sábado\").",
+    "",
+    "LO RECIENTE (hace " + MSG_DIAS_RECIENTES + " días o menos):",
+    recientes || "(no cargaron nada en los últimos días)",
+    "",
+    "Si el formato pide algo puntual y no hay nada reciente que encaje, cambiá a una frase de ánimo,",
+    "a una pregunta que no dependa de un gasto (\"¿Cómo arrancó la semana?\") o a una observación del",
+    "mes. Mejor algo simple y cálido que forzado.",
     "",
     "Qué conviene mirar, cuando el formato habla de sus movimientos: descripciones con nombre propio,",
     "gustos o evitables, algo nuevo respecto del mes anterior, un ingreso, sus mascotas o salidas.",

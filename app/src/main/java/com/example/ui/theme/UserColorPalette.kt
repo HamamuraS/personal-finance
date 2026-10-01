@@ -40,7 +40,7 @@ private val OnFillDark = Color(0xFF111411)
 val USER_COLOR_PRESETS: List<UserColorPreset> = listOf(
     UserColorPreset("green", "Verde", GeoGreenPrimary, GeoDarkPrimary, OnFillLight, OnFillDark),
     UserColorPreset("blue", "Azul", GeoBlueTertiary, GeoDarkTertiary, OnFillLight, OnFillDark),
-    // Los rellenos claros se suavizaron en la v7.7.1 para la paleta cálida, sin bajar de ~5.4:1
+    // Los rellenos claros se suavizaron en la v7.8 para la paleta cálida, sin bajar de ~5.4:1
     // sobre las tarjetas ni con texto blanco encima. Los oscuros no cambiaron.
     UserColorPreset("violet", "Violeta", Color(0xFF6E55A3), Color(0xFFC3B0E8), OnFillLight, OnFillDark),
     UserColorPreset("teal", "Turquesa", Color(0xFF2A6E66), Color(0xFF83CFC5), OnFillLight, OnFillDark),

@@ -44,7 +44,7 @@ object MovementNotifier {
     private fun emojiTipo(tipo: String): String = when (tipo.lowercase()) {
         "aporte" -> "💰"
         "transferencia" -> "🔁"
-        "cambio" -> "💱"
+        "cambio", "cambio propio" -> "💱"
         "condonación", "condonacion", "devolución", "devolucion" -> "🤝"
         else -> "💸"
     }
