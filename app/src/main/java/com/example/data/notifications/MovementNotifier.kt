@@ -1,18 +1,12 @@
 package com.example.data.notifications
 
-import android.annotation.SuppressLint
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
-import android.content.Intent
-import android.os.Build
 import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
-import com.example.MainActivity
-import com.example.R
 import com.example.ScreenTab
+import com.example.data.Categorias
 import com.example.data.Movement
+import com.example.util.Formato
 import kotlin.math.absoluteValue
 
 /**
@@ -27,18 +21,8 @@ import kotlin.math.absoluteValue
  */
 object MovementNotifier {
 
-    const val CHANNEL_ID = "movimientos"
     private const val NOTIF_ID_PENDIENTES = 2001
-
-    fun ensureChannel(context: Context) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        val channel = NotificationChannel(
-            CHANNEL_ID,
-            "Movimientos registrados",
-            NotificationManager.IMPORTANCE_DEFAULT
-        ).apply { description = "Confirmación de los movimientos guardados en la planilla" }
-        context.getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
-    }
+    private const val REQUEST_CODE = 1
 
     /** Emoji según el tipo de movimiento. */
     private fun emojiTipo(tipo: String): String = when (tipo.lowercase()) {
@@ -49,31 +33,35 @@ object MovementNotifier {
         else -> "💸"
     }
 
-    /** Emoji según la categoría. Cae en 🧾 para cualquier categoría que no esté mapeada. */
-    private fun emojiCategoria(categoria: String): String = when (categoria.lowercase()) {
-        "transporte" -> "🚌"
-        "servicios" -> "🧾"
-        "animales" -> "🐾"
-        "supermercado" -> "🛒"
-        "verdulería" -> "🥬"
-        "consumo inmediato" -> "🥤"
-        "alimentos frescos" -> "🐟"
-        "farmacia" -> "💊"
-        "indumentaria" -> "👕"
-        "cuidado personal" -> "🧴"
-        "salidas" -> "🍻"
-        "gustos" -> "🍫"
-        "utilería" -> "🔧"
-        "sueldo" -> "🤑"
-        "transferencias" -> "🔁"
-        "ajuste" -> "⚖️"
-        "reembolso" -> "↩️"
-        else -> "🧾"
-    }
+    /**
+     * Emoji según la categoría. Los nombres viejos se leen como su equivalente actual
+     * ([Categorias.canonica]) y los ingresos —"Ingreso", o "Sueldo" en filas viejas— van con 🤑.
+     * Cae en 🧾 para cualquier categoría que no esté mapeada.
+     */
+    private fun emojiCategoria(categoria: String): String =
+        if (Categorias.esIngreso(categoria)) "🤑" else when (Categorias.canonica(categoria).lowercase()) {
+            "transporte" -> "🚌"
+            "servicios" -> "🧾"
+            "animales" -> "🐾"
+            "supermercado" -> "🛒"
+            "verdulería" -> "🥬"
+            "consumo inmediato" -> "🥤"
+            "alimentos frescos" -> "🐟"
+            "farmacia" -> "💊"
+            "indumentaria" -> "👕"
+            "cuidado personal" -> "🧴"
+            "salidas" -> "🍻"
+            "gustos" -> "🍫"
+            "utilería" -> "🔧"
+            "transferencias" -> "🔁"
+            "ajuste" -> "⚖️"
+            "reembolso" -> "↩️"
+            else -> "🧾"
+        }
 
     /** "Gasto" -> "Gasto registrado"; el título lleva el emoji del tipo. */
     fun notificarGuardado(context: Context, movement: Movement) {
-        val monto = CuotasNotifier.formatMoney().format(movement.monto)
+        val monto = Formato.dinero().format(movement.monto)
         val titulo = "${emojiTipo(movement.tipo)} ${movement.tipo} guardado"
         val texto = buildString {
             append("$monto en ${movement.categoria} ${emojiCategoria(movement.categoria)}")
@@ -107,9 +95,7 @@ object MovementNotifier {
      * aviso de "guardado", no el de "guardando".
      */
     fun notificacionDeSubidaEnCurso(context: Context): android.app.Notification {
-        ensureChannel(context)
-        return NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
+        return Notificaciones.builder(context, CanalDeNotificacion.MOVIMIENTOS)
             .setContentTitle("Guardando en la planilla…")
             .setContentText("Terminando de registrar tus movimientos ⏳")
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -122,32 +108,9 @@ object MovementNotifier {
     const val NOTIF_ID_SUBIENDO = 2002
 
     /** Al tocar la notificación, abre (o trae al frente) la app en Inicio. */
-    private fun contentIntent(context: Context): PendingIntent {
-        val intent = Intent(context, MainActivity::class.java).apply {
-            // SINGLE_TOP y no CLEAR_TOP: con CLEAR_TOP la Activity viva se destruía y se
-            // recreaba en vez de recibir `onNewIntent`, perdiendo el ViewModel y con él los
-            // borradores del alta a medio escribir.
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
-            putExtra(MainActivity.EXTRA_OPEN_TAB, ScreenTab.INICIO.name)
-        }
-        return PendingIntent.getActivity(
-            context, 1, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-    }
+    private fun contentIntent(context: Context): PendingIntent =
+        Notificaciones.abrirEn(context, ScreenTab.INICIO, REQUEST_CODE)
 
-    @SuppressLint("MissingPermission") // chequeado con CuotasNotifier.hasPermission()
-    private fun show(context: Context, notifId: Int, titulo: String, texto: String) {
-        if (!CuotasNotifier.hasPermission(context)) return
-        ensureChannel(context)
-        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle(titulo)
-            .setContentText(texto)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(texto))
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-            .setAutoCancel(true)
-            .setContentIntent(contentIntent(context))
-            .build()
-        NotificationManagerCompat.from(context).notify(notifId, notification)
-    }
+    private fun show(context: Context, notifId: Int, titulo: String, texto: String) =
+        Notificaciones.mostrar(context, CanalDeNotificacion.MOVIMIENTOS, notifId, titulo, texto, contentIntent(context))
 }

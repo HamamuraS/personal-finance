@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import com.example.data.Movement
 import com.example.data.PreferencesHelper
 import com.example.data.notifications.BackgroundSyncScheduler
@@ -36,10 +37,19 @@ import com.example.ui.components.DashboardScreen
 import com.example.ui.components.IdentityPickerScreen
 import com.example.ui.components.ReportsScreen
 import com.example.ui.components.SettingsScreen
+import com.example.ui.components.common.ConfirmDialog
 import com.example.ui.theme.MyApplicationTheme
 
-enum class ScreenTab {
-    INICIO, NUEVO, CUOTAS, METRICAS, AJUSTES
+/**
+ * Pestañas de la barra inferior, en orden. El nombre del enum viaja en el extra de las
+ * notificaciones ([MainActivity.EXTRA_OPEN_TAB]): no se renombra.
+ */
+enum class ScreenTab(val etiqueta: String, val icono: ImageVector) {
+    INICIO("Inicio", Icons.Default.Home),
+    NUEVO("Nuevo", Icons.Default.Add),
+    CUOTAS("Cuotas", Icons.Default.CreditCard),
+    METRICAS("Métricas", Icons.Default.Info),
+    AJUSTES("Ajustes", Icons.Default.Settings)
 }
 
 class MainActivity : ComponentActivity() {
@@ -105,11 +115,9 @@ class MainActivity : ComponentActivity() {
             // El tema es del usuario, no del sistema: las barras lo tienen que seguir a él.
             LaunchedEffect(isDarkMode) { aplicarEstiloDeBarras(isDarkMode) }
             val usuarios by viewModel.usuarios.collectAsState()
-            val activeUser by viewModel.activeUser.collectAsState()
-            val otherUser by viewModel.otherUser.collectAsState()
             val hasChosenIdentity by viewModel.hasChosenIdentity.collectAsState()
 
-            MyApplicationTheme(darkTheme = isDarkMode, activeUser = activeUser, otherUser = otherUser) {
+            MyApplicationTheme(darkTheme = isDarkMode, usuarios = usuarios, currentUserKey = userProfile) {
                 // Gate de identidad: en el primer arranque (o tras cerrar sesión) se elige quién sos.
                 if (!hasChosenIdentity) {
                     IdentityPickerScreen(
@@ -150,6 +158,7 @@ class MainActivity : ComponentActivity() {
                 val dashboardFilters by viewModel.dashboardFilters.collectAsState()
                 val pendingStates by viewModel.pendingStates.collectAsState()
                 val scrollAFiltros by viewModel.scrollAFiltros.collectAsState()
+                val availableMonths by viewModel.availableMonths.collectAsState()
 
                 LaunchedEffect(isCurrentMonth) {
                     if (!isCurrentMonth && currentTab == ScreenTab.NUEVO) {
@@ -165,16 +174,12 @@ class MainActivity : ComponentActivity() {
                     currentTab = ScreenTab.NUEVO
                 }
                 editarPendiente?.let { m ->
-                    AlertDialog(
-                        onDismissRequest = { editarPendiente = null },
-                        title = { Text("¿Descartar lo que estabas cargando?") },
-                        text = { Text("Tenés un movimiento a medio cargar en Nuevo. Si editás este, se pierde.") },
-                        confirmButton = {
-                            TextButton(onClick = { editarPendiente = null; editar(m) }) { Text("Editar igual") }
-                        },
-                        dismissButton = {
-                            TextButton(onClick = { editarPendiente = null }) { Text("Cancelar") }
-                        }
+                    ConfirmDialog(
+                        titulo = "¿Descartar lo que estabas cargando?",
+                        texto = "Tenés un movimiento a medio cargar en Nuevo. Si editás este, se pierde.",
+                        confirmar = "Editar igual",
+                        onConfirm = { editarPendiente = null; editar(m) },
+                        onDismiss = { editarPendiente = null }
                     )
                 }
 
@@ -185,38 +190,15 @@ class MainActivity : ComponentActivity() {
                             containerColor = MaterialTheme.colorScheme.surface,
                             tonalElevation = 0.dp
                         ) {
-                            NavigationBarItem(
-                                selected = currentTab == ScreenTab.INICIO,
-                                onClick = { currentTab = ScreenTab.INICIO },
-                                icon = { Icon(Icons.Default.Home, contentDescription = "Inicio") },
-                                label = { Text("Inicio", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
-                            )
-                            if (isCurrentMonth) {
+                            // "Nuevo" solo existe mirando el mes en curso: no se carga en meses cerrados.
+                            ScreenTab.entries.filter { it != ScreenTab.NUEVO || isCurrentMonth }.forEach { tab ->
                                 NavigationBarItem(
-                                    selected = currentTab == ScreenTab.NUEVO,
-                                    onClick = { currentTab = ScreenTab.NUEVO },
-                                    icon = { Icon(Icons.Default.Add, contentDescription = "Nuevo") },
-                                    label = { Text("Nuevo", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                                    selected = currentTab == tab,
+                                    onClick = { currentTab = tab },
+                                    icon = { Icon(tab.icono, contentDescription = tab.etiqueta) },
+                                    label = { Text(tab.etiqueta, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
                                 )
                             }
-                            NavigationBarItem(
-                                selected = currentTab == ScreenTab.CUOTAS,
-                                onClick = { currentTab = ScreenTab.CUOTAS },
-                                icon = { Icon(Icons.Default.CreditCard, contentDescription = "Cuotas") },
-                                label = { Text("Cuotas", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
-                            )
-                            NavigationBarItem(
-                                selected = currentTab == ScreenTab.METRICAS,
-                                onClick = { currentTab = ScreenTab.METRICAS },
-                                icon = { Icon(Icons.Default.Info, contentDescription = "Métricas") },
-                                label = { Text("Métricas", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
-                            )
-                            NavigationBarItem(
-                                selected = currentTab == ScreenTab.AJUSTES,
-                                onClick = { currentTab = ScreenTab.AJUSTES },
-                                icon = { Icon(Icons.Default.Settings, contentDescription = "Ajustes") },
-                                label = { Text("Ajustes", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
-                            )
                         }
                     }
                 ) { innerPadding ->
@@ -233,9 +215,8 @@ class MainActivity : ComponentActivity() {
                                     onRefresh = { viewModel.refreshData() },
                                     onDeleteMovement = { viewModel.deleteMovement(it) },
                                     onDuplicateMovement = { viewModel.duplicateMovement(it) {} },
-                                    availableMonths = viewModel.availableMonths.collectAsState().value,
+                                    availableMonths = availableMonths,
                                     selectedMonth = selectedMonth,
-                                    isCurrentMonth = isCurrentMonth,
                                     onMonthSelected = { viewModel.setSelectedMonth(it) },
                                     plans = plans,
                                     allMovements = allMovements,
@@ -248,6 +229,7 @@ class MainActivity : ComponentActivity() {
                                     scrollAFiltros = scrollAFiltros,
                                     onScrollAFiltrosConsumido = { viewModel.consumirScrollAFiltros() },
                                     puedeEditar = { viewModel.puedeEditar(it) },
+                                    puedeBorrar = { viewModel.puedeBorrar(it) },
                                     onEditMovement = { m ->
                                         val borrador = viewModel.movementDraft.value
                                         if (borrador.tieneContenido && borrador.editandoId != m.id) editarPendiente = m
@@ -272,7 +254,7 @@ class MainActivity : ComponentActivity() {
                                     config = usuarios,
                                     balance = balance,
                                     movements = movements,
-                                    availableMonths = viewModel.availableMonths.collectAsState().value,
+                                    availableMonths = availableMonths,
                                     selectedMonth = selectedMonth,
                                     onMonthSelected = { viewModel.setSelectedMonth(it) },
                                     plans = plans,
@@ -311,12 +293,4 @@ class MainActivity : ComponentActivity() {
                 runCatching { ScreenTab.valueOf(name) }.getOrNull()
             }
     }
-}
-
-@Composable
-fun Greeting(name: String, modifier: Modifier = Modifier) {
-    Text(
-        text = "Hello $name!",
-        modifier = modifier
-    )
 }

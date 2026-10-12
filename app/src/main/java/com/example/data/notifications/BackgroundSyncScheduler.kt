@@ -50,7 +50,7 @@ object BackgroundSyncScheduler {
     }
 
     private fun millisHastaProximaCorrida(): Long =
-        millisHastaProximaCorrida(Calendar.getInstance(BackgroundSyncWorker.ARGENTINA_TZ))
+        millisHastaProximaCorrida(Calendar.getInstance(com.example.util.Fechas.ARGENTINA))
 
     /**
      * Milisegundos desde [ahora] hasta la próxima de [HORAS_DE_CORRIDA]. Separado del reloj del

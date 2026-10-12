@@ -4,14 +4,16 @@ import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.example.data.AhorroRepository
+import com.example.data.CuotaPlan
+import com.example.data.Movement
 import com.example.data.PreferencesHelper
+import com.example.data.mes
 import com.example.data.upload.MovementUploadScheduler
-import com.example.ui.AccountingEngine
-import com.example.ui.CuotasEngine
-import java.text.SimpleDateFormat
+import com.example.domain.AccountingEngine
+import com.example.domain.CuotasEngine
+import com.example.util.Fechas
+import kotlinx.coroutines.CancellationException
 import java.util.Calendar
-import java.util.Locale
-import java.util.TimeZone
 
 /**
  * Sincronización periódica en segundo plano. Corre cada 12 horas (06:00 y 18:00 hora argentina, ver
@@ -38,8 +40,6 @@ class BackgroundSyncWorker(
 ) : CoroutineWorker(context, params) {
 
     companion object {
-        val ARGENTINA_TZ: TimeZone = TimeZone.getTimeZone("America/Argentina/Buenos_Aires")
-
         /** Días del mes siguiente en los que todavía se intenta el aviso de cierre no enviado. */
         const val DIAS_RECUPERO_CIERRE = 5
     }
@@ -59,21 +59,14 @@ class BackgroundSyncWorker(
         return try {
             // 2. Refresco. A diferencia del worker viejo, se hace SIEMPRE: es el motivo de existir
             //    de la corrida de las 06/18 y lo que mantiene fresca la ventana de `lastFetchAt`.
+            //    En Modo Local (Demo) el repositorio lee los datos locales.
             val repo = AhorroRepository(prefs)
-            val movimientos = if (prefs.useLocalDemo) {
-                prefs.getLocalMovements()
-            } else {
-                repo.fetchMovements(prefs.scriptUrl)
-            }
-            val planes = if (prefs.useLocalDemo) {
-                prefs.getLocalPlans()
-            } else {
-                repo.fetchPlans(prefs.scriptUrl).also { prefs.savePlansCache(it) }
-            }
+            val movimientos = repo.fetchMovements()
+            val planes = repo.fetchPlans()
             // Usuarios: traen el mensaje del día que el Apps Script escribe a las ~2 AM. Sin esto,
             // el fetch de arriba renueva `lastFetchAt`, la app arranca contra el cache y muestra la
             // config de ayer — con un mensaje de otra fecha, que se oculta. Guarda el cache solo.
-            repo.fetchUsuarios(prefs.scriptUrl)
+            repo.fetchUsuarios()
 
             // 3. Corte del mes (plata + cuotas). Escribir el saldo inicial salía de un botón en
             //    Ajustes que hay que acordarse de tocar, así que en la práctica las hojas seguían
@@ -85,7 +78,10 @@ class BackgroundSyncWorker(
             // 4. Recordatorios de cuotas.
             notificarCuotas(prefs, movimientos, planes)
             Result.success()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
+            android.util.Log.e("BackgroundSyncWorker", "Falló la sincronización de fondo", e)
             Result.retry()
         }
     }
@@ -109,46 +105,34 @@ class BackgroundSyncWorker(
     private suspend fun materializarCorteDelMes(
         prefs: PreferencesHelper,
         repo: AhorroRepository,
-        movimientos: List<com.example.data.Movement>
+        movimientos: List<Movement>
     ) {
         if (prefs.useLocalDemo || prefs.scriptUrl.isEmpty()) return
 
-        val mes = SimpleDateFormat("yyyy-MM", Locale.US)
-            .apply { timeZone = ARGENTINA_TZ }
-            .format(Calendar.getInstance(ARGENTINA_TZ).time)
+        val mes = Fechas.mesActual(Fechas.ARGENTINA)
+        val usable = movimientos.filter { !AccountingEngine.isLegacyCarryover(it) && it.mes.isNotEmpty() }
 
-        val usable = movimientos.filter {
-            !AccountingEngine.isLegacyCarryover(it) && mesDe(it).isNotEmpty()
-        }
-
-        val faltaApertura = usable.none { mesDe(it) == mes && AccountingEngine.isOpeningRow(it) }
-        val hayDeDondeArrastrar = usable.any { mesDe(it) < mes }
+        val faltaApertura = usable.none { it.mes == mes && AccountingEngine.isOpeningRow(it) }
+        val hayDeDondeArrastrar = usable.any { it.mes < mes }
         if (faltaApertura && hayDeDondeArrastrar &&
             AccountingEngine.chequearRecalculo(usable, mes).permitido
         ) {
             AccountingEngine.openingRowsFor(mes, AccountingEngine.openingFor(usable, mes))
-                .forEach { repo.saveMovement(prefs.scriptUrl, it, action = "PUT") }
+                .forEach { repo.saveMovement(it) }
         }
 
-        repo.snapshotCuotasPrevias(prefs.scriptUrl, mes)
+        repo.snapshotCuotasPrevias(mes)
     }
-
-    /** "yyyy-MM" de un movimiento, o "" si la fecha no tiene forma de fecha. */
-    private fun mesDe(m: com.example.data.Movement): String =
-        if (m.fecha.length >= 7) m.fecha.substring(0, 7) else ""
 
     private fun notificarCuotas(
         prefs: PreferencesHelper,
-        movimientos: List<com.example.data.Movement>,
-        planes: List<com.example.data.CuotaPlan>
+        movimientos: List<Movement>,
+        planes: List<CuotaPlan>
     ) {
-        val hoy = Calendar.getInstance(ARGENTINA_TZ)
+        val hoy = Calendar.getInstance(Fechas.ARGENTINA)
         val esLunes = hoy.get(Calendar.DAY_OF_WEEK) == Calendar.MONDAY
-
-        val mesFormat = SimpleDateFormat("yyyy-MM", Locale.US).apply { timeZone = ARGENTINA_TZ }
-        val diaFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = ARGENTINA_TZ }
-        val mesActual = mesFormat.format(hoy.time)
-        val hoyIso = diaFormat.format(hoy.time)
+        val mesActual = Fechas.mesActual(Fechas.ARGENTINA)
+        val hoyIso = Fechas.hoy(Fechas.ARGENTINA)
 
         val cierre = CuotasEngine.avisoDeCierre(
             mesActual = mesActual,

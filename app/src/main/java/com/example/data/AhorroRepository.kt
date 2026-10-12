@@ -1,232 +1,135 @@
 package com.example.data
 
 import android.util.Log
-import okhttp3.OkHttpClient
-import okhttp3.logging.HttpLoggingInterceptor
-import retrofit2.Retrofit
-import retrofit2.converter.moshi.MoshiConverterFactory
-import com.squareup.moshi.Moshi
-import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
+import com.example.domain.CuotasEngine
+import com.example.util.Fechas
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
-class AhorroRepository(private val prefsHelper: PreferencesHelper) {
+/**
+ * Acceso a los datos: el Web App de Apps Script en modo normal, o SharedPreferences en Modo Local
+ * (Demo). Toda lectura de red cae al cache si falla; toda escritura devuelve si se confirmó.
+ *
+ * [scriptUrl] y [folderId] vienen fijos en el APK (ver [AppConfig]); son parámetros solo para poder
+ * apuntar el repositorio a un servidor de prueba.
+ */
+class AhorroRepository(
+    private val prefsHelper: PreferencesHelper,
+    private val scriptUrl: String = prefsHelper.scriptUrl,
+    private val folderId: String = prefsHelper.folderId
+) {
 
-    private val moshi = Moshi.Builder().add(KotlinJsonAdapterFactory()).build()
+    private val sheetsService: SheetsService get() = WebAppClient.service
 
-    private val sheetsService: SheetsService by lazy {
-        val logging = HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BODY
-        }
-        
-        val client = OkHttpClient.Builder()
-            .addInterceptor(logging)
-            .build()
+    private val demo: Boolean get() = prefsHelper.useLocalDemo
 
-        Retrofit.Builder()
-            // The actual URL is passed via @Url, but Retrofit needs a base URL
-            .baseUrl("https://script.google.com/")
-            .client(client)
-            .addConverterFactory(MoshiConverterFactory.create(moshi))
-            .build()
-            .create(SheetsService::class.java)
-    }
+    private fun urlCon(query: String): String =
+        if (scriptUrl.contains("?")) "$scriptUrl&$query" else "$scriptUrl?$query"
 
     /**
-     * Obtiene todos los movimientos.
-     * Si está en modo demo de red o falla, carga de cache.
+     * Corre un pedido al Web App. Devuelve la respuesta si el servidor la confirmó (`SUCCESS`), o null
+     * si no (HTTP de error, `status` distinto, excepción de red). La cancelación de la corrutina no es
+     * un error: se propaga.
      */
-    suspend fun fetchMovements(webAppUrl: String): List<Movement> {
-        if (prefsHelper.useLocalDemo) {
-            return prefsHelper.getLocalMovements().filter { !it.eliminado }
-        }
-
-        if (webAppUrl.isEmpty()) {
-            return prefsHelper.getSheetsCache()
-        }
-
-        return try {
-            val requestUrl = if (webAppUrl.contains("?")) "$webAppUrl&action=GET" else "$webAppUrl?action=GET"
-            val response = sheetsService.getMovements(requestUrl)
-            
-            if (response.isSuccessful) {
-                val value = response.body()
-                if (value?.status == "SUCCESS") {
-                    val rows = value.data ?: emptyList()
-                    prefsHelper.saveSheetsCache(rows)
-                    // Único punto donde consta que la red respondió de verdad: acá se renueva la
-                    // ventana de frescura que evita el fetch automático en cada arranque.
-                    prefsHelper.lastFetchAt = System.currentTimeMillis()
-                    rows
-                } else {
-                    Log.e("AhorroRepository", "WebApp returned error: ${value?.message}")
-                    prefsHelper.getSheetsCache()
-                }
+    private suspend fun pedir(etiqueta: String, llamada: suspend () -> retrofit2.Response<WebAppResponse>): WebAppResponse? =
+        try {
+            val response = llamada()
+            val body = response.body()
+            if (response.isSuccessful && body?.status == WebApp.SUCCESS) {
+                body
             } else {
-                Log.e("AhorroRepository", "Error request: ${response.code()}")
-                prefsHelper.getSheetsCache()
+                Log.e(TAG, "$etiqueta: ${response.code()} ${body?.message.orEmpty()}")
+                null
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            Log.e("AhorroRepository", "Network Exception: ${e.message}", e)
-            prefsHelper.getSheetsCache()
+            Log.e(TAG, "$etiqueta: ${e.message}", e)
+            null
         }
+
+    private suspend fun post(etiqueta: String, request: WebAppRequest): WebAppResponse? =
+        pedir(etiqueta) { sheetsService.post(scriptUrl, request) }
+
+    // ---------------------------------------------------------------------------------------------
+    // Movimientos
+    // ---------------------------------------------------------------------------------------------
+
+    /** Todos los movimientos. En demo, los locales; sin URL o si la red falla, el cache. */
+    suspend fun fetchMovements(): List<Movement> = withContext(Dispatchers.IO) {
+        if (demo) return@withContext prefsHelper.getLocalMovements().filter { !it.eliminado }
+        if (scriptUrl.isEmpty()) return@withContext prefsHelper.getSheetsCache()
+
+        val respuesta = pedir("GET") { sheetsService.get(urlCon("action=${WebApp.GET_MOVEMENTS}")) }
+            ?: return@withContext prefsHelper.getSheetsCache()
+        val rows = respuesta.data ?: emptyList()
+        prefsHelper.saveSheetsCache(rows)
+        // Único punto donde consta que la red respondió de verdad: acá se renueva la ventana de
+        // frescura que evita el fetch automático en cada arranque.
+        prefsHelper.lastFetchAt = System.currentTimeMillis()
+        rows
     }
 
     /**
-     * Agrega un nuevo movimiento al Web App.
+     * Guarda un movimiento con `PUT`, un *upsert*: el Web App busca por id y reemplaza la fila si
+     * existe, o la agrega si no. Toda escritura es así —altas de la cola, pagos de cuotas, filas de
+     * apertura— para que reintentar nunca duplique.
      */
-    /**
-     * @param action "POST" para alta. "PUT" es un *upsert*: el Web App busca por id y reemplaza la
-     *        fila si existe, o la agrega si no. Lo usan las filas de apertura, cuyos ids son
-     *        determinísticos, para que recalcular el saldo inicial no duplique filas.
-     */
-    suspend fun saveMovement(
-        webAppUrl: String,
-        movement: Movement,
-        imageInfo: ImageInfo? = null,
-        folderId: String? = null,
-        action: String = "POST"
-    ): Boolean {
-        if (prefsHelper.useLocalDemo) {
+    suspend fun saveMovement(movement: Movement, imageInfo: ImageInfo? = null): Boolean = withContext(Dispatchers.IO) {
+        if (demo) {
             val current = prefsHelper.getLocalMovements().toMutableList()
             current.removeAll { it.id == movement.id }
             current.add(0, movement)
             prefsHelper.saveLocalMovements(current)
-            return true
+            return@withContext true
         }
+        if (scriptUrl.isEmpty()) return@withContext false
 
-        if (webAppUrl.isEmpty()) {
-            return false
-        }
-
-        Log.d("AHORRO_DEBUG", "--------------------------------------------------")
-        Log.d("AHORRO_DEBUG", "ENVIANDO A: $webAppUrl")
-        return try {
-            val req = WebAppRequest(
-                action = action,
-                body = movement,
-                imageInfo = imageInfo,
-                folderId = folderId
-            )
-
-            val response = sheetsService.addMovement(webAppUrl, req)
-            Log.d("AHORRO_DEBUG", "CODIGO RESPUESTA: ${response.code()}")
-            Log.d("AHORRO_DEBUG", "CUERPO: ${response.body()}")
-            Log.d("AHORRO_DEBUG", "--------------------------------------------------")
-            
-            if (response.isSuccessful && response.body()?.status == "SUCCESS") {
-                val cached = prefsHelper.getSheetsCache().toMutableList()
-                val idx = cached.indexOfFirst { it.id == movement.id }
-                if (idx != -1) cached[idx] = movement else cached.add(movement)
-                prefsHelper.saveSheetsCache(cached)
-                true
-            } else {
-                Log.e("AhorroRepository", "Error al agregar en WebApp")
-                false
-            }
-        } catch (e: Exception) {
-            Log.e("AhorroRepository", "Exception saveMovement: ${e.message}", e)
-            false
-        }
+        val request = WebAppRequest(action = WebApp.PUT, body = movement, imageInfo = imageInfo, folderId = folderId)
+        post("saveMovement", request) ?: return@withContext false
+        prefsHelper.saveSheetsCache(prefsHelper.getSheetsCache().reemplazarOAgregar(movement) { it.id })
+        true
     }
 
-    suspend fun deleteMovement(webAppUrl: String, movement: Movement): Boolean {
-        if (prefsHelper.useLocalDemo) {
-            val current = prefsHelper.getLocalMovements().toMutableList()
-            // Baja lógica local
-            val index = current.indexOfFirst { it.id == movement.id }
-            if (index != -1) {
-                current[index] = current[index].copy(eliminado = true)
-                prefsHelper.saveLocalMovements(current)
+    /** Baja lógica de un movimiento. Confirmada, el movimiento sale del cache. */
+    suspend fun deleteMovement(movement: Movement): Boolean = withContext(Dispatchers.IO) {
+        if (demo) {
+            val current = prefsHelper.getLocalMovements()
+            if (current.any { it.id == movement.id }) {
+                prefsHelper.saveLocalMovements(current.map { if (it.id == movement.id) it.copy(eliminado = true) else it })
             }
-            return true
+            return@withContext true
         }
+        if (scriptUrl.isEmpty()) return@withContext false
 
-        if (webAppUrl.isEmpty()) return false
-
-        return try {
-            val req = WebAppRequest(
-                action = "DELETE",
-                id = movement.id
-            )
-            val response = sheetsService.addMovement(webAppUrl, req)
-            if (response.isSuccessful && response.body()?.status == "SUCCESS") {
-                val cached = prefsHelper.getSheetsCache().toMutableList()
-                val idx = cached.indexOfFirst { it.id == movement.id }
-                if (idx != -1) {
-                    cached[idx] = cached[idx].copy(eliminado = true)
-                    prefsHelper.saveSheetsCache(cached)
-                }
-                true
-            } else {
-                false
-            }
-        } catch (e: Exception) {
-            Log.e("AhorroRepository", "Exception deleteMovement: ${e.message}", e)
-            false
-        }
-    }
-
-    fun deleteLocalMovement(movement: Movement) {
-        val current = prefsHelper.getLocalMovements().toMutableList()
-        current.removeAll { it.id == movement.id }
-        prefsHelper.saveLocalMovements(current)
+        post("deleteMovement", WebAppRequest(action = WebApp.DELETE, id = movement.id)) ?: return@withContext false
+        // Se saca del cache (antes quedaba marcado como eliminado y, si el refresco siguiente fallaba,
+        // el movimiento borrado volvía a mostrarse y a contar en los saldos).
+        prefsHelper.saveSheetsCache(prefsHelper.getSheetsCache().filterNot { it.id == movement.id })
+        true
     }
 
     // ---------------------------------------------------------------------------------------------
     // Módulo de cuotas
     // ---------------------------------------------------------------------------------------------
 
-    private fun monthAbbrevToNum(abbr: String): String? = when (abbr.lowercase()) {
-        "jan", "ene" -> "01"; "feb" -> "02"; "mar" -> "03"; "apr", "abr" -> "04"
-        "may" -> "05"; "jun" -> "06"; "jul" -> "07"; "aug", "ago" -> "08"
-        "sep" -> "09"; "oct" -> "10"; "nov" -> "11"; "dec", "dic" -> "12"
-        else -> null
-    }
-
-    /** Extrae "yyyy-MM" de varios formatos, incluida la fecha "Wed Jul 01 2026 …" que Sheets puede
-     *  devolver cuando guardó la celda como Date. Si no reconoce el formato, deja la entrada intacta. */
-    private fun toYyyyMm(raw: String): String {
-        val s = raw.trim()
-        if (s.isEmpty()) return s
-        Regex("^(\\d{4})-(\\d{2})").find(s)?.let { return "${it.groupValues[1]}-${it.groupValues[2]}" }
-        Regex("^[A-Za-z]{3}\\s([A-Za-z]{3})\\s\\d{2}\\s(\\d{4})").find(s)?.let { m ->
-            val mm = monthAbbrevToNum(m.groupValues[1]) ?: return s
-            return "${m.groupValues[2]}-$mm"
-        }
-        return s
-    }
-
-    /** Normaliza `fechaCreacion` a "yyyy-MM-dd HH:mm" (sortable). Convierte el formato Date GMT. */
-    private fun normalizeCreation(raw: String): String {
-        val s = raw.trim()
-        if (s.isEmpty()) return s
-        if (Regex("^\\d{4}-\\d{2}-\\d{2}").containsMatchIn(s)) return s
-        Regex("^[A-Za-z]{3}\\s([A-Za-z]{3})\\s(\\d{2})\\s(\\d{4})(?:\\s(\\d{2}:\\d{2}))?").find(s)?.let { m ->
-            val mm = monthAbbrevToNum(m.groupValues[1]) ?: return s
-            val hora = m.groupValues.getOrNull(4)?.ifEmpty { "00:00" } ?: "00:00"
-            return "${m.groupValues[3]}-$mm-${m.groupValues[2]} $hora"
-        }
-        return s
-    }
-
     /** Repara las fechas de un plan que pudieron llegar del server como Date/GMT. */
     private fun normalizePlan(p: CuotaPlan): CuotaPlan =
         p.copy(
-            fechaPrimeraCuota = toYyyyMm(p.fechaPrimeraCuota),
-            fechaCreacion = normalizeCreation(p.fechaCreacion)
+            fechaPrimeraCuota = Fechas.aMes(p.fechaPrimeraCuota),
+            fechaCreacion = Fechas.aFechaHora(p.fechaCreacion)
         )
 
-    /** Un plan está completo si tiene tantas cuotas distintas pagadas como cuotas totales.
-     *  (Réplica local de la derivación que hace el servidor; evita que `data` dependa de `ui`.)
-     *  Cuenta la unión de los pagos con movimiento vivo y el snapshot [CuotaPlan.cuotasPagadasPrevias],
-     *  igual que `CuotasEngine.pagadasDe`. */
-    private fun isPlanComplete(plan: CuotaPlan, movs: List<Movement>): Boolean {
-        if (plan.cantidadCuotas <= 0) return false
-        val validas = 1..plan.cantidadCuotas
-        val pagadas = (
-            movs.filter { !it.eliminado && it.planId == plan.id && it.cuotaNumero in validas }
-                .map { it.cuotaNumero } + plan.cuotasPagadasPrevias.filter { it in validas }
-            ).toSet().size
-        return pagadas >= plan.cantidadCuotas
+    private fun planesCacheados(): List<CuotaPlan> = prefsHelper.getPlansCache().map { normalizePlan(it) }
+
+    /** Planes locales (demo) pendientes o completos, con "completo" derivado de los movimientos. */
+    private fun planesLocales(completos: Boolean): List<CuotaPlan> {
+        val movs = prefsHelper.getLocalMovements().filter { !it.eliminado }
+        return prefsHelper.getLocalPlans()
+            .filter { !it.eliminado }
+            .filter { CuotasEngine.estaCompleto(it, movs) == completos }
+            .sortedByDescending { it.fechaCreacion }
     }
 
     /**
@@ -235,15 +138,8 @@ class AhorroRepository(private val prefsHelper: PreferencesHelper) {
      * segundo plano" que los movimientos). En modo demo deriva los pendientes de los planes locales.
      */
     fun cachedPendingPlans(): List<CuotaPlan> {
-        if (prefsHelper.useLocalDemo) {
-            val movs = prefsHelper.getLocalMovements().filter { !it.eliminado }
-            return prefsHelper.getLocalPlans()
-                .filter { !it.eliminado }
-                .filter { !isPlanComplete(it, movs) }
-                .sortedByDescending { it.fechaCreacion }
-        }
-        return prefsHelper.getPlansCache()
-            .map { normalizePlan(it) }
+        if (demo) return planesLocales(completos = false)
+        return planesCacheados()
             .sortedByDescending { it.fechaCreacion }
             .distinctBy { it.id }
     }
@@ -253,55 +149,60 @@ class AhorroRepository(private val prefsHelper: PreferencesHelper) {
      * PENDIENTES (no completos) y los cachea; con [soloPagos] = true devuelve los completos
      * (on-demand, no se cachean). Siempre ordenados por fechaCreacion descendente.
      */
-    suspend fun fetchPlans(webAppUrl: String, soloPagos: Boolean = false): List<CuotaPlan> {
-        if (prefsHelper.useLocalDemo) {
-            val movs = prefsHelper.getLocalMovements().filter { !it.eliminado }
-            return prefsHelper.getLocalPlans()
-                .filter { !it.eliminado }
-                .filter { isPlanComplete(it, movs) == soloPagos }
-                .sortedByDescending { it.fechaCreacion }
-        }
+    suspend fun fetchPlans(soloPagos: Boolean = false): List<CuotaPlan> = withContext(Dispatchers.IO) {
+        if (demo) return@withContext planesLocales(completos = soloPagos)
+        val fallback = { if (soloPagos) emptyList() else planesCacheados() }
+        if (scriptUrl.isEmpty()) return@withContext fallback()
 
-        if (webAppUrl.isEmpty()) {
-            return if (soloPagos) emptyList() else prefsHelper.getPlansCache().map { normalizePlan(it) }
-        }
-
-        val filtro = if (soloPagos) "pagos" else "pendientes"
-        return try {
-            val sep = if (webAppUrl.contains("?")) "&" else "?"
-            val requestUrl = "$webAppUrl${sep}action=GET_PLANS&filtro=$filtro"
-            val response = sheetsService.getPlans(requestUrl)
-
-            if (response.isSuccessful && response.body()?.status == "SUCCESS") {
-                // distinctBy: la pantalla de Cuotas usa el id como key de la lista, así que un
-                // plan duplicado en la planilla la haría crashear en vez de mostrarse dos veces.
-                val plans = (response.body()?.plans ?: emptyList())
-                    .map { normalizePlan(it) }
-                    .sortedByDescending { it.fechaCreacion }
-                    .distinctBy { it.id }
-                if (!soloPagos) prefsHelper.savePlansCache(plans)
-                plans
-            } else {
-                Log.e("AhorroRepository", "GET_PLANS error: ${response.body()?.message}")
-                if (soloPagos) emptyList() else prefsHelper.getPlansCache().map { normalizePlan(it) }
-            }
-        } catch (e: Exception) {
-            Log.e("AhorroRepository", "Exception fetchPlans: ${e.message}", e)
-            if (soloPagos) emptyList() else prefsHelper.getPlansCache().map { normalizePlan(it) }
-        }
+        val filtro = if (soloPagos) WebApp.FILTRO_PAGOS else WebApp.FILTRO_PENDIENTES
+        val respuesta = pedir("GET_PLANS") {
+            sheetsService.get(urlCon("action=${WebApp.GET_PLANS}&filtro=$filtro"))
+        } ?: return@withContext fallback()
+        // distinctBy: la pantalla de Cuotas usa el id como key de la lista, así que un plan
+        // duplicado en la planilla la haría crashear en vez de mostrarse dos veces.
+        val plans = (respuesta.plans ?: emptyList())
+            .map { normalizePlan(it) }
+            .sortedByDescending { it.fechaCreacion }
+            .distinctBy { it.id }
+        if (!soloPagos) prefsHelper.savePlansCache(plans)
+        plans
     }
 
     /**
-     * Alta de un plan. Va con `PUT` igual que la edición: el Web App resuelve el upsert por id (y si
-     * no encuentra la fila, la agrega), así que reintentar un alta que quedó sin confirmar pisa la
-     * fila en vez de duplicar el plan. El nombre distinto de [updatePlan] se conserva porque los
-     * llamadores expresan intenciones distintas.
+     * Alta o edición de un plan. Va con `PUT`: el Web App resuelve el upsert por id (y si no
+     * encuentra la fila, la agrega), así que reintentar un alta que quedó sin confirmar pisa la fila
+     * en vez de duplicar el plan.
      */
-    suspend fun savePlan(webAppUrl: String, plan: CuotaPlan): Boolean =
-        upsertPlan(webAppUrl, plan, action = "PUT")
+    suspend fun guardarPlan(plan: CuotaPlan): Boolean = withContext(Dispatchers.IO) {
+        if (demo) {
+            prefsHelper.saveLocalPlans(prefsHelper.getLocalPlans().reemplazarOAgregar(plan, alPrincipio = true) { it.id })
+            return@withContext true
+        }
+        if (scriptUrl.isEmpty()) return@withContext false
 
-    suspend fun updatePlan(webAppUrl: String, plan: CuotaPlan): Boolean =
-        upsertPlan(webAppUrl, plan, action = "PUT")
+        post("upsertPlan", WebAppRequest(action = WebApp.PUT, entity = WebApp.ENTITY_PLAN, plan = plan))
+            ?: return@withContext false
+        // Mantener el cache de pendientes coherente sin re-pedir a la red.
+        prefsHelper.savePlansCache(prefsHelper.getPlansCache().reemplazarOAgregar(plan, alPrincipio = true) { it.id })
+        true
+    }
+
+    /** Baja lógica de un plan. */
+    suspend fun deletePlan(plan: CuotaPlan): Boolean = withContext(Dispatchers.IO) {
+        if (demo) {
+            val current = prefsHelper.getLocalPlans()
+            if (current.any { it.id == plan.id }) {
+                prefsHelper.saveLocalPlans(current.map { if (it.id == plan.id) it.copy(eliminado = true) else it })
+            }
+            return@withContext true
+        }
+        if (scriptUrl.isEmpty()) return@withContext false
+
+        post("deletePlan", WebAppRequest(action = WebApp.DELETE, entity = WebApp.ENTITY_PLAN, id = plan.id))
+            ?: return@withContext false
+        prefsHelper.savePlansCache(prefsHelper.getPlansCache().filterNot { it.id == plan.id })
+        true
+    }
 
     /**
      * Le pide al Web App que congele, para cada plan, qué cuotas ya estaban pagadas **antes** de
@@ -314,83 +215,10 @@ class AhorroRepository(private val prefsHelper: PreferencesHelper) {
      *
      * En modo demo no hay servidor y no hay nada que purgar: devuelve `true` sin hacer nada.
      */
-    suspend fun snapshotCuotasPrevias(webAppUrl: String, mes: String): Boolean {
-        if (prefsHelper.useLocalDemo) return true
-        if (webAppUrl.isEmpty()) return false
-        return try {
-            val response = sheetsService.addMovement(
-                webAppUrl,
-                WebAppRequest(action = "SNAPSHOT_CUOTAS", mes = mes)
-            )
-            val ok = response.isSuccessful && response.body()?.status == "SUCCESS"
-            if (!ok) Log.e("AhorroRepository", "SNAPSHOT_CUOTAS error: ${response.body()?.message}")
-            ok
-        } catch (e: Exception) {
-            Log.e("AhorroRepository", "Exception snapshotCuotasPrevias: ${e.message}", e)
-            false
-        }
-    }
-
-    private suspend fun upsertPlan(webAppUrl: String, plan: CuotaPlan, action: String): Boolean {
-        if (prefsHelper.useLocalDemo) {
-            val current = prefsHelper.getLocalPlans().toMutableList()
-            val idx = current.indexOfFirst { it.id == plan.id }
-            if (idx != -1) current[idx] = plan else current.add(0, plan)
-            prefsHelper.saveLocalPlans(current)
-            return true
-        }
-
-        if (webAppUrl.isEmpty()) return false
-
-        return try {
-            val req = WebAppRequest(action = action, entity = "plan", plan = plan)
-            val response = sheetsService.addMovement(webAppUrl, req)
-            if (response.isSuccessful && response.body()?.status == "SUCCESS") {
-                // Mantener el cache de pendientes coherente sin re-pedir a la red.
-                val cached = prefsHelper.getPlansCache().toMutableList()
-                val idx = cached.indexOfFirst { it.id == plan.id }
-                if (idx != -1) cached[idx] = plan else cached.add(0, plan)
-                prefsHelper.savePlansCache(cached)
-                true
-            } else {
-                Log.e("AhorroRepository", "upsertPlan error: ${response.body()?.message}")
-                false
-            }
-        } catch (e: Exception) {
-            Log.e("AhorroRepository", "Exception upsertPlan: ${e.message}", e)
-            false
-        }
-    }
-
-    /** Baja lógica de un plan. */
-    suspend fun deletePlan(webAppUrl: String, plan: CuotaPlan): Boolean {
-        if (prefsHelper.useLocalDemo) {
-            val current = prefsHelper.getLocalPlans().toMutableList()
-            val idx = current.indexOfFirst { it.id == plan.id }
-            if (idx != -1) {
-                current[idx] = current[idx].copy(eliminado = true)
-                prefsHelper.saveLocalPlans(current)
-            }
-            return true
-        }
-
-        if (webAppUrl.isEmpty()) return false
-
-        return try {
-            val req = WebAppRequest(action = "DELETE", entity = "plan", id = plan.id)
-            val response = sheetsService.addMovement(webAppUrl, req)
-            if (response.isSuccessful && response.body()?.status == "SUCCESS") {
-                val cached = prefsHelper.getPlansCache().toMutableList()
-                cached.removeAll { it.id == plan.id }
-                prefsHelper.savePlansCache(cached)
-                true
-            } else {
-                false
-            }
-        } catch (e: Exception) {
-            Log.e("AhorroRepository", "Exception deletePlan: ${e.message}", e)
-            false
-        }
+    suspend fun snapshotCuotasPrevias(mes: String): Boolean = withContext(Dispatchers.IO) {
+        if (demo) return@withContext true
+        if (scriptUrl.isEmpty()) return@withContext false
+        post("SNAPSHOT_CUOTAS", WebAppRequest(action = WebApp.SNAPSHOT_CUOTAS, mes = mes)) != null
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -403,64 +231,52 @@ class AhorroRepository(private val prefsHelper: PreferencesHelper) {
      */
     fun cachedUsuarios(): UsuariosConfig = UsuariosConfig.fromList(prefsHelper.getUsersCache())
 
-    /** Persiste en cache la config completa (los dos slots) reemplazando el usuario editado. */
+    /** Persiste en cache la config completa reemplazando el usuario editado (por slotKey). */
     private fun persistUsuario(usuario: Usuario) {
-        val current = cachedUsuarios()
-        val updated =
-            if (current.primario.slotKey.equals(usuario.slotKey, ignoreCase = true)) current.copy(primario = usuario)
-            else current.copy(secundario = usuario)
-        prefsHelper.saveUsersCache(updated.todos)
+        prefsHelper.saveUsersCache(cachedUsuarios().conUsuario(usuario).todos)
     }
 
     /**
      * Trae la config de usuarios. En demo/offline/fallo devuelve el cache (o [UsuariosConfig.DEFAULT]).
      * En red, `GET_USERS`; si la hoja está vacía cae al DEFAULT sin pisar el cache existente.
      */
-    suspend fun fetchUsuarios(webAppUrl: String): UsuariosConfig {
-        if (prefsHelper.useLocalDemo || webAppUrl.isEmpty()) {
-            return cachedUsuarios()
-        }
-        return try {
-            val sep = if (webAppUrl.contains("?")) "&" else "?"
-            val response = sheetsService.getUsers("$webAppUrl${sep}action=GET_USERS")
-            if (response.isSuccessful && response.body()?.status == "SUCCESS") {
-                val users = response.body()?.users ?: emptyList()
-                val config = UsuariosConfig.fromList(users)
-                if (users.isNotEmpty()) prefsHelper.saveUsersCache(config.todos)
-                config
-            } else {
-                Log.e("AhorroRepository", "GET_USERS error: ${response.body()?.message}")
-                cachedUsuarios()
-            }
-        } catch (e: Exception) {
-            Log.e("AhorroRepository", "Exception fetchUsuarios: ${e.message}", e)
-            cachedUsuarios()
-        }
+    suspend fun fetchUsuarios(): UsuariosConfig = withContext(Dispatchers.IO) {
+        if (demo || scriptUrl.isEmpty()) return@withContext cachedUsuarios()
+        val respuesta = pedir("GET_USERS") { sheetsService.get(urlCon("action=${WebApp.GET_USERS}")) }
+            ?: return@withContext cachedUsuarios()
+        val users = respuesta.users ?: emptyList()
+        val config = UsuariosConfig.fromList(users)
+        if (users.isNotEmpty()) prefsHelper.saveUsersCache(config.todos)
+        config
     }
 
     /**
      * Edita el perfil de un usuario (nombre/color). `PUT entity:"user"`; actualiza el cache local.
      * En demo solo persiste local. `slotKey`/`orden` son inmutables (no se envían para cambiarlos).
      */
-    suspend fun updateUsuario(webAppUrl: String, usuario: Usuario): Boolean {
-        if (prefsHelper.useLocalDemo) {
+    suspend fun updateUsuario(usuario: Usuario): Boolean = withContext(Dispatchers.IO) {
+        if (demo) {
             persistUsuario(usuario)
-            return true
+            return@withContext true
         }
-        if (webAppUrl.isEmpty()) return false
-        return try {
-            val req = WebAppRequest(action = "PUT", entity = "user", user = usuario)
-            val response = sheetsService.addMovement(webAppUrl, req)
-            if (response.isSuccessful && response.body()?.status == "SUCCESS") {
-                persistUsuario(usuario)
-                true
-            } else {
-                Log.e("AhorroRepository", "updateUsuario error: ${response.body()?.message}")
-                false
-            }
-        } catch (e: Exception) {
-            Log.e("AhorroRepository", "Exception updateUsuario: ${e.message}", e)
-            false
-        }
+        if (scriptUrl.isEmpty()) return@withContext false
+        post("updateUsuario", WebAppRequest(action = WebApp.PUT, entity = WebApp.ENTITY_USER, user = usuario))
+            ?: return@withContext false
+        persistUsuario(usuario)
+        true
+    }
+
+    private companion object {
+        const val TAG = "AhorroRepository"
+    }
+}
+
+/** La lista con [item] en el lugar del que tenga su misma clave, o agregado si no estaba. */
+internal fun <T> List<T>.reemplazarOAgregar(item: T, alPrincipio: Boolean = false, clave: (T) -> String): List<T> {
+    val idx = indexOfFirst { clave(it) == clave(item) }
+    return when {
+        idx != -1 -> toMutableList().also { it[idx] = item }
+        alPrincipio -> listOf(item) + this
+        else -> this + item
     }
 }

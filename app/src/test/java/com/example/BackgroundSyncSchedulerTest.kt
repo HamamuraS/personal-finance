@@ -1,7 +1,6 @@
 package com.example
 
 import com.example.data.notifications.BackgroundSyncScheduler
-import com.example.data.notifications.BackgroundSyncWorker
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import java.util.Calendar
@@ -15,7 +14,7 @@ import java.util.Calendar
 class BackgroundSyncSchedulerTest {
 
     private fun momento(hora: Int, minuto: Int = 0): Calendar =
-        Calendar.getInstance(BackgroundSyncWorker.ARGENTINA_TZ).apply {
+        Calendar.getInstance(com.example.util.Fechas.ARGENTINA).apply {
             set(2026, Calendar.AUGUST, 31, hora, minuto, 0)
             set(Calendar.MILLISECOND, 0)
         }

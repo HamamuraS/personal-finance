@@ -2,9 +2,9 @@ package com.example
 
 import com.example.data.CuotaPlan
 import com.example.data.Movement
-import com.example.ui.AccountingEngine
-import com.example.ui.CuotasEngine
-import com.example.ui.OpeningBalance
+import com.example.domain.AccountingEngine
+import com.example.domain.CuotasEngine
+import com.example.domain.OpeningBalance
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals

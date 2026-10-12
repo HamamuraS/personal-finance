@@ -1,28 +1,33 @@
 package com.example.ui
 
 import android.app.Application
+import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.work.WorkManager
 import com.example.data.AhorroRepository
 import com.example.data.CuotaPlan
-import com.example.data.DriveService
 import com.example.data.Movement
 import com.example.data.PendingMovement
 import com.example.data.PreferencesHelper
+import com.example.data.TipoMovimiento
+import com.example.data.Tickets
 import com.example.data.Usuario
 import com.example.data.UsuariosConfig
+import com.example.data.mes
 import com.example.data.upload.MovementUploadScheduler
-import androidx.work.WorkManager
-import com.google.android.gms.auth.GoogleAuthUtil
-import com.google.android.gms.auth.api.signin.GoogleSignIn
-import androidx.exifinterface.media.ExifInterface
+import com.example.domain.AccountingEngine
+import com.example.domain.BalanceBreakdown
+import com.example.domain.CuotasEngine
+import com.example.domain.OpeningBalance
+import com.example.util.Fechas
+import com.example.util.Formato
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -57,7 +62,6 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     // Altas encoladas que todavía no confirmó la planilla. Alimentan la fila optimista de Inicio y
     // sobreviven al cierre de la app (se persisten; ver [PendingMovement]).
     private val _pendingMovements = MutableStateFlow<List<PendingMovement>>(emptyList())
-    val pendingMovements: StateFlow<List<PendingMovement>> = _pendingMovements.asStateFlow()
 
     /**
      * Movimientos sin confirmar, indexados por id con su cantidad de intentos fallidos. La UI los
@@ -72,9 +76,9 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     private val _availableMonths = MutableStateFlow<List<String>>(emptyList())
     val availableMonths: StateFlow<List<String>> = _availableMonths.asStateFlow()
 
-    private val _selectedMonth = MutableStateFlow<String>("")
+    private val _selectedMonth = MutableStateFlow("")
     val selectedMonth: StateFlow<String> = _selectedMonth.asStateFlow()
-    
+
     private val _isCurrentMonth = MutableStateFlow(true)
     val isCurrentMonth: StateFlow<Boolean> = _isCurrentMonth.asStateFlow()
 
@@ -88,11 +92,6 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
-    // Conexión: fija en el APK (ver [com.example.data.AppConfig]). Ya no se edita desde Ajustes.
-    private val _spreadsheetId = MutableStateFlow(prefsHelper.scriptUrl)
-
-    private val _folderId = MutableStateFlow(prefsHelper.folderId)
-
     private val _useLocalDemo = MutableStateFlow(prefsHelper.useLocalDemo)
     val useLocalDemo: StateFlow<Boolean> = _useLocalDemo.asStateFlow()
 
@@ -100,7 +99,7 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     val currentUserProfile: StateFlow<String> = _currentUserProfile.asStateFlow()
 
     // --- Usuarios parametrizables ---
-    // Config de los dos usuarios (nombre + color). Arranca en DEFAULT y se hidrata desde cache al
+    // Config de los usuarios (nombre + color). Arranca en DEFAULT y se hidrata desde cache al
     // instante + red en segundo plano (mismo patrón que movimientos/planes).
     private val _usuarios = MutableStateFlow(UsuariosConfig.DEFAULT)
     val usuarios: StateFlow<UsuariosConfig> = _usuarios.asStateFlow()
@@ -108,15 +107,6 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     // ¿Ya eligió identidad en este dispositivo? Si no, MainActivity muestra el picker "¿Quién sos?".
     private val _hasChosenIdentity = MutableStateFlow(prefsHelper.hasChosenIdentity)
     val hasChosenIdentity: StateFlow<Boolean> = _hasChosenIdentity.asStateFlow()
-
-    // Usuario activo / el otro, derivados de la identidad + la config. Alimentan el tema dinámico.
-    val activeUser: StateFlow<Usuario> = combine(_usuarios, _currentUserProfile) { config, key ->
-        config.byKey(key) ?: config.primario
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, UsuariosConfig.DEFAULT.primario)
-
-    val otherUser: StateFlow<Usuario> = combine(_usuarios, _currentUserProfile) { config, key ->
-        config.elOtro(key)
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, UsuariosConfig.DEFAULT.secundario)
 
     private val _isDarkMode = MutableStateFlow(prefsHelper.isDarkMode)
     val isDarkMode: StateFlow<Boolean> = _isDarkMode.asStateFlow()
@@ -145,6 +135,13 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
 
     /** Arrastre del mes seleccionado tal como lo usó el último [updateFilteredData]. */
     private var _aperturaDelMes = OpeningBalance()
+
+    /**
+     * ¿El mes seleccionado tiene su saldo inicial materializado? Si es `false`, el arrastre se está
+     * derivando replayando meses anteriores y esas hojas todavía no se pueden purgar.
+     */
+    private val _tieneSaldoInicial = MutableStateFlow(false)
+    val tieneSaldoInicial: StateFlow<Boolean> = _tieneSaldoInicial.asStateFlow()
 
     init {
         observarSubidas()
@@ -183,13 +180,11 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun loadConfigAndData() {
-        _spreadsheetId.value = prefsHelper.scriptUrl
-        _folderId.value = prefsHelper.folderId
         _useLocalDemo.value = prefsHelper.useLocalDemo
         _currentUserProfile.value = prefsHelper.currentUserProfile
         _hasChosenIdentity.value = prefsHelper.hasChosenIdentity
 
-        // Punto 2: mostrar el cache al instante y refrescar en segundo plano.
+        // Mostrar el cache al instante y refrescar en segundo plano.
         viewModelScope.launch {
             // Usuarios: cache al instante para que el tema/identidad arranquen con el color correcto.
             _usuarios.value = withContext(Dispatchers.IO) { repository.cachedUsuarios() }
@@ -222,20 +217,9 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private fun monthOf(m: Movement): String =
-        if (m.fecha.length >= 7) m.fecha.substring(0, 7) else ""
-
-    /**
-     * ¿El mes seleccionado tiene su saldo inicial materializado? Si es `false`, el arrastre se está
-     * derivando replayando meses anteriores y esas hojas todavía no se pueden purgar.
-     */
-    private val _tieneSaldoInicial = MutableStateFlow(false)
-    val tieneSaldoInicial: StateFlow<Boolean> = _tieneSaldoInicial.asStateFlow()
-
     fun updateFilteredData() {
         val currentSel = _selectedMonth.value
-        val actualCurrent = java.text.SimpleDateFormat("yyyy-MM", java.util.Locale.US).format(java.util.Date())
-        _isCurrentMonth.value = (currentSel == actualCurrent)
+        _isCurrentMonth.value = (currentSel == Fechas.mesActual())
 
         // Altas y ediciones encoladas que la planilla todavía no confirmó: se muestran y se computan
         // como cualquier otro movimiento (fila optimista). Con el mismo id, el pendiente **pisa** al
@@ -250,13 +234,13 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
         // los pendientes al final los mandaba al pie del historial — justo la fila que se quiere
         // mostrar recién registrada quedaba fuera de pantalla.
         val relevant = (_cachedAllMovements.filter { it.id !in idsPendientes } + pendientes)
-            .filter { !AccountingEngine.isLegacyCarryover(it) && monthOf(it).isNotEmpty() }
+            .filter { !AccountingEngine.isLegacyCarryover(it) && it.mes.isNotEmpty() }
             .sortedWith(compareByDescending<Movement> { it.fecha }.thenByDescending { it.id })
 
         // Arrastre: filas de apertura del mes si existen; si no, replay desde la apertura anterior.
         val opening = AccountingEngine.openingFor(relevant, currentSel)
 
-        val delMes = relevant.filter { monthOf(it) == currentSel }
+        val delMes = relevant.filter { it.mes == currentSel }
         _tieneSaldoInicial.value = delMes.any { AccountingEngine.isOpeningRow(it) }
 
         // La apertura es stock: no se lista como movimiento ni suma a los flujos del periodo.
@@ -293,7 +277,7 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
             _errorMessage.value = null
 
             val todos = _cachedAllMovements.filter {
-                !AccountingEngine.isLegacyCarryover(it) && monthOf(it).isNotEmpty()
+                !AccountingEngine.isLegacyCarryover(it) && it.mes.isNotEmpty()
             }
 
             // Con las hojas viejas purgadas, "derivar de los meses anteriores" da cero y el botón
@@ -308,15 +292,15 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
 
             // El arrastre se deriva SIEMPRE de los meses anteriores, ignorando la apertura que el
             // mes pueda tener ya escrita (si no, recalcular sería un no-op).
-            val relevant = todos.filter { monthOf(it) != mes }
+            val relevant = todos.filter { it.mes != mes }
             val opening = AccountingEngine.openingFor(relevant, mes)
             val filas = AccountingEngine.openingRowsFor(mes, opening)
 
-            val ok = filas.all { repository.saveMovement(_spreadsheetId.value, it, action = "PUT") }
+            val ok = filas.all { repository.saveMovement(it) }
             if (ok) {
                 // Materializar el corte cubre la plata Y las cuotas: sin el snapshot, purgar las
                 // hojas anteriores devolvería a "pendiente" cuotas ya pagadas (ver CuotaPlan).
-                val cuotasOk = repository.snapshotCuotasPrevias(_spreadsheetId.value, mes)
+                val cuotasOk = repository.snapshotCuotasPrevias(mes)
                 doRefreshData()
                 val aviso = if (cuotasOk) "" else " (no se pudo guardar el snapshot de cuotas)"
                 onResult(true, "Saldo inicial de $mes actualizado (${filas.size} filas).$aviso")
@@ -345,54 +329,25 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private fun normalizeFechaToString(input: String): String {
-        try {
-            if (input.matches(Regex("^[a-zA-Z]{3}\\s[a-zA-Z]{3}\\s\\d{2}\\s\\d{4}.*"))) {
-                val parts = input.split(Regex("\\s+"))
-                if (parts.size >= 4) {
-                    val month = parts[1]
-                    val day = parts[2].padStart(2, '0')
-                    val year = parts[3]
-                    var time = if (parts.size >= 5) parts[4] else ""
-                    
-                    if (time.contains(":")) {
-                        val timeParts = time.split(":")
-                        if (timeParts.size >= 2) time = "${timeParts[0]}:${timeParts[1]}"
-                    } else {
-                        time = ""
-                    }
-                    
-                    val mEs = when(month.lowercase()) {
-                         "jan", "ene" -> "01"; "feb" -> "02"; "mar" -> "03"; "apr", "abr" -> "04"
-                         "may" -> "05"; "jun" -> "06"; "jul" -> "07"; "aug", "ago" -> "08"
-                         "sep" -> "09"; "oct" -> "10"; "nov" -> "11"; "dec", "dic" -> "12"
-                         else -> "01"
-                    }
-                    
-                    return "$year-$mEs-$day${if (time != "00:00" && time.isNotEmpty()) " $time" else ""}"
-                }
-            }
-        } catch (e: Exception) {}
-        return input
-    }
-
     private suspend fun doRefreshData(): Boolean {
         return try {
             // Usuarios (nombre/color) en segundo plano; barato y mantiene el tema al día.
-            _usuarios.value = repository.fetchUsuarios(_spreadsheetId.value)
-            val rawList = repository.fetchMovements(_spreadsheetId.value)
+            _usuarios.value = repository.fetchUsuarios()
+            val rawList = repository.fetchMovements()
             applyMovements(rawList)
             // Planes pendientes junto con los movimientos (los pagos son on-demand).
-            _plans.value = repository.fetchPlans(_spreadsheetId.value, soloPagos = false)
+            _plans.value = repository.fetchPlans(soloPagos = false)
             if (_showPaidPlans.value) {
                 _isLoadingPaid.value = true
-                _paidPlans.value = repository.fetchPlans(_spreadsheetId.value, soloPagos = true)
+                _paidPlans.value = repository.fetchPlans(soloPagos = true)
                 _isLoadingPaid.value = false
             }
             true
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             _errorMessage.value = "Error al recargar datos: ${e.localizedMessage}"
-            Log.e("AhorroViewModel", "Error cargando datos", e)
+            Log.e(TAG, "Error cargando datos", e)
             false
         }
     }
@@ -407,7 +362,7 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
             // se les da una clave sintética en vez de dejar que se pisen.
             m.copy(
                 id = m.id.ifBlank { "sin-id-$index" },
-                fecha = normalizeFechaToString(m.fecha)
+                fecha = Fechas.normalizarFechaDeMovimiento(m.fecha)
             )
         }
         // `distinctBy` es una red de seguridad, no la solución: el id es la key del listado de
@@ -418,19 +373,14 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
             .sortedWith(compareByDescending<Movement> { it.fecha }.thenByDescending { it.id })
             .distinctBy { it.id }
         if (sortedList.size != list.size) {
-            Log.w("AhorroViewModel", "Se ignoraron ${list.size - sortedList.size} filas con id duplicado")
+            Log.w(TAG, "Se ignoraron ${list.size - sortedList.size} filas con id duplicado")
         }
         _cachedAllMovements = sortedList
         _allMovements.value = sortedList
 
-        val currentRealMonth = java.text.SimpleDateFormat("yyyy-MM", java.util.Locale.US).format(java.util.Date())
-        val monthsSet = sortedList.mapNotNull {
-            if (it.fecha.length >= 7) it.fecha.substring(0, 7) else null
-        }.toSortedSet(reverseOrder())
-
-        if (!monthsSet.contains(currentRealMonth)) {
-            monthsSet.add(currentRealMonth)
-        }
+        val currentRealMonth = Fechas.mesActual()
+        val monthsSet = sortedList.mapNotNull { it.mes.ifEmpty { null } }.toSortedSet(reverseOrder())
+        monthsSet.add(currentRealMonth)
 
         _availableMonths.value = monthsSet.toList()
         if (_selectedMonth.value.isEmpty()) {
@@ -461,13 +411,13 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
         propietario: String,
         descripcion: String,
         metodoPago: String,
-        ticketUri: android.net.Uri? = null,
+        ticketUri: Uri? = null,
         evitable: Boolean = false,
         /** Borrador de origen: si es una edición, se conservan id, vínculo con la cuota y ticket. */
         edicion: MovementDraft? = null,
         onEncolado: () -> Unit
     ) {
-        val esGasto = tipo == "Gasto"
+        val esGasto = tipo == TipoMovimiento.GASTO
         val base = Movement(
             fecha = fecha,
             monto = monto,
@@ -502,8 +452,7 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     fun cargarParaEditar(movement: Movement) {
         val partes = movement.fecha.trim().split(" ")
         _movementDraft.value = MovementDraft(
-            monto = java.math.BigDecimal.valueOf(movement.monto)
-                .setScale(2, java.math.RoundingMode.HALF_UP).stripTrailingZeros().toPlainString(),
+            monto = Formato.montoParaInput(movement.monto),
             tipo = movement.tipo,
             esComun = movement.esComun,
             metodoPago = movement.metodoPago,
@@ -522,19 +471,17 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     /** ¿[movement] se puede editar? Solo lo propio y del mes en curso (ver features/version-7.7.md). */
-    fun puedeEditar(movement: Movement): Boolean {
-        val mesActual = java.text.SimpleDateFormat("yyyy-MM", java.util.Locale.US).format(java.util.Date())
-        return movement.responsable.equals(_currentUserProfile.value, ignoreCase = true) &&
-            monthOf(movement) == mesActual &&
+    fun puedeEditar(movement: Movement): Boolean =
+        movement.responsable.equals(_currentUserProfile.value, ignoreCase = true) &&
+            movement.mes == Fechas.mesActual() &&
             !AccountingEngine.isOpeningRow(movement)
-    }
 
     /**
      * Mete un movimiento **ya armado** en la cola de subida: fila optimista al instante, escritura
      * en segundo plano con reintento y notificación al terminar. Es el único camino de alta; el id
      * viaja con el movimiento, así que reintentar es idempotente (la cola sube con `PUT`).
      */
-    private fun encolar(nuevo: Movement, ticketUri: android.net.Uri?, onEncolado: () -> Unit) {
+    private fun encolar(nuevo: Movement, ticketUri: Uri?, onEncolado: () -> Unit) {
         _errorMessage.value = null
         // Se limpia el filtro del historial: si venía uno puesto (propio o traído desde Métricas),
         // el movimiento recién cargado podía quedar escondido justo al volver a Inicio a verlo.
@@ -558,7 +505,7 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
             // La compresión del ticket va después de mostrar la fila: no tiene sentido demorar el
             // feedback por una imagen.
             if (ticketUri != null) {
-                val ticketPath = withContext(Dispatchers.IO) { comprimirTicket(ticketUri, nuevo.id) }
+                val ticketPath = withContext(Dispatchers.IO) { Tickets.comprimir(getApplication(), ticketUri, nuevo.id) }
                 // Update condicional, nunca upsert: si el movimiento ya no está en la cola es que
                 // se subió mientras comprimíamos, y volver a insertarlo lo escribiría dos veces.
                 prefsHelper.updatePendingMovement(nuevo.id) {
@@ -571,42 +518,20 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     /**
-     * Comprime el ticket a JPEG (70 %, corrigiendo la orientación EXIF) y lo deja en `cacheDir`.
-     * Devuelve la ruta, o "" si no se pudo. Va a disco y no dentro de la cola porque el base64 de
-     * una foto supera de largo el límite de 10 KB del `Data` de WorkManager.
+     * Corre una escritura con el indicador de carga prendido: si [accion] se confirma, refresca los
+     * datos y llama a [onSuccess]; si no, deja [mensajeDeError] para la UI.
      */
-    private fun comprimirTicket(ticketUri: android.net.Uri, movementId: String): String {
-        return try {
-            val app = getApplication<Application>()
-            val bitmap = app.contentResolver.openInputStream(ticketUri).use {
-                android.graphics.BitmapFactory.decodeStream(it)
-            } ?: return ""
-
-            val rotado = try {
-                app.contentResolver.openInputStream(ticketUri).use { exifStream ->
-                    if (exifStream != null) {
-                        val orientation = ExifInterface(exifStream).getAttributeInt(
-                            ExifInterface.TAG_ORIENTATION,
-                            ExifInterface.ORIENTATION_NORMAL
-                        )
-                        rotateBitmapIfRequired(bitmap, orientation)
-                    } else bitmap
-                }
-            } catch (e: Exception) {
-                Log.e("AhorroViewModel", "Error leyendo EXIF", e)
-                bitmap
+    private fun operacion(mensajeDeError: String, onSuccess: () -> Unit = {}, accion: suspend () -> Boolean) {
+        viewModelScope.launch {
+            _isLoading.value = true
+            _errorMessage.value = null
+            if (accion()) {
+                doRefreshData()
+                onSuccess()
+            } else {
+                _errorMessage.value = mensajeDeError
             }
-
-            val carpeta = java.io.File(app.cacheDir, "pending_tickets").apply { mkdirs() }
-            val destino = java.io.File(carpeta, "$movementId.jpg")
-            destino.outputStream().use { out ->
-                rotado.compress(android.graphics.Bitmap.CompressFormat.JPEG, 70, out)
-            }
-            Log.d("AhorroViewModel", "Ticket comprimido en ${destino.path} (${destino.length()} bytes)")
-            destino.path
-        } catch (e: Exception) {
-            Log.e("AhorroViewModel", "Error comprimiendo imagen", e)
-            ""
+            _isLoading.value = false
         }
     }
 
@@ -617,8 +542,8 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
         // Si todavía está en la cola, la planilla nunca lo vio: alcanza con sacarlo de ahí. Mandar
         // el DELETE contra una fila inexistente no hacía nada y el worker terminaba subiendo igual
         // el movimiento que el usuario acababa de borrar.
-        if (_pendingMovements.value.any { it.movement.id == movement.id }) {
-            val pendiente = _pendingMovements.value.first { it.movement.id == movement.id }
+        val pendiente = _pendingMovements.value.firstOrNull { it.movement.id == movement.id }
+        if (pendiente != null) {
             if (pendiente.ticketPath.isNotEmpty()) {
                 runCatching { java.io.File(pendiente.ticketPath).delete() }
             }
@@ -626,39 +551,29 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
             refrescarPendientes()
             return
         }
-
-        viewModelScope.launch {
-            _isLoading.value = true
-            val success = repository.deleteMovement(_spreadsheetId.value, movement)
-            if (success) {
-                doRefreshData()
-            } else {
-                _errorMessage.value = "Error al eliminar el movimiento"
-            }
-            _isLoading.value = false
-        }
+        operacion("Error al eliminar el movimiento") { repository.deleteMovement(movement) }
     }
+
+    /** ¿El usuario activo puede borrar [movement]? Solo los propios (deslizar para borrar). */
+    fun puedeBorrar(movement: Movement): Boolean =
+        movement.responsable.equals(_currentUserProfile.value, ignoreCase = true)
 
     /**
      * Duplica un movimiento **a nombre del usuario activo**, como gasto personal. Se usa en el botón
      * de duplicar de los gastos de transporte: si dos personas viajan juntas, una lo carga y la otra
      * toca duplicar para registrar fácilmente su propio gasto (no el de la otra persona).
      *
-     * Pasa por la **cola de subida**, igual que el alta normal. Antes escribía sincrónico con
-     * `POST`, sin fila optimista ni reintento: si el request se caía, el duplicado se perdía entero
-     * y solo quedaba un cartel de error — justo en el alta más repetida (el pasaje de colectivo) y
-     * por lo tanto la más expuesta a un timeout.
+     * Pasa por la **cola de subida**, igual que el alta normal, con fila optimista y reintento.
      *
      * El vínculo con un plan de cuotas y el ticket NO se copian: un duplicado es un gasto nuevo, no
      * otro pago de la misma cuota ni el mismo comprobante.
      */
     fun duplicateMovement(movement: Movement, onEncolado: () -> Unit) {
-        val now = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date())
         val yo = _currentUserProfile.value
         encolar(
             movement.copy(
                 id = java.util.UUID.randomUUID().toString(),
-                fecha = now,
+                fecha = Fechas.ahora(),
                 responsable = yo,      // pasa a mi cuenta
                 propietario = yo,      // gasto personal mío (sin propiedad cruzada)
                 esComun = false,
@@ -714,11 +629,9 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
         val actualizado = transform(yo)
         if (actualizado == yo) return
         // Actualización optimista del flow (el tema/identidad reaccionan al instante).
-        _usuarios.value =
-            if (config.primario.slotKey.equals(yo.slotKey, ignoreCase = true)) config.copy(primario = actualizado)
-            else config.copy(secundario = actualizado)
+        _usuarios.value = config.conUsuario(actualizado)
         viewModelScope.launch {
-            val ok = repository.updateUsuario(_spreadsheetId.value, actualizado)
+            val ok = repository.updateUsuario(actualizado)
             if (!ok) _errorMessage.value = "No se pudo guardar tu perfil. Se aplicó localmente."
         }
     }
@@ -733,9 +646,8 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
 
     /**
      * Deja Inicio filtrado en los gastos de unas categorías (una, o todas las de un rubro) y
-     * opcionalmente de una persona. Lo llama
-     * Métricas al tocar una línea: es el atajo para ir del "cuánto" al "en qué". [persona] es un
-     * slotKey, o null para la tarjeta de gastos combinados.
+     * opcionalmente de una persona. Lo llama Métricas al tocar una línea: es el atajo para ir del
+     * "cuánto" al "en qué". [persona] es un slotKey, o null para la tarjeta de gastos combinados.
      */
     fun verDetalleDeGastos(persona: String?, categorias: Set<String>) {
         _dashboardFilters.value = DashboardFilters(
@@ -769,12 +681,16 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
     fun loadPaidPlans() {
         viewModelScope.launch {
             _isLoadingPaid.value = true
-            _paidPlans.value = repository.fetchPlans(_spreadsheetId.value, soloPagos = true)
+            _paidPlans.value = repository.fetchPlans(soloPagos = true)
             _isLoadingPaid.value = false
         }
     }
 
-    /** Alta de un plan de cuotas (siempre personal: propietario ∈ {Santiago, Rocío}). */
+    /** ¿El usuario activo puede pagar/editar/eliminar [plan]? Solo los propios: el resto es de solo lectura. */
+    fun puedeGestionar(plan: CuotaPlan): Boolean =
+        plan.propietario.equals(_currentUserProfile.value, ignoreCase = true)
+
+    /** Alta de un plan de cuotas (siempre personal: del usuario que lo carga). */
     fun addPlan(
         descripcion: String,
         montoPorCuota: Double,
@@ -786,62 +702,27 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
         evitable: Boolean = false,
         onSuccess: () -> Unit = {}
     ) {
-        viewModelScope.launch {
-            _isLoading.value = true
-            _errorMessage.value = null
-            val now = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date())
-            val plan = CuotaPlan(
-                fechaCreacion = now,
-                descripcion = descripcion,
-                montoPorCuota = montoPorCuota,
-                cantidadCuotas = cantidadCuotas,
-                fechaPrimeraCuota = fechaPrimeraCuota,
-                propietario = propietario,
-                categoria = categoria,
-                tarjeta = tarjeta,
-                evitable = evitable
-            )
-            val success = repository.savePlan(_spreadsheetId.value, plan)
-            if (success) {
-                doRefreshData()
-                onSuccess()
-            } else {
-                _errorMessage.value = "No se pudo crear el plan de cuotas."
-            }
-            _isLoading.value = false
-        }
+        val plan = CuotaPlan(
+            fechaCreacion = Fechas.ahora(),
+            descripcion = descripcion,
+            montoPorCuota = montoPorCuota,
+            cantidadCuotas = cantidadCuotas,
+            fechaPrimeraCuota = fechaPrimeraCuota,
+            propietario = propietario,
+            categoria = categoria,
+            tarjeta = tarjeta,
+            evitable = evitable
+        )
+        operacion("No se pudo crear el plan de cuotas.", onSuccess) { repository.guardarPlan(plan) }
     }
 
     /** Edición de un plan existente (conserva el id). */
-    fun updatePlan(plan: CuotaPlan, onSuccess: () -> Unit = {}) {
-        viewModelScope.launch {
-            _isLoading.value = true
-            _errorMessage.value = null
-            val success = repository.updatePlan(_spreadsheetId.value, plan)
-            if (success) {
-                doRefreshData()
-                onSuccess()
-            } else {
-                _errorMessage.value = "No se pudo actualizar el plan."
-            }
-            _isLoading.value = false
-        }
-    }
+    fun updatePlan(plan: CuotaPlan, onSuccess: () -> Unit = {}) =
+        operacion("No se pudo actualizar el plan.", onSuccess) { repository.guardarPlan(plan) }
 
     /** Baja lógica de un plan. */
-    fun deletePlan(plan: CuotaPlan, onSuccess: () -> Unit = {}) {
-        viewModelScope.launch {
-            _isLoading.value = true
-            val success = repository.deletePlan(_spreadsheetId.value, plan)
-            if (success) {
-                doRefreshData()
-                onSuccess()
-            } else {
-                _errorMessage.value = "No se pudo eliminar el plan."
-            }
-            _isLoading.value = false
-        }
-    }
+    fun deletePlan(plan: CuotaPlan, onSuccess: () -> Unit = {}) =
+        operacion("No se pudo eliminar el plan.", onSuccess) { repository.deletePlan(plan) }
 
     /**
      * Paga en lote las cuotas indicadas (una por plan) — usado por el "Pagar la tarjeta" del mes.
@@ -857,31 +738,13 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             _isLoading.value = true
             _errorMessage.value = null
-            val fecha = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date())
+            val fecha = Fechas.ahora()
             var todoOk = true
             for ((plan, numero) in cuotas) {
-                val movimiento = Movement(
-                    // Id derivado del plan y la cuota, no un UUID nuevo por intento: si el lote
-                    // falla a la mitad, reintentar pisa las filas ya escritas en vez de duplicarlas
-                    // (y hace imposible pagar dos veces la misma cuota).
-                    id = CuotasEngine.idDePago(plan.id, numero),
-                    fecha = fecha,
-                    monto = plan.montoPorCuota,
-                    tipo = "Gasto",
-                    categoria = plan.categoria,
-                    responsable = plan.propietario,
-                    esComun = false,
-                    propietario = plan.propietario,
-                    descripcion = "Cuota $numero/${plan.cantidadCuotas} — ${plan.descripcion}",
-                    metodoPago = metodoPago,
-                    planId = plan.id,
-                    cuotaNumero = numero,
-                    // El pago hereda la evitabilidad del plan (se copia, no se deriva: ver CuotaPlan).
-                    evitable = plan.evitable
-                )
-                val ok = repository.saveMovement(
-                    _spreadsheetId.value, movimiento, null, _folderId.value, action = "PUT"
-                )
+                // Id derivado del plan y la cuota, no un UUID nuevo por intento: si el lote falla a
+                // la mitad, reintentar pisa las filas ya escritas en vez de duplicarlas (y hace
+                // imposible pagar dos veces la misma cuota).
+                val ok = repository.saveMovement(CuotasEngine.movimientoDePago(plan, numero, fecha, metodoPago))
                 if (!ok) todoOk = false
             }
             doRefreshData()
@@ -908,50 +771,12 @@ class AhorroViewModel(application: Application) : AndroidViewModel(application) 
         monto: Double? = null,
         onSuccess: () -> Unit = {}
     ) {
-        viewModelScope.launch {
-            _isLoading.value = true
-            _errorMessage.value = null
-            val movimiento = Movement(
-                id = CuotasEngine.idDePago(plan.id, numero),  // idempotente: ver `pagarCuotas`
-                fecha = fecha,
-                monto = monto ?: plan.montoPorCuota,
-                tipo = "Gasto",
-                categoria = plan.categoria,
-                responsable = plan.propietario,   // el dueño paga desde su propia cuenta
-                esComun = false,
-                propietario = plan.propietario,   // responsable == propietario => sin propiedad cruzada
-                descripcion = "Cuota $numero/${plan.cantidadCuotas} — ${plan.descripcion}",
-                metodoPago = metodoPago,
-                planId = plan.id,
-                cuotaNumero = numero,
-                evitable = plan.evitable          // hereda del plan, igual que `pagarCuotas`
-            )
-            val success = repository.saveMovement(
-                _spreadsheetId.value, movimiento, null, _folderId.value, action = "PUT"
-            )
-            if (success) {
-                // Refresca movimientos y planes: un pago puede completar el plan (pasa a "pagados").
-                doRefreshData()
-                onSuccess()
-            } else {
-                _errorMessage.value = "No se pudo confirmar el pago de la cuota."
-            }
-            _isLoading.value = false
-        }
+        val movimiento = CuotasEngine.movimientoDePago(plan, numero, fecha, metodoPago, monto ?: plan.montoPorCuota)
+        // Un pago puede completar el plan (pasa a "pagados"): el refresco trae movimientos y planes.
+        operacion("No se pudo confirmar el pago de la cuota.", onSuccess) { repository.saveMovement(movimiento) }
     }
 
-    /**
-     * Rota un bitmap según la orientación EXIF.
-     */
-    private fun rotateBitmapIfRequired(img: android.graphics.Bitmap, orientation: Int): android.graphics.Bitmap {
-        val matrix = android.graphics.Matrix()
-        when (orientation) {
-            ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
-            ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
-            ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
-            else -> return img
-        }
-        return android.graphics.Bitmap.createBitmap(img, 0, 0, img.width, img.height, matrix, true)
+    private companion object {
+        const val TAG = "AhorroViewModel"
     }
-
 }

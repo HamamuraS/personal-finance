@@ -1,8 +1,29 @@
 /**
  * Script de Google Apps Script para la sincronización de la App de Finanzas Personales.
  *
- * Versión: 8.0 (Cambio de dinero con otras personas, mensaje del día atento a las fechas)
+ * Versión: 8.3 (Aperturas al día al cargar en un mes cerrado; el protocolo con la app no cambia)
  * @description Este script requiere acceso a Google Drive para guardar los tickets.
+ *
+ * Novedades v8.3:
+ *  - Escribir, mover o dar de baja un movimiento con fecha de un mes ya cerrado recalcula en el
+ *    momento las aperturas de los meses siguientes. Antes el saldo del mes en curso no lo reflejaba
+ *    hasta el trigger diario de la madrugada siguiente (ej.: pagar una cuota atrasada, que se fecha
+ *    en el mes de la cuota, tardaba hasta un día en descontarse).
+ *
+ * Novedades v8.2:
+ *  - Las filas de apertura se escriben SIEMPRE completas (6 por mes), también las de propiedad
+ *    cruzada en cero. Antes, si la deuda se saldaba o cambiaba de lado, la fila cruzada vieja
+ *    quedaba viva en la hoja y la apertura sumaba plata y deuda que ya no existían.
+ *  - "Cuota pagada" cuenta solo números dentro del plan (1..cantidad): un movimiento con una cuota
+ *    de más ya no da por completo un plan que no lo está.
+ *  - Toda escritura es un upsert por id, también el POST (versiones viejas de la app): reintentar
+ *    ya no duplica filas. Mover un movimiento de mes escribe la fila nueva antes de borrar la vieja.
+ *  - Los triggers y las funciones del editor que escriben toman el mismo candado que doPost.
+ *  - doGet/doPost siempre responden JSON (antes, una acción no reconocida no devolvía nada).
+ *  - Un PUT que actualiza una fila existente informa también cómo le fue a la imagen.
+ *  - "Eliminado" y "Es Común" aceptan los mismos valores verdaderos que el resto (incluye "TRUE").
+ *  - Interno: un solo criterio para qué hojas son de movimientos, columnas con nombre y helpers
+ *    compartidos para encabezados y triggers.
  *
  * Novedades v8.0:
  *  - Tipo "Cambio propio" en `aplicarMovimientos`: canje de efectivo por transferencia con alguien de
@@ -58,6 +79,102 @@ const defaultFolderId = "1LT_t2a7WBFe6wGjwJ5XuTYsS7gvjr3jU";
 const PLANS_SHEET = "Planes";
 const USERS_SHEET = "Usuarios";
 
+/** Huso de la app (Argentina no tiene horario de verano). */
+const ZONA_ARGENTINA = "America/Argentina/Buenos_Aires";
+
+/** Color de fondo de los encabezados de todas las hojas. */
+const COLOR_ENCABEZADO = "#e2e8f0";
+
+/** Las dos claves de slot de los usuarios (ver la hoja "Usuarios"). Son datos: no se renombran. */
+const SANTIAGO = "Santiago";
+const ROCIO = "Rocío";
+const AMBOS = "Ambos";
+
+/** Columnas (base 0) de una hoja de movimientos, A..O. */
+const COL = {
+  ID: 0, FECHA: 1, MONTO: 2, TIPO: 3, CATEGORIA: 4, RESPONSABLE: 5, ES_COMUN: 6, DESCRIPCION: 7,
+  METODO: 8, TICKET: 9, ELIMINADO: 10, PROPIETARIO: 11, PLAN_ID: 12, CUOTA: 13, EVITABLE: 14
+};
+
+/** Columnas (base 0) de la hoja "Planes", A..L. */
+const COL_PLAN = {
+  ID: 0, CREACION: 1, DESCRIPCION: 2, MONTO: 3, CANTIDAD: 4, PRIMERA: 5, PROPIETARIO: 6,
+  CATEGORIA: 7, TARJETA: 8, ELIMINADO: 9, PREVIAS: 10, EVITABLE: 11
+};
+const PLAN_COLS = 12;
+
+/** ¿[sheet] guarda movimientos? Todas las hojas menos las de planes y usuarios. */
+function esHojaDeMovimientos(sheet) {
+  const nombre = sheet.getName();
+  return nombre !== PLANS_SHEET && nombre !== USERS_SHEET;
+}
+
+/** Las hojas que guardan movimientos, en el orden de la planilla. */
+function hojasDeMovimientos(ss) {
+  return ss.getSheets().filter(esHojaDeMovimientos);
+}
+
+/** Valor de una celda como texto ("" si está vacía). */
+function texto(v) {
+  return v ? v.toString() : "";
+}
+
+/**
+ * Corre [fn] con el candado del script (el mismo que toma doPost), para que un trigger o una función
+ * del editor no escriba en medio de una escritura de la app: los dos trabajan con números de fila, y
+ * una fila borrada por el otro corre todos los índices. Si el candado no se libera a tiempo, no
+ * escribe nada y lo deja logueado.
+ */
+function conCandado(nombre, fn) {
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(LOCK_TIMEOUT_MS);
+  } catch (lockErr) {
+    Logger.log(nombre + ": el script está ocupado con otra escritura, no se hizo nada.");
+    return null;
+  }
+  try {
+    return fn();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Pone [nombre] como encabezado de la columna [col] (base 1) si está vacío, agregando columnas si faltan. */
+function asegurarEncabezado(sheet, col, nombre) {
+  if (sheet.getMaxColumns() < col) sheet.insertColumnsAfter(sheet.getMaxColumns(), col - sheet.getMaxColumns());
+  const celda = sheet.getRange(1, col);
+  if (!celda.getValue()) {
+    celda.setValue(nombre).setFontWeight("bold").setBackground(COLOR_ENCABEZADO);
+  }
+}
+
+/** Crea una hoja con sus encabezados en negrita y la primera fila fija. */
+function crearHojaConEncabezados(ss, nombre, encabezados) {
+  const sheet = ss.insertSheet(nombre);
+  sheet.appendRow(encabezados);
+  sheet.getRange(1, 1, 1, encabezados.length).setFontWeight("bold").setBackground(COLOR_ENCABEZADO);
+  sheet.setFrozenRows(1);
+  return sheet;
+}
+
+/** Instala un trigger diario de [handler] a la [hora] dada (reemplaza el que hubiera). */
+function instalarTriggerDiario(handler, hora, zona) {
+  desinstalarTriggers(handler);
+  let builder = ScriptApp.newTrigger(handler).timeBased().atHour(hora).everyDays(1);
+  if (zona) builder = builder.inTimezone(zona);
+  builder.create();
+}
+
+/** Quita los triggers de [handler]. Devuelve cuántos quitó. */
+function desinstalarTriggers(handler) {
+  let n = 0;
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === handler) { ScriptApp.deleteTrigger(t); n++; }
+  });
+  return n;
+}
+
 /**
  * Función para forzar la solicitud de permisos de Drive.
  */
@@ -70,14 +187,14 @@ function jsonOutput(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
 }
 
-/** True si el valor de una celda "eliminado" representa verdadero. */
-function isEliminado(v) {
-  return v === true || v === 'true' || v === 'VERDADERO';
-}
-
-/** True si una celda booleana (Es Común, Evitable) representa verdadero. Vacío = false. */
+/** True si una celda booleana (Eliminado, Es Común, Evitable) representa verdadero. Vacío = false. */
 function esVerdadero(v) {
   return v === true || v === 'true' || v === 'TRUE' || v === 'VERDADERO';
+}
+
+/** True si el valor de una celda "eliminado" representa verdadero. */
+function isEliminado(v) {
+  return esVerdadero(v);
 }
 
 /** Encabezados de una hoja de movimientos (A..O). */
@@ -86,26 +203,10 @@ const MOVEMENT_COLS = MOVEMENT_HEADERS.length;
 
 /** Devuelve la hoja de movimientos [nombre], creándola con sus encabezados si no existe. */
 function hojaDeMovimientos(ss, nombre) {
-  let sheet = ss.getSheetByName(nombre);
-  if (!sheet) {
-    sheet = ss.insertSheet(nombre);
-    sheet.appendRow(MOVEMENT_HEADERS);
-    sheet.getRange(1, 1, 1, MOVEMENT_COLS).setFontWeight("bold").setBackground("#e2e8f0");
-    sheet.setFrozenRows(1);
-  }
-  asegurarColumnaEvitable(sheet);
+  const sheet = ss.getSheetByName(nombre) || crearHojaConEncabezados(ss, nombre, MOVEMENT_HEADERS);
+  // Las hojas de mes anteriores a la v7.7 no tienen la columna O.
+  asegurarEncabezado(sheet, MOVEMENT_COLS, "Evitable");
   return sheet;
-}
-
-/** Escribe el encabezado de la columna O en hojas de mes anteriores a la v7.7. */
-function asegurarColumnaEvitable(sheet) {
-  if (sheet.getMaxColumns() < MOVEMENT_COLS) {
-    sheet.insertColumnsAfter(sheet.getMaxColumns(), MOVEMENT_COLS - sheet.getMaxColumns());
-  }
-  const celda = sheet.getRange(1, MOVEMENT_COLS);
-  if (!celda.getValue()) {
-    celda.setValue("Evitable").setFontWeight("bold").setBackground("#e2e8f0");
-  }
 }
 
 /** Nombre de la hoja de mes donde va un movimiento con fecha "yyyy-MM-dd…" ("Movimientos" si no parsea). */
@@ -124,9 +225,7 @@ function hojaDeFecha(fecha) {
  * las hojas en cada una). null si no existe.
  */
 function buscarMovimiento(ss, id, preferida) {
-  const hojas = ss.getSheets().filter(function (sh) {
-    return sh.getName() !== PLANS_SHEET && sh.getName() !== USERS_SHEET;
-  });
+  const hojas = hojasDeMovimientos(ss);
   hojas.sort(function (a, b) { return (a.getName() === preferida.getName() ? 0 : 1) - (b.getName() === preferida.getName() ? 0 : 1); });
   for (let h = 0; h < hojas.length; h++) {
     const sheet = hojas[h];
@@ -158,55 +257,56 @@ function toDateTime(v) {
 }
 
 function doGet(e) {
-  const action = (e && e.parameter && e.parameter.action) ? e.parameter.action : null;
+  try {
+    const action = (e && e.parameter && e.parameter.action) ? e.parameter.action : null;
 
-  // --- Endpoint del módulo de cuotas ---
-  if (action === 'GET_PLANS') {
-    return getPlans(e);
-  }
-
-  // --- Endpoint de usuarios parametrizables ---
-  if (action === 'GET_USERS') {
-    return getUsers(e);
-  }
-
-  // --- Movimientos (comportamiento por defecto) ---
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheets = ss.getSheets();
-  let allData = [];
-
-  sheets.forEach(sheet => {
-    // ⚠️ Las hojas de planes y usuarios NO contienen movimientos: hay que saltarlas.
-    if (sheet.getName() === PLANS_SHEET || sheet.getName() === USERS_SHEET) return;
-
-    const data = sheet.getDataRange().getValues();
-    if (data.length > 1) {
-      const rows = data.slice(1).map(row => {
-        // Ignorar si está marcado como eliminado (Columna K / index 10)
-        if (isEliminado(row[10])) return null;
-
-        return {
-          id: row[0] ? row[0].toString() : "",
-          fecha: row[1] ? row[1].toString() : "",
-          monto: Number(row[2]) || 0,
-          tipo: row[3] ? row[3].toString() : "",
-          categoria: row[4] ? row[4].toString() : "",
-          responsable: row[5] ? row[5].toString() : "",
-          esComun: row[6] === true || row[6] === 'true' || row[6] === 'VERDADERO',
-          descripcion: row[7] ? row[7].toString() : "",
-          metodoPago: row[8] ? row[8].toString() : "Billetera Virtual",
-          ticketUrl: row[9] ? row[9].toString() : "",
-          eliminado: false,
-          propietario: row[11] ? row[11].toString() : (row[5] ? row[5].toString() : ""),
-          planId: row[12] ? row[12].toString() : "",
-          cuotaNumero: Number(row[13]) || 0,
-          evitable: esVerdadero(row[14])
-        };
-      }).filter(r => r !== null);
-      allData = allData.concat(rows);
+    // --- Endpoint del módulo de cuotas ---
+    if (action === 'GET_PLANS') {
+      return getPlans(e);
     }
-  });
 
+    // --- Endpoint de usuarios parametrizables ---
+    if (action === 'GET_USERS') {
+      return getUsers(e);
+    }
+
+    // --- Movimientos (action=GET, o cualquier otra cosa: comportamiento por defecto) ---
+    return getMovements();
+  } catch (err) {
+    return jsonOutput({ status: "ERROR", message: err.toString() });
+  }
+}
+
+/** Todos los movimientos vivos de todas las hojas de movimientos, tal como los espera la app. */
+function getMovements() {
+  let allData = [];
+  hojasDeMovimientos(SpreadsheetApp.getActiveSpreadsheet()).forEach(function (sheet) {
+    const data = sheet.getDataRange().getValues();
+    const rows = data.slice(1)
+      // Ni los eliminados ni las filas vacías (sin id ni fecha) son movimientos.
+      .filter(function (row) { return !isEliminado(row[COL.ELIMINADO]) && (row[COL.ID] || row[COL.FECHA]); })
+      .map(function (row) {
+        return {
+          id: texto(row[COL.ID]),
+          // Tal cual la celda (si Sheets la guardó como Date, la app la normaliza).
+          fecha: texto(row[COL.FECHA]),
+          monto: Number(row[COL.MONTO]) || 0,
+          tipo: texto(row[COL.TIPO]),
+          categoria: texto(row[COL.CATEGORIA]),
+          responsable: texto(row[COL.RESPONSABLE]),
+          esComun: esVerdadero(row[COL.ES_COMUN]),
+          descripcion: texto(row[COL.DESCRIPCION]),
+          metodoPago: row[COL.METODO] ? row[COL.METODO].toString() : VIRTUAL,
+          ticketUrl: texto(row[COL.TICKET]),
+          eliminado: false,
+          propietario: row[COL.PROPIETARIO] ? row[COL.PROPIETARIO].toString() : texto(row[COL.RESPONSABLE]),
+          planId: texto(row[COL.PLAN_ID]),
+          cuotaNumero: Number(row[COL.CUOTA]) || 0,
+          evitable: esVerdadero(row[COL.EVITABLE])
+        };
+      });
+    allData = allData.concat(rows);
+  });
   return jsonOutput({ status: "SUCCESS", data: allData });
 }
 
@@ -224,15 +324,14 @@ function getPlans(e) {
 
   // 1) paidMap: planId -> Set de cuotaNumero pagadas (derivado de los movimientos).
   const paidMap = {};
-  ss.getSheets().forEach(sheet => {
-    if (sheet.getName() === PLANS_SHEET || sheet.getName() === USERS_SHEET) return; // solo movimientos
+  hojasDeMovimientos(ss).forEach(function (sheet) {
     const data = sheet.getDataRange().getValues();
     for (let i = 1; i < data.length; i++) {
       const row = data[i];
-      if (isEliminado(row[10])) continue;
-      const planId = row[12] ? row[12].toString() : "";
+      if (isEliminado(row[COL.ELIMINADO])) continue;
+      const planId = texto(row[COL.PLAN_ID]);
       if (!planId) continue;
-      const cuotaNum = Number(row[13]) || 0;
+      const cuotaNum = Number(row[COL.CUOTA]) || 0;
       if (cuotaNum <= 0) continue;
       if (!paidMap[planId]) paidMap[planId] = {};
       paidMap[planId][cuotaNum] = true;
@@ -246,17 +345,19 @@ function getPlans(e) {
     const data = plansSheet.getDataRange().getValues();
     for (let i = 1; i < data.length; i++) {
       const row = data[i];
-      if (isEliminado(row[9])) continue; // Columna J / index 9
-      const id = row[0] ? row[0].toString() : "";
+      if (isEliminado(row[COL_PLAN.ELIMINADO])) continue;
+      const id = texto(row[COL_PLAN.ID]);
       if (!id) continue;
 
-      const cantidadCuotas = Number(row[4]) || 0;
+      const cantidadCuotas = Number(row[COL_PLAN.CANTIDAD]) || 0;
       // "Pagada" = tiene movimiento vivo O figura en el snapshot del corte (columna K). Sin la
-      // unión, purgar hojas viejas devolvía a pendiente cuotas ya pagadas.
-      const previas = parsePrevias(row.length > 10 ? row[10] : "");
+      // unión, purgar hojas viejas devolvía a pendiente cuotas ya pagadas. Solo cuentan los números
+      // del plan (1..cantidad), igual que en la app (`CuotasEngine.pagadasDe`).
+      const previas = parsePrevias(row.length > COL_PLAN.PREVIAS ? row[COL_PLAN.PREVIAS] : "");
       const pagadasSet = {};
-      if (paidMap[id]) Object.keys(paidMap[id]).forEach(function (k) { pagadasSet[Number(k)] = true; });
-      previas.forEach(function (k) { if (k >= 1 && k <= cantidadCuotas) pagadasSet[k] = true; });
+      const esDelPlan = function (k) { return k >= 1 && k <= cantidadCuotas; };
+      if (paidMap[id]) Object.keys(paidMap[id]).map(Number).filter(esDelPlan).forEach(function (k) { pagadasSet[k] = true; });
+      previas.filter(esDelPlan).forEach(function (k) { pagadasSet[k] = true; });
       const pagadas = Object.keys(pagadasSet).length;
       const completo = cantidadCuotas > 0 && pagadas >= cantidadCuotas;
 
@@ -265,17 +366,17 @@ function getPlans(e) {
 
       plans.push({
         id: id,
-        fechaCreacion: toDateTime(row[1]),
-        descripcion: row[2] ? row[2].toString() : "",
-        montoPorCuota: Number(row[3]) || 0,
+        fechaCreacion: toDateTime(row[COL_PLAN.CREACION]),
+        descripcion: texto(row[COL_PLAN.DESCRIPCION]),
+        montoPorCuota: Number(row[COL_PLAN.MONTO]) || 0,
         cantidadCuotas: cantidadCuotas,
-        fechaPrimeraCuota: toYearMonth(row[5]),
-        propietario: row[6] ? row[6].toString() : "",
-        categoria: row[7] ? row[7].toString() : "",
-        tarjeta: row[8] ? row[8].toString() : "",
+        fechaPrimeraCuota: toYearMonth(row[COL_PLAN.PRIMERA]),
+        propietario: texto(row[COL_PLAN.PROPIETARIO]),
+        categoria: texto(row[COL_PLAN.CATEGORIA]),
+        tarjeta: texto(row[COL_PLAN.TARJETA]),
         eliminado: false,
         cuotasPagadasPrevias: previas,
-        evitable: esVerdadero(row.length > 11 ? row[11] : "")
+        evitable: esVerdadero(row.length > COL_PLAN.EVITABLE ? row[COL_PLAN.EVITABLE] : "")
       });
     }
   }
@@ -286,7 +387,7 @@ function getPlans(e) {
   return jsonOutput({ status: "SUCCESS", plans: plans });
 }
 
-/** Segundos que una escritura espera el candado antes de rendirse. */
+/** Milisegundos que una escritura espera el candado antes de rendirse. */
 const LOCK_TIMEOUT_MS = 30000;
 
 /**
@@ -347,6 +448,8 @@ function handlePost(e) {
       return handleLogicalDelete(json.id);
     }
 
+    // POST y PUT son lo mismo: un upsert por id. La app manda siempre PUT; el POST (append ciego)
+    // solo llegaba de versiones viejas, y un reintento suyo duplicaba la fila.
     if ((action === 'POST' || action === 'PUT') && json.body) {
       const mov = json.body;
 
@@ -390,7 +493,7 @@ function handlePost(e) {
           mov.responsable,
           mov.esComun,
           mov.descripcion,
-          mov.metodoPago || "Billetera Virtual",
+          mov.metodoPago || VIRTUAL,
           mov.ticketUrl || ticketUrlAnterior || "",
           false, // Columna Eliminado
           mov.propietario || mov.responsable,
@@ -400,36 +503,50 @@ function handlePost(e) {
         ];
       };
 
-      // PUT = upsert por id. Se busca en TODAS las hojas y no solo en la del mes de la fecha: una
+      // Upsert por id. Se busca en TODAS las hojas y no solo en la del mes de la fecha: una
       // edición puede haber cambiado la fecha de mes, y buscando solo en la hoja nueva la fila vieja
       // quedaba viva y el movimiento contaba dos veces.
-      if (action === 'PUT') {
-        const existente = buscarMovimiento(ss, mov.id, sheet);
-        if (existente) {
-          const ticketAnterior = existente.valores.length > 9 ? existente.valores[9] : "";
-          if (existente.sheet.getName() === sheet.getName()) {
-            existente.sheet.getRange(existente.fila, 1, 1, MOVEMENT_COLS).setValues([filaDe(ticketAnterior)]);
-            return jsonOutput({ status: "SUCCESS", message: "Actualizado OK" });
-          }
-          // Cambió de mes: se borra físicamente la fila vieja (una baja lógica dejaría dos filas
-          // con el mismo id, y el listado de la app usa el id como clave) y se escribe en la nueva.
-          existente.sheet.deleteRow(existente.fila);
-          sheet.appendRow(filaDe(ticketAnterior));
-          return jsonOutput({ status: "SUCCESS", message: "Movido de " + existente.sheet.getName() + " a " + sheet.getName() });
+      const conImagen = function (mensaje) {
+        return imgStatus === "No procesada" ? mensaje : mensaje + " | " + imgStatus;
+      };
+      // Un movimiento con fecha de un mes ya cerrado deja vieja la apertura de los meses siguientes;
+      // se recalculan antes de responder (ver [recalcularAperturasPosteriores]). Las filas de
+      // apertura no: las escribe el propio recálculo o el botón de Ajustes.
+      const mesesTocados = esFilaApertura(mov.tipo) ? [] : [mesDeFecha(mov.fecha)];
+      const conAperturas = function (mensaje) {
+        const extra = recalcularAperturasPosteriores(mesesTocados);
+        return extra ? mensaje + " | " + extra : mensaje;
+      };
+
+      const existente = buscarMovimiento(ss, mov.id, sheet);
+      if (existente) {
+        const ticketAnterior = existente.valores.length > COL.TICKET ? existente.valores[COL.TICKET] : "";
+        if (!esFilaApertura(mov.tipo)) mesesTocados.push(mesDeFecha(existente.valores[COL.FECHA]));
+        if (existente.sheet.getName() === sheet.getName()) {
+          existente.sheet.getRange(existente.fila, 1, 1, MOVEMENT_COLS).setValues([filaDe(ticketAnterior)]);
+          return jsonOutput({ status: "SUCCESS", message: conAperturas(conImagen("Actualizado OK")) });
         }
+        // Cambió de mes: se escribe en la hoja nueva y recién después se borra físicamente la vieja
+        // (si fallara la escritura, el movimiento no se pierde). Una baja lógica dejaría dos filas
+        // con el mismo id, y el listado de la app usa el id como clave.
+        sheet.appendRow(filaDe(ticketAnterior));
+        existente.sheet.deleteRow(existente.fila);
+        return jsonOutput({ status: "SUCCESS", message: conAperturas(conImagen("Movido de " + existente.sheet.getName() + " a " + sheet.getName())) });
       }
 
       sheet.appendRow(filaDe(""));
 
-      return jsonOutput({ status: "SUCCESS", message: imgStatus });
+      return jsonOutput({ status: "SUCCESS", message: conAperturas(imgStatus) });
     }
+
+    return jsonOutput({ status: "ERROR", message: "Pedido no reconocido (acción: " + action + ")" });
   } catch (err) {
     return jsonOutput({ status: "ERROR", message: err.toString(), imgStatus: imgStatus });
   }
 }
 
 /**
- * Alta (POST) o edición (PUT) de un plan de cuotas en la hoja "Planes".
+ * Alta o edición de un plan de cuotas en la hoja "Planes" (upsert por id; [action] ya no distingue).
  * Crea la hoja con sus encabezados si no existe. Las columnas de fecha (B y F) se fuerzan a
  * formato texto para que Sheets no convierta "yyyy-MM" / "yyyy-MM-dd HH:mm" en objetos Date.
  */
@@ -441,17 +558,15 @@ function handlePlanUpsert(action, plan) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sheet = ss.getSheetByName(PLANS_SHEET);
   if (!sheet) {
-    sheet = ss.insertSheet(PLANS_SHEET);
-    sheet.appendRow(["ID", "Fecha Creación", "Descripción", "Monto Por Cuota", "Cantidad Cuotas", "Primera Cuota", "Propietario", "Categoría", "Tarjeta", "Eliminado", COLUMNA_PREVIAS, COLUMNA_EVITABLE_PLAN]);
-    sheet.getRange(1, 1, 1, 12).setFontWeight("bold").setBackground("#e2e8f0");
-    sheet.setFrozenRows(1);
+    sheet = crearHojaConEncabezados(ss, PLANS_SHEET, ["ID", "Fecha Creación", "Descripción", "Monto Por Cuota", "Cantidad Cuotas", "Primera Cuota", "Propietario", "Categoría", "Tarjeta", "Eliminado", COLUMNA_PREVIAS, COLUMNA_EVITABLE_PLAN]);
     // Forzar texto en las columnas de fecha para preservar el formato "yyyy-MM"/"yyyy-MM-dd HH:mm".
     sheet.getRange("B:B").setNumberFormat("@");
     sheet.getRange("F:F").setNumberFormat("@");
   }
 
   asegurarColumnaPrevias(sheet);
-  asegurarColumnaEvitablePlan(sheet);
+  // Las hojas "Planes" anteriores a la v7.7 no tienen la columna L.
+  asegurarEncabezado(sheet, PLAN_COLS, COLUMNA_EVITABLE_PLAN);
   const delPayload = parsePrevias(plan.cuotasPagadasPrevias);
 
   const rowValues = function (previas) {
@@ -471,19 +586,17 @@ function handlePlanUpsert(action, plan) {
     ];
   };
 
-  if (action === 'PUT') {
-    const data = sheet.getDataRange().getValues();
-    for (let i = 1; i < data.length; i++) {
-      if (data[i][0] == plan.id) {
-        // La columna K se escribe SIEMPRE por unión con lo que ya había: un cliente con el plan
-        // cacheado de antes del corte mandaría una lista más corta y, reemplazando, borraría el
-        // registro de cuotas pagadas cuyos movimientos ya no existen.
-        const previas = unirPrevias(parsePrevias(data[i].length > 10 ? data[i][10] : ""), delPayload);
-        sheet.getRange(i + 1, 1, 1, 12).setValues([rowValues(previas)]);
-        return jsonOutput({ status: "SUCCESS", message: "Plan actualizado OK" });
-      }
+  // Upsert por id, sea alta o edición: reintentar un alta no duplica el plan.
+  const data = sheet.getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][COL_PLAN.ID]) === String(plan.id)) {
+      // La columna K se escribe SIEMPRE por unión con lo que ya había: un cliente con el plan
+      // cacheado de antes del corte mandaría una lista más corta y, reemplazando, borraría el
+      // registro de cuotas pagadas cuyos movimientos ya no existen.
+      const previas = unirPrevias(parsePrevias(data[i].length > COL_PLAN.PREVIAS ? data[i][COL_PLAN.PREVIAS] : ""), delPayload);
+      sheet.getRange(i + 1, 1, 1, PLAN_COLS).setValues([rowValues(previas)]);
+      return jsonOutput({ status: "SUCCESS", message: "Plan actualizado OK" });
     }
-    // Si no se encontró, cae a append (alta).
   }
 
   sheet.appendRow(rowValues(delPayload));
@@ -495,15 +608,6 @@ const COLUMNA_PREVIAS = "Cuotas Pagadas Previas";
 
 /** Encabezado de la columna L de la hoja "Planes" (compra evitable; vacío = no evitable). */
 const COLUMNA_EVITABLE_PLAN = "Evitable";
-
-/** Escribe el encabezado de la columna L si la hoja "Planes" es anterior a la v7.7. */
-function asegurarColumnaEvitablePlan(sheet) {
-  if (sheet.getMaxColumns() < 12) sheet.insertColumnsAfter(sheet.getMaxColumns(), 12 - sheet.getMaxColumns());
-  const celda = sheet.getRange(1, 12);
-  if (!celda.getValue()) {
-    celda.setValue(COLUMNA_EVITABLE_PLAN).setFontWeight("bold").setBackground("#e2e8f0");
-  }
-}
 
 /** "1,2,3" (o un array) -> [1,2,3]. Tolera vacío, espacios y basura. */
 function parsePrevias(v) {
@@ -529,20 +633,17 @@ function unirPrevias(a, b) {
 
 /** Escribe el encabezado de la columna K si la hoja "Planes" es anterior al snapshot. */
 function asegurarColumnaPrevias(sheet) {
-  // Una hoja creada a mano puede tener menos de 11 columnas; getRange(1, 11) tiraría excepción y se
+  // Una hoja creada a mano puede tener menos de 11 columnas; getRange("K:K") tiraría excepción y se
   // llevaría puesto el guardado del plan entero.
-  if (sheet.getMaxColumns() < 11) sheet.insertColumnsAfter(sheet.getMaxColumns(), 11 - sheet.getMaxColumns());
+  const col = COL_PLAN.PREVIAS + 1;
+  if (sheet.getMaxColumns() < col) sheet.insertColumnsAfter(sheet.getMaxColumns(), col - sheet.getMaxColumns());
 
   // La columna va a TEXTO, igual que las de fecha. Sin esto Sheets interpreta el contenido como
   // número: con una sola cuota es inofensivo ("1" -> 1, que `parsePrevias` vuelve a leer bien), pero
   // en una planilla con coma decimal "1,2" se convierte en el número 1.2 y el snapshot de ese plan
   // se pierde en silencio — justo el caso de un plan con dos cuotas ya pagadas antes del corte.
   sheet.getRange("K:K").setNumberFormat("@");
-
-  const celda = sheet.getRange(1, 11);
-  if (!celda.getValue()) {
-    celda.setValue(COLUMNA_PREVIAS).setFontWeight("bold").setBackground("#e2e8f0");
-  }
+  asegurarEncabezado(sheet, col, COLUMNA_PREVIAS);
 }
 
 /**
@@ -574,12 +675,12 @@ function snapshotCuotasPrevias(mes) {
   const data = sheet.getDataRange().getValues();
   let tocados = 0;
   for (let i = 1; i < data.length; i++) {
-    const id = data[i][0] ? data[i][0].toString() : "";
+    const id = texto(data[i][COL_PLAN.ID]);
     if (!id || !previas[id]) continue;
-    const actual = parsePrevias(data[i].length > 10 ? data[i][10] : "");
+    const actual = parsePrevias(data[i].length > COL_PLAN.PREVIAS ? data[i][COL_PLAN.PREVIAS] : "");
     const union = unirPrevias(actual, previas[id]);
     if (union.length !== actual.length) {
-      sheet.getRange(i + 1, 11).setValue(formatPrevias(union));
+      sheet.getRange(i + 1, COL_PLAN.PREVIAS + 1).setValue(formatPrevias(union));
       tocados++;
     }
   }
@@ -600,8 +701,8 @@ function handlePlanDelete(id) {
 
   const data = sheet.getDataRange().getValues();
   for (let i = 1; i < data.length; i++) {
-    if (data[i][0] == id) {
-      sheet.getRange(i + 1, 10).setValue(true); // Columna J
+    if (String(data[i][COL_PLAN.ID]) === String(id)) {
+      sheet.getRange(i + 1, COL_PLAN.ELIMINADO + 1).setValue(true); // Columna J
       return jsonOutput({ status: "SUCCESS", message: "Plan eliminado (baja lógica) OK" });
     }
   }
@@ -620,14 +721,11 @@ function getUsersSheetSeeded() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sheet = ss.getSheetByName(USERS_SHEET);
   if (!sheet) {
-    sheet = ss.insertSheet(USERS_SHEET);
-    sheet.appendRow(["slotKey", "Nombre", "ColorId", "Orden"]);
-    sheet.getRange(1, 1, 1, 4).setFontWeight("bold").setBackground("#e2e8f0");
-    sheet.setFrozenRows(1);
+    sheet = crearHojaConEncabezados(ss, USERS_SHEET, ["slotKey", "Nombre", "ColorId", "Orden"]);
     sheet.getRange("A:A").setNumberFormat("@");
     // Seed: slotKey = nombre legacy y colores actuales -> retrocompatible con los datos existentes.
-    sheet.appendRow(["Santiago", "Santiago", "green", 0]);
-    sheet.appendRow(["Rocío", "Rocío", "blue", 1]);
+    sheet.appendRow([SANTIAGO, SANTIAGO, "green", 0]);
+    sheet.appendRow([ROCIO, ROCIO, "blue", 1]);
   }
   return sheet;
 }
@@ -654,7 +752,7 @@ function getUsers(e) {
         // Mensaje del día (v7.8, columnas E/F): lo escribe generarMensajesDelDia().
         mensaje: row.length > 4 && row[4] ? row[4].toString() : "",
         mensajeFecha: row.length > 5 && row[5]
-          ? (row[5] instanceof Date ? Utilities.formatDate(row[5], "America/Argentina/Buenos_Aires", "yyyy-MM-dd") : row[5].toString())
+          ? (row[5] instanceof Date ? Utilities.formatDate(row[5], ZONA_ARGENTINA, "yyyy-MM-dd") : row[5].toString())
           : ""
       });
     }
@@ -665,7 +763,7 @@ function getUsers(e) {
 /**
  * Edita (PUT) un usuario: busca por slotKey (col A, inmutable) y actualiza nombre (B) y colorId (C).
  * Siembra la hoja con los dos slots legacy si faltaba, de modo que el slotKey siempre se encuentre.
- * No existe alta/baja de usuarios: siempre son exactamente dos filas fijas.
+ * No existe alta/baja de usuarios desde la app.
  */
 function handleUserUpsert(user) {
   if (!user || !user.slotKey) {
@@ -684,18 +782,17 @@ function handleUserUpsert(user) {
 }
 
 function handleLogicalDelete(id) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheets = ss.getSheets();
+  const sheets = hojasDeMovimientos(SpreadsheetApp.getActiveSpreadsheet());
 
   for (let sheet of sheets) {
-    // Planes y usuarios se gestionan por sus propios endpoints, no contienen movimientos.
-    if (sheet.getName() === PLANS_SHEET || sheet.getName() === USERS_SHEET) continue;
     const data = sheet.getDataRange().getValues();
     for (let i = 1; i < data.length; i++) {
-      if (data[i][0] == id) {
-        // Marcar columna K (index 10) como TRUE
-        sheet.getRange(i + 1, 11).setValue(true);
-        return jsonOutput({ status: "SUCCESS", message: "Eliminado (baja lógica) OK" });
+      if (data[i][COL.ID] == id) {
+        // Marcar columna K como TRUE
+        sheet.getRange(i + 1, COL.ELIMINADO + 1).setValue(true);
+        const extra = esFilaApertura(data[i][COL.TIPO]) ? "" :
+          recalcularAperturasPosteriores([mesDeFecha(data[i][COL.FECHA])]);
+        return jsonOutput({ status: "SUCCESS", message: "Eliminado (baja lógica) OK" + (extra ? " | " + extra : "") });
       }
     }
   }
@@ -726,9 +823,6 @@ function handleLogicalDelete(id) {
 
 const TIPO_APERTURA = "Apertura";
 const CATEGORIA_APERTURA = "Saldo inicial";
-const SANTIAGO = "Santiago";
-const ROCIO = "Rocío";
-const AMBOS = "Ambos";
 const EFECTIVO = "Efectivo";
 const VIRTUAL = "Billetera Virtual";
 
@@ -763,32 +857,30 @@ function normalizarPropietario(propietario, responsable) {
  * uno. Excluye los eliminados lógicamente.
  */
 function leerTodosLosMovimientos() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
   const out = [];
-  ss.getSheets().forEach(function (sheet) {
+  hojasDeMovimientos(SpreadsheetApp.getActiveSpreadsheet()).forEach(function (sheet) {
     const nombre = sheet.getName();
-    if (nombre === PLANS_SHEET || nombre === USERS_SHEET) return;
     const data = sheet.getDataRange().getValues();
     for (let i = 1; i < data.length; i++) {
       const row = data[i];
-      if (!row[0] && !row[1]) continue;          // fila vacía
-      if (isEliminado(row[10])) continue;
+      if (!row[COL.ID] && !row[COL.FECHA]) continue;          // fila vacía
+      if (isEliminado(row[COL.ELIMINADO])) continue;
       out.push({
         hoja: nombre,
         fila: i + 1,
-        id: row[0] ? row[0].toString() : "",
-        fecha: toDateTime(row[1]),
-        mes: toYearMonth(row[1]).substring(0, 7),
-        monto: Number(row[2]) || 0,
-        tipo: row[3] ? row[3].toString() : "",
-        categoria: row[4] ? row[4].toString() : "",
-        responsable: row[5] ? row[5].toString() : "",
-        esComun: row[6] === true || row[6] === "true" || row[6] === "VERDADERO",
-        metodoPago: row[8] ? row[8].toString() : VIRTUAL,
-        propietario: row[11] ? row[11].toString() : (row[5] ? row[5].toString() : ""),
-        planId: row[12] ? row[12].toString() : "",
-        cuotaNumero: Number(row[13]) || 0,
-        evitable: esVerdadero(row[14])
+        id: texto(row[COL.ID]),
+        fecha: toDateTime(row[COL.FECHA]),
+        mes: toYearMonth(row[COL.FECHA]).substring(0, 7),
+        monto: Number(row[COL.MONTO]) || 0,
+        tipo: texto(row[COL.TIPO]),
+        categoria: texto(row[COL.CATEGORIA]),
+        responsable: texto(row[COL.RESPONSABLE]),
+        esComun: esVerdadero(row[COL.ES_COMUN]),
+        metodoPago: row[COL.METODO] ? row[COL.METODO].toString() : VIRTUAL,
+        propietario: row[COL.PROPIETARIO] ? row[COL.PROPIETARIO].toString() : texto(row[COL.RESPONSABLE]),
+        planId: texto(row[COL.PLAN_ID]),
+        cuotaNumero: Number(row[COL.CUOTA]) || 0,
+        evitable: esVerdadero(row[COL.EVITABLE])
       });
     }
   });
@@ -797,7 +889,7 @@ function leerTodosLosMovimientos() {
 
 /**
  * Aplica una lista de movimientos sobre un estado y devuelve el estado resultante. Port exacto de
- * `AccountingEngine.compute` (app/src/main/java/com/example/ui/AccountingEngine.kt) restringido al
+ * `AccountingEngine.compute` (app/src/main/java/com/example/domain/AccountingEngine.kt) restringido al
  * stock: los flujos del periodo (aportes/gastos) no hacen falta acá.
  */
 function aplicarMovimientos(movs, estado) {
@@ -911,14 +1003,17 @@ function filasDeApertura(mes, estado) {
   const sVirtDeRocio = net < 0 ? -net : 0;
   const rVirtDeSantiago = net > 0 ? net : 0;
 
+  // Las 6 filas van SIEMPRE, aunque la propiedad cruzada sea cero: la escritura es un upsert por id
+  // y no borra lo que ya no se emite, así que una fila cruzada de una escritura anterior quedaba viva
+  // (y sumando) cuando la deuda se saldaba o cambiaba de lado. Mismo orden que `openingRowsFor`.
   const filas = [
     [SANTIAGO, SANTIAGO, EFECTIVO, estado.sEfec],
     [SANTIAGO, SANTIAGO, VIRTUAL, estado.sVirt - sVirtDeRocio],
+    [SANTIAGO, ROCIO, VIRTUAL, sVirtDeRocio],
     [ROCIO, ROCIO, EFECTIVO, estado.rEfec],
-    [ROCIO, ROCIO, VIRTUAL, estado.rVirt - rVirtDeSantiago]
+    [ROCIO, ROCIO, VIRTUAL, estado.rVirt - rVirtDeSantiago],
+    [ROCIO, SANTIAGO, VIRTUAL, rVirtDeSantiago]
   ];
-  if (sVirtDeRocio !== 0) filas.push([SANTIAGO, ROCIO, VIRTUAL, sVirtDeRocio]);
-  if (rVirtDeSantiago !== 0) filas.push([ROCIO, SANTIAGO, VIRTUAL, rVirtDeSantiago]);
 
   return filas.map(function (f) {
     const responsable = f[0], propietario = f[1], metodo = f[2], monto = f[3];
@@ -934,7 +1029,7 @@ function filasDeApertura(mes, estado) {
       categoria: CATEGORIA_APERTURA,
       responsable: responsable,
       esComun: false,
-      descripcion: "Saldo inicial " + mes + " - " + responsable + " - " + metodo + deOtro,
+      descripcion: "Saldo inicial " + mes + " · " + responsable + " · " + metodo + deOtro,
       metodoPago: metodo,
       propietario: propietario
     };
@@ -952,12 +1047,12 @@ function estadoEscritoDe(data) {
   const filas = [];
   for (let i = 1; i < data.length; i++) {
     const row = data[i];
-    if (!esFilaApertura(row[3])) continue;
+    if (!esFilaApertura(row[COL.TIPO])) continue;
     filas.push({
-      responsable: row[5] ? row[5].toString() : "",
-      propietario: row[11] ? row[11].toString() : "",
-      metodoPago: row[8] ? row[8].toString() : VIRTUAL,
-      monto: Number(row[2]) || 0
+      responsable: texto(row[COL.RESPONSABLE]),
+      propietario: texto(row[COL.PROPIETARIO]),
+      metodoPago: row[COL.METODO] ? row[COL.METODO].toString() : VIRTUAL,
+      monto: Number(row[COL.MONTO]) || 0
     });
   }
   return estadoDesdeFilasDeApertura(filas);
@@ -1068,16 +1163,16 @@ function previsualizarAperturas() {
     let txt = "=== " + mes + " (" + nombreHojaDeMes(mes) + ") ===\n";
     if (i === 0) {
       txt += "  [ARRANCA] mes más viejo disponible; su apertura es el ancla y no se recalcula\n" +
-        describirPersona("Santiago", apertura.sEfec, apertura.sVirt, apertura.netSR) + "\n" +
-        describirPersona("Rocío", apertura.rEfec, apertura.rVirt, -apertura.netSR) + "\n";
+        describirPersona(SANTIAGO, apertura.sEfec, apertura.sVirt, apertura.netSR) + "\n" +
+        describirPersona(ROCIO, apertura.rEfec, apertura.rVirt, -apertura.netSR) + "\n";
     } else {
       txt += "  [ARRANCA EL " + mes + "-01]  -> " + filasDeApertura(mes, apertura).length + " filas de apertura\n" +
-        describirPersona("Santiago", apertura.sEfec, apertura.sVirt, apertura.netSR) + "\n" +
-        describirPersona("Rocío", apertura.rEfec, apertura.rVirt, -apertura.netSR) + "\n";
+        describirPersona(SANTIAGO, apertura.sEfec, apertura.sVirt, apertura.netSR) + "\n" +
+        describirPersona(ROCIO, apertura.rEfec, apertura.rVirt, -apertura.netSR) + "\n";
     }
     txt += "  [CIERRA]" + (ultimo ? "  <<< ESTADO DE HOY >>>" : "") + "\n" +
-      describirPersona("Santiago", cierre.sEfec, cierre.sVirt, cierre.netSR) + "\n" +
-      describirPersona("Rocío", cierre.rEfec, cierre.rVirt, -cierre.netSR);
+      describirPersona(SANTIAGO, cierre.sEfec, cierre.sVirt, cierre.netSR) + "\n" +
+      describirPersona(ROCIO, cierre.rEfec, cierre.rVirt, -cierre.netSR);
     Logger.log(txt);
 
     estado = cierre;
@@ -1103,19 +1198,14 @@ const TRIGGER_APERTURAS = "actualizarAperturas";
  * mantiene las aperturas al día solo. Es idempotente: volver a correrlo no duplica el trigger.
  */
 function instalarTriggerDeAperturas() {
-  desinstalarTriggerDeAperturas();
-  ScriptApp.newTrigger(TRIGGER_APERTURAS).timeBased().atHour(4).everyDays(1).create();
+  instalarTriggerDiario(TRIGGER_APERTURAS, 4);
   Logger.log("Trigger diario instalado (~4 AM): " + TRIGGER_APERTURAS + "().");
   Logger.log("Verificalo en el editor, panel izquierdo, ícono del reloj (Activadores).");
 }
 
 /** Quita el trigger diario. El saldo inicial vuelve a depender del botón de Ajustes. */
 function desinstalarTriggerDeAperturas() {
-  let n = 0;
-  ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === TRIGGER_APERTURAS) { ScriptApp.deleteTrigger(t); n++; }
-  });
-  Logger.log("Triggers quitados: " + n);
+  Logger.log("Triggers quitados: " + desinstalarTriggers(TRIGGER_APERTURAS));
 }
 
 /**
@@ -1124,54 +1214,106 @@ function desinstalarTriggerDeAperturas() {
  *
  * Recalcular todo a diario en vez de escribir una sola vez el día 1 es a propósito: los movimientos
  * se cargan con atraso. Si el 3 de septiembre agregás un gasto con fecha 31 de agosto, la apertura
- * de septiembre queda vieja; al día siguiente el trigger la corrige sola. Escribir una única vez
- * dejaría ese error congelado para siempre.
+ * de septiembre queda vieja. Lo que entra por la app ya lo corrige doPost en el momento
+ * ([recalcularAperturasPosteriores]); el trigger queda de red para lo que se edita a mano en la
+ * planilla o si ese recálculo falló. Escribir una única vez dejaría el error congelado para siempre.
  */
 function actualizarAperturas() {
-  const movs = leerTodosLosMovimientos();
-  const aperturas = calcularAperturasPorMes(movs);
+  return conCandado("actualizarAperturas", function () {
+    const movs = leerTodosLosMovimientos();
+    const aperturas = calcularAperturasPorMes(movs);
+    let total = escribirAperturas(aperturas);
+
+    // El mes calendario actual puede no tener movimientos todavía (típico los primeros días).
+    // Le escribimos igual su apertura para que la hoja nazca con el arrastre puesto.
+    const mesActual = mesCalendarioActual();
+    if (!aperturas[mesActual] && !filasAperturaEscritasDe(movs, mesActual).length) {
+      const previos = movs.filter(function (m) { return m.mes && m.mes < mesActual; });
+      if (previos.length) {
+        total += escribirAperturaDeMes(mesActual, calcularAperturaDe(previos, mesActual));
+      }
+    }
+
+    Logger.log("Aperturas actualizadas: " + total + " filas.");
+    return total;
+  });
+}
+
+/** "yyyy-MM" de hoy en el huso del script. */
+function mesCalendarioActual() {
+  return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM");
+}
+
+/** "yyyy-MM" de una celda o string de fecha; "" si no parsea a un mes válido. */
+function mesDeFecha(fecha) {
+  const mes = toYearMonth(fecha).substring(0, 7);
+  return /^\d{4}-(0[1-9]|1[0-2])$/.test(mes) ? mes : "";
+}
+
+/**
+ * Recalcula en el momento las aperturas de los meses posteriores al más viejo de [meses], si ese
+ * mes ya cerró (es anterior al mes calendario actual). Lo llama doPost después de escribir o dar de
+ * baja un movimiento, con el candado ya tomado (por eso no pasa por [conCandado]).
+ *
+ * La app arma el saldo de un mes con su apertura escrita y no mira los meses anteriores
+ * (`AccountingEngine.openingFor`). Sin esto, un movimiento con fecha vieja —el caso típico es
+ * pagar una cuota atrasada, que se fecha en el mes de la cuota— no movía el saldo del mes en curso
+ * hasta que [actualizarAperturas] corría a la madrugada siguiente.
+ *
+ * Devuelve un texto para el mensaje de la respuesta ("" si no hizo falta). Nunca tira: el
+ * movimiento ya quedó guardado y, si esto falla, el trigger diario lo corrige igual.
+ */
+function recalcularAperturasPosteriores(meses) {
+  const mesActual = mesCalendarioActual();
+  const desde = meses.filter(function (m) { return m && m < mesActual; }).sort()[0];
+  if (!desde) return "";
+  try {
+    SpreadsheetApp.flush();
+    const aperturas = calcularAperturasPorMes(leerTodosLosMovimientos());
+    let total = 0;
+    Object.keys(aperturas).sort().forEach(function (mes) {
+      if (mes > desde) total += escribirAperturaDeMes(mes, aperturas[mes]);
+    });
+    return "Aperturas posteriores a " + desde + " recalculadas (" + total + " filas)";
+  } catch (err) {
+    Logger.log("No se pudieron recalcular las aperturas posteriores a " + desde + ": " + err);
+    return "Aperturas sin recalcular (las corrige el trigger diario): " + err;
+  }
+}
+
+/** Escribe las [aperturas] ({mes: estado}) en sus hojas. Devuelve cuántas filas tocó. */
+function escribirAperturas(aperturas) {
   let total = 0;
   Object.keys(aperturas).sort().forEach(function (mes) {
     total += escribirAperturaDeMes(mes, aperturas[mes]);
   });
-
-  // El mes calendario actual puede no tener movimientos todavía (típico los primeros días).
-  // Le escribimos igual su apertura para que la hoja nazca con el arrastre puesto.
-  const mesActual = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM");
-  if (!aperturas[mesActual] && !filasAperturaEscritasDe(movs, mesActual).length) {
-    const previos = movs.filter(function (m) { return m.mes && m.mes < mesActual; });
-    if (previos.length) {
-      total += escribirAperturaDeMes(mesActual, calcularAperturaDe(previos, mesActual));
-    }
-  }
-
-  Logger.log("Aperturas actualizadas: " + total + " filas.");
   return total;
 }
 
 /** PASO 2 - Escribe/actualiza las filas de apertura de TODOS los meses (menos el primero). */
 function migrarAperturas() {
-  const aperturas = calcularAperturasPorMes(leerTodosLosMovimientos());
-  let total = 0;
-  Object.keys(aperturas).sort().forEach(function (mes) {
-    total += escribirAperturaDeMes(mes, aperturas[mes]);
+  conCandado("migrarAperturas", function () {
+    const total = escribirAperturas(calcularAperturasPorMes(leerTodosLosMovimientos()));
+    Logger.log("Listo: " + total + " filas de apertura escritas/actualizadas.");
+    Logger.log("Revisá los saldos en la app y después corré borrarLegacySaldoInicial().");
   });
-  Logger.log("Listo: " + total + " filas de apertura escritas/actualizadas.");
-  Logger.log("Revisá los saldos en la app y después corré borrarLegacySaldoInicial().");
 }
 
 /**
  * Recalcula y reescribe la apertura de UN mes puntual. Ej: escribirApertura("2026-09").
  *
- * Resuelve el arrastre igual que `AccountingEngine.openingFor`: se apoya en la apertura escrita más
- * reciente que sea anterior al mes pedido y replaya desde ahí. Por eso sigue funcionando después de
- * archivar hojas viejas (replayar desde cero daría un patrimonio truncado).
+ * El arrastre sale de encadenar los meses anteriores desde el más viejo disponible, que se siembra
+ * con su propia apertura escrita (ver [calcularAperturasPorMes]). Es distinto de lo que hace la app
+ * (`AccountingEngine.openingFor`, que confía en la apertura escrita más reciente): acá se RECALCULA
+ * a propósito, para que corregir un movimiento viejo se propague a las aperturas siguientes.
  */
 function escribirApertura(mes) {
-  const previos = leerTodosLosMovimientos().filter(function (m) { return m.mes && m.mes < mes; });
-  const estado = calcularAperturaDe(previos, mes);
-  const n = escribirAperturaDeMes(mes, estado);
-  Logger.log("Apertura de " + mes + ": " + n + " filas.");
+  conCandado("escribirApertura", function () {
+    const previos = leerTodosLosMovimientos().filter(function (m) { return m.mes && m.mes < mes; });
+    const estado = calcularAperturaDe(previos, mes);
+    const n = escribirAperturaDeMes(mes, estado);
+    Logger.log("Apertura de " + mes + ": " + n + " filas.");
+  });
 }
 
 /** Estado con el que arranca [mes], derivado de los movimientos anteriores a él. */
@@ -1204,7 +1346,7 @@ function escribirAperturaDeMes(mes, estado) {
   const data = sheet.getDataRange().getValues();
   const filaPorId = {};
   for (let i = 1; i < data.length; i++) {
-    if (data[i][0]) filaPorId[data[i][0].toString()] = i + 1;
+    if (data[i][COL.ID]) filaPorId[data[i][COL.ID].toString()] = i + 1;
   }
 
   // Nunca pisar una apertura con saldo por una en cero. Un estado vacío con una apertura ya escrita
@@ -1220,16 +1362,16 @@ function escribirAperturaDeMes(mes, estado) {
   filas.forEach(function (f) {
     const valores = [[
       f.id, f.fecha, f.monto, f.tipo, f.categoria, f.responsable, f.esComun,
-      f.descripcion, f.metodoPago, "", false, f.propietario, "", 0
+      f.descripcion, f.metodoPago, "", false, f.propietario, "", 0, false
     ]];
     const existente = filaPorId[f.id];
     if (existente) {
-      sheet.getRange(existente, 2).setNumberFormat("@");
-      sheet.getRange(existente, 1, 1, 14).setValues(valores);
+      sheet.getRange(existente, COL.FECHA + 1).setNumberFormat("@");
+      sheet.getRange(existente, 1, 1, MOVEMENT_COLS).setValues(valores);
     } else {
       sheet.appendRow(valores[0]);
       // La fecha va como texto para que Sheets no la convierta en Date.
-      sheet.getRange(sheet.getLastRow(), 2).setNumberFormat("@").setValue(f.fecha);
+      sheet.getRange(sheet.getLastRow(), COL.FECHA + 1).setNumberFormat("@").setValue(f.fecha);
     }
   });
 
@@ -1242,21 +1384,20 @@ function escribirAperturaDeMes(mes, estado) {
  * La app ya las ignora, así que esto es sólo limpieza. Corrélo DESPUÉS de validar los saldos.
  */
 function borrarLegacySaldoInicial() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  let borradas = 0;
-  ss.getSheets().forEach(function (sheet) {
-    const nombre = sheet.getName();
-    if (nombre === PLANS_SHEET || nombre === USERS_SHEET) return;
-    const data = sheet.getDataRange().getValues();
-    // De abajo hacia arriba: borrar una fila corre los índices de las de abajo.
-    for (let i = data.length - 1; i >= 1; i--) {
-      if (esLegacySaldoInicial(data[i][3], data[i][4])) {
-        sheet.deleteRow(i + 1);
-        borradas++;
+  conCandado("borrarLegacySaldoInicial", function () {
+    let borradas = 0;
+    hojasDeMovimientos(SpreadsheetApp.getActiveSpreadsheet()).forEach(function (sheet) {
+      const data = sheet.getDataRange().getValues();
+      // De abajo hacia arriba: borrar una fila corre los índices de las de abajo.
+      for (let i = data.length - 1; i >= 1; i--) {
+        if (esLegacySaldoInicial(data[i][COL.TIPO], data[i][COL.CATEGORIA])) {
+          sheet.deleteRow(i + 1);
+          borradas++;
+        }
       }
-    }
+    });
+    Logger.log("Filas legacy de 'Saldo inicial' borradas: " + borradas);
   });
-  Logger.log("Filas legacy de 'Saldo inicial' borradas: " + borradas);
 }
 
 /**
@@ -1265,22 +1406,21 @@ function borrarLegacySaldoInicial() {
  * Idempotente.
  */
 function renombrarSueldoAIngreso() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  let cambiadas = 0;
-  ss.getSheets().forEach(function (sheet) {
-    const nombre = sheet.getName();
-    if (nombre === PLANS_SHEET || nombre === USERS_SHEET) return;
-    const data = sheet.getDataRange().getValues();
-    for (let i = 1; i < data.length; i++) {
-      const tipo = String(data[i][3] || "").toLowerCase();
-      const categoria = String(data[i][4] || "").trim().toLowerCase();
-      if (tipo === "aporte" && categoria === "sueldo") {
-        sheet.getRange(i + 1, 5).setValue("Ingreso");
-        cambiadas++;
+  conCandado("renombrarSueldoAIngreso", function () {
+    let cambiadas = 0;
+    hojasDeMovimientos(SpreadsheetApp.getActiveSpreadsheet()).forEach(function (sheet) {
+      const data = sheet.getDataRange().getValues();
+      for (let i = 1; i < data.length; i++) {
+        const tipo = String(data[i][COL.TIPO] || "").toLowerCase();
+        const categoria = String(data[i][COL.CATEGORIA] || "").trim().toLowerCase();
+        if (tipo === "aporte" && categoria === "sueldo") {
+          sheet.getRange(i + 1, COL.CATEGORIA + 1).setValue("Ingreso");
+          cambiadas++;
+        }
       }
-    }
+    });
+    Logger.log("Aportes renombrados de Sueldo a Ingreso: " + cambiadas);
   });
-  Logger.log("Aportes renombrados de Sueldo a Ingreso: " + cambiadas);
 }
 
 // =================================================================================================
@@ -1306,7 +1446,7 @@ function renombrarSueldoAIngreso() {
 // quién, tipo, categoría, monto, descripción (recortada) y si fue evitable. Nada de ids, tickets,
 // aperturas, transferencias ni de otras hojas.
 
-const MSG_ZONA = "America/Argentina/Buenos_Aires";
+const MSG_ZONA = ZONA_ARGENTINA;
 const MSG_COL_MENSAJE = 5;        // E
 const MSG_COL_FECHA = 6;          // F
 const MSG_MAX_CARACTERES = 90;    // tope duro; al modelo se le piden <= 60
@@ -1342,17 +1482,12 @@ function probarMensajesDelDia() {
 }
 
 function instalarTriggerDeMensajes() {
-  desinstalarTriggerDeMensajes();
-  ScriptApp.newTrigger(TRIGGER_MENSAJES).timeBased().atHour(2).everyDays(1).inTimezone(MSG_ZONA).create();
+  instalarTriggerDiario(TRIGGER_MENSAJES, 2, MSG_ZONA);
   Logger.log("Trigger diario instalado (~2 AM Argentina): " + TRIGGER_MENSAJES + "().");
 }
 
 function desinstalarTriggerDeMensajes() {
-  let n = 0;
-  ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === TRIGGER_MENSAJES) { ScriptApp.deleteTrigger(t); n++; }
-  });
-  Logger.log("Triggers de mensajes quitados: " + n);
+  Logger.log("Triggers de mensajes quitados: " + desinstalarTriggers(TRIGGER_MENSAJES));
 }
 
 function calcularMensajesDelDia_() {
@@ -1398,17 +1533,20 @@ function calcularMensajesDelDia_() {
   const modelo = resultado.modelo;
 
   // Solo se pisa el mensaje de quien recibió uno válido: si el modelo omite a alguien, le queda el
-  // de ayer (que la app deja de mostrar porque su fecha ya no es la de hoy).
-  const data = sheet.getDataRange().getValues();
+  // de ayer (que la app deja de mostrar porque su fecha ya no es la de hoy). La escritura (no la
+  // llamada a Gemini, que tarda) va con el candado, igual que las de la app.
   const escritos = [];
-  for (let i = 1; i < data.length; i++) {
-    const slot = String(data[i][0] || "");
-    const texto = limpiarMensaje_(mensajes[slot]);
-    if (!slot || !texto) continue;
-    sheet.getRange(i + 1, MSG_COL_MENSAJE).setValue(texto);
-    sheet.getRange(i + 1, MSG_COL_FECHA).setNumberFormat("@").setValue(hoy);
-    escritos.push(slot + ": " + texto);
-  }
+  conCandado("generarMensajesDelDia", function () {
+    const data = sheet.getDataRange().getValues();
+    for (let i = 1; i < data.length; i++) {
+      const slot = String(data[i][0] || "");
+      const mensaje = limpiarMensaje_(mensajes[slot]);
+      if (!slot || !mensaje) continue;
+      sheet.getRange(i + 1, MSG_COL_MENSAJE).setValue(mensaje);
+      sheet.getRange(i + 1, MSG_COL_FECHA).setNumberFormat("@").setValue(hoy);
+      escritos.push(slot + ": " + mensaje);
+    }
+  });
   const intentos = resultado.fallos.length ? "\nModelos descartados:\n" + resultado.fallos.join("\n") : "";
   return "Mensajes del " + hoy + " (" + modelo + "):\n" + (escritos.join("\n") || "(ninguno válido)") + intentos;
 }
@@ -1447,18 +1585,18 @@ function movimientosParaMensaje_(mes, usuarios, hoy) {
 
   const lineas = ["# " + mes];
   sheet.getDataRange().getValues().slice(1).forEach(function (row) {
-    if (!row[0] || isEliminado(row[10])) return;
-    const tipo = String(row[3] || "").toLowerCase();
+    if (!row[COL.ID] || isEliminado(row[COL.ELIMINADO])) return;
+    const tipo = String(row[COL.TIPO] || "").toLowerCase();
     if (tipo !== "gasto" && tipo !== "aporte") return;
-    const categoria = String(row[4] || "");
-    if (esLegacySaldoInicial(row[3], categoria)) return;
-    const comun = esVerdadero(row[6]) || String(row[11] || "").toLowerCase() === "ambos";
-    const dueno = comun ? "ambos" : (nombreDe[normalizarPropietario(row[11], row[5]).toLowerCase()] || String(row[5] || ""));
-    const fecha = toDateTime(row[1]).substring(0, 10);
+    const categoria = String(row[COL.CATEGORIA] || "");
+    if (esLegacySaldoInicial(row[COL.TIPO], categoria)) return;
+    const comun = esVerdadero(row[COL.ES_COMUN]) || String(row[COL.PROPIETARIO] || "").toLowerCase() === AMBOS.toLowerCase();
+    const dueno = comun ? "ambos" : (nombreDe[normalizarPropietario(row[COL.PROPIETARIO], row[COL.RESPONSABLE]).toLowerCase()] || String(row[COL.RESPONSABLE] || ""));
+    const fecha = toDateTime(row[COL.FECHA]).substring(0, 10);
     const hace = diasEntre_(fecha, hoy);
     if (isNaN(hace) || hace < 0) return;
-    const descripcion = String(row[7] || "").replace(/[|\n\r]+/g, " ").trim().substring(0, 40);
-    lineas.push([hace, diaCorto_(fecha), dueno, tipo, categoria, Math.round(Number(row[2]) || 0), descripcion, esVerdadero(row[14]) ? "evitable" : ""].join("|"));
+    const descripcion = String(row[COL.DESCRIPCION] || "").replace(/[|\n\r]+/g, " ").trim().substring(0, 40);
+    lineas.push([hace, diaCorto_(fecha), dueno, tipo, categoria, Math.round(Number(row[COL.MONTO]) || 0), descripcion, esVerdadero(row[COL.EVITABLE]) ? "evitable" : ""].join("|"));
   });
   return lineas.join("\n");
 }
@@ -1637,9 +1775,6 @@ function limpiarMensaje_(v) {
 function asegurarColumnasDeMensaje_(sheet) {
   if (sheet.getMaxColumns() < MSG_COL_FECHA) sheet.insertColumnsAfter(sheet.getMaxColumns(), MSG_COL_FECHA - sheet.getMaxColumns());
   const encabezados = [[MSG_COL_MENSAJE, "Mensaje"], [MSG_COL_FECHA, "Fecha mensaje"]];
-  encabezados.forEach(function (e) {
-    const celda = sheet.getRange(1, e[0]);
-    if (!celda.getValue()) celda.setValue(e[1]).setFontWeight("bold").setBackground("#e2e8f0");
-  });
+  encabezados.forEach(function (e) { asegurarEncabezado(sheet, e[0], e[1]); });
   sheet.getRange(1, MSG_COL_FECHA, sheet.getMaxRows(), 1).setNumberFormat("@");
 }

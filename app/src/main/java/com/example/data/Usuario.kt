@@ -3,7 +3,8 @@ package com.example.data
 /**
  * Un usuario de la app. La app es de **dos** usuarios (ver features/usuarios-parametrizables.md):
  * el motor contable modela propiedad cruzada binaria, así que parametrizamos **nombre y color, no
- * la cantidad**.
+ * la cantidad**. La UI ya no asume "el otro": recorre [UsuariosConfig.todos] / [UsuariosConfig.otros],
+ * así que el día que el motor admita más personas las pantallas no necesitan reescribirse.
  *
  * Idea central del diseño: separar la **clave interna** (estable) del **nombre visible** (editable).
  * - [slotKey] es inmutable y coincide con el nombre legacy ("Santiago"/"Rocío"). Es lo que se sigue
@@ -43,6 +44,19 @@ data class UsuariosConfig(val primario: Usuario, val secundario: Usuario) {
     /** "El otro" respecto de [slotKey]. Si [slotKey] es el primario devuelve el secundario, si no el primario. */
     fun elOtro(slotKey: String): Usuario =
         if (primario.slotKey.equals(slotKey, ignoreCase = true)) secundario else primario
+
+    /** Todos menos [slotKey]: la forma de hablar de "los demás" que no depende de que sean dos. */
+    fun otros(slotKey: String): List<Usuario> = todos.filterNot { it.slotKey.equals(slotKey, ignoreCase = true) }
+
+    /**
+     * La config con [usuario] en el lugar del que tenga su mismo slotKey. Si no corresponde a ningún
+     * slot, la config queda igual (antes un slotKey desconocido pisaba al secundario).
+     */
+    fun conUsuario(usuario: Usuario): UsuariosConfig = when {
+        primario.slotKey.equals(usuario.slotKey, ignoreCase = true) -> copy(primario = usuario)
+        secundario.slotKey.equals(usuario.slotKey, ignoreCase = true) -> copy(secundario = usuario)
+        else -> this
+    }
 
     companion object {
         /**

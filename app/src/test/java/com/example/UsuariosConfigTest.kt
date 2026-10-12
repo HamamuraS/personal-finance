@@ -4,9 +4,8 @@ import androidx.compose.ui.graphics.Color
 import com.example.data.Usuario
 import com.example.data.UsuariosConfig
 import com.example.ui.theme.DEFAULT_USER_COLOR_PRESET
-import com.example.ui.theme.PersonaThemeRole
 import com.example.ui.theme.USER_COLOR_PRESETS
-import com.example.ui.theme.personaThemeRole
+import com.example.ui.theme.colorIdDePersona
 import com.example.ui.theme.presetOf
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -131,39 +130,43 @@ class UsuariosConfigTest {
     // -------------------- personaColor parametrizado: identidad estable --------------------
 
     @Test
-    fun personaThemeRoleEsPrimarySoloParaElUsuarioActivo() {
-        assertEquals(PersonaThemeRole.PRIMARY, personaThemeRole("Santiago", "Santiago"))
-        assertEquals(PersonaThemeRole.TERTIARY, personaThemeRole("Santiago", "Rocío"))
+    fun elActivoSePintaConSuColor() {
+        val cfg = UsuariosConfig.DEFAULT
+        assertEquals("green", colorIdDePersona("Santiago", "Santiago", cfg))
+        assertEquals("blue", colorIdDePersona("Rocío", "Rocío", cfg))
         // Case-insensitive (los datos históricos son canónicos, pero por robustez).
-        assertEquals(PersonaThemeRole.PRIMARY, personaThemeRole("rocío", "Rocío"))
+        assertEquals("blue", colorIdDePersona("rocío", "Rocío", cfg))
     }
 
     @Test
     fun elColorDeUnaPersonaEsEstableAnteElUsuarioActivo() {
-        // Modela la construcción del tema: primary = color del activo, tertiary = color del otro.
         // Para un mismo slot, el color visto NO debe depender de quién esté logueado.
         val cfg = UsuariosConfig.DEFAULT
-        assertEquals(
-            colorIdVistoPor("Santiago", "Santiago", cfg),
-            colorIdVistoPor("Santiago", "Rocío", cfg)
-        )
-        assertEquals("green", colorIdVistoPor("Santiago", "Santiago", cfg))
-        assertEquals("green", colorIdVistoPor("Santiago", "Rocío", cfg))
-        assertEquals(
-            colorIdVistoPor("Rocío", "Santiago", cfg),
-            colorIdVistoPor("Rocío", "Rocío", cfg)
-        )
-        assertEquals("blue", colorIdVistoPor("Rocío", "Santiago", cfg))
+        assertEquals("green", colorIdDePersona("Santiago", "Santiago", cfg))
+        assertEquals("green", colorIdDePersona("Santiago", "Rocío", cfg))
+        assertEquals("blue", colorIdDePersona("Rocío", "Santiago", cfg))
+        assertEquals("blue", colorIdDePersona("Rocío", "Rocío", cfg))
+    }
+
+    @Test
+    fun unaClaveDesconocidaSePintaConElColorDelOtro() {
+        // Igual que cuando esto salía del `tertiary` del tema: lo que no es el activo, es "el otro".
+        val cfg = UsuariosConfig.DEFAULT
+        assertEquals("blue", colorIdDePersona("Ambos", "Santiago", cfg))
+        assertEquals("green", colorIdDePersona("Ambos", "Rocío", cfg))
+    }
+
+    @Test
+    fun conUsuarioReemplazaPorSlotYNoPisaConUnoDesconocido() {
+        val cfg = UsuariosConfig.DEFAULT
+        val ro = cfg.secundario.copy(nombre = "Ro", colorId = "rose")
+        assertEquals(ro, cfg.conUsuario(ro).secundario)
+        assertEquals(cfg.primario, cfg.conUsuario(ro).primario)
+        assertEquals(cfg, cfg.conUsuario(Usuario("Otro", "X", "amber", 5)))
+        assertEquals(listOf(cfg.secundario), cfg.otros("Santiago"))
     }
 
     // -------------------- helpers de test --------------------
-
-    /** colorId con el que se pintaría una persona, modelando el swap primary/tertiary del tema. */
-    private fun colorIdVistoPor(personaKey: String, activeKey: String, cfg: UsuariosConfig): String =
-        when (personaThemeRole(personaKey, activeKey)) {
-            PersonaThemeRole.PRIMARY -> cfg.byKey(activeKey)!!.colorId
-            PersonaThemeRole.TERTIARY -> cfg.elOtro(activeKey).colorId
-        }
 
     /** Contraste WCAG entre dos colores sRGB (1..21). */
     private fun contrast(a: Color, b: Color): Double {

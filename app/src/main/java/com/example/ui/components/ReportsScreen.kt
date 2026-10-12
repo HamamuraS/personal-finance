@@ -1,25 +1,47 @@
 package com.example.ui.components
 
-import androidx.compose.animation.*
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -29,12 +51,16 @@ import com.example.data.Categorias
 import com.example.data.CuotaPlan
 import com.example.data.Movement
 import com.example.data.UsuariosConfig
-import com.example.ui.AccountingEngine
-import com.example.ui.BalanceBreakdown
-import com.example.ui.CuotasEngine
+import com.example.domain.AccountingEngine
+import com.example.domain.BalanceBreakdown
+import com.example.domain.CuotasEngine
+import com.example.ui.components.common.AppCard
+import com.example.ui.components.common.IconoEnCirculo
+import com.example.ui.components.common.rememberDinero
+import com.example.ui.theme.appTextMuted
 import com.example.ui.theme.personaColor
+import com.example.util.Fechas
 import java.text.NumberFormat
-import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -55,18 +81,11 @@ fun ReportsScreen(
     onVerDetalle: (persona: String?, categorias: Set<String>) -> Unit = { _, _ -> }
 ) {
     // Total que caerá en cada tarjeta en el mes seleccionado (cuotas pagadas + impagas).
-    val tarjetaTotals = CuotasEngine.totalTarjetaPorMes(selectedMonth, plans, allMovements)
-
-    val formatMoney = remember {
-        java.text.DecimalFormat("#,##0.00").apply {
-            val symbols = java.text.DecimalFormatSymbols()
-            symbols.groupingSeparator = '.'
-            symbols.decimalSeparator = ','
-            decimalFormatSymbols = symbols
-            positivePrefix = "$ "
-            negativePrefix = "-$ "
-        }
+    val tarjetaTotals = remember(selectedMonth, plans, allMovements) {
+        CuotasEngine.totalTarjetaPorMes(selectedMonth, plans, allMovements)
     }
+
+    val formatMoney = rememberDinero()
 
     Scaffold(
         topBar = {
@@ -94,9 +113,9 @@ fun ReportsScreen(
                             availableMonths.forEach { month ->
                                 DropdownMenuItem(
                                     text = { Text(month) },
-                                    onClick = { 
+                                    onClick = {
                                         onMonthSelected(month)
-                                        expanded = false 
+                                        expanded = false
                                     }
                                 )
                             }
@@ -122,7 +141,7 @@ fun ReportsScreen(
                         imageVector = Icons.Default.Info,
                         contentDescription = null,
                         modifier = Modifier.size(64.dp),
-                        tint = com.example.ui.theme.appTextMuted
+                        tint = appTextMuted
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
@@ -134,6 +153,9 @@ fun ReportsScreen(
                 }
             }
         } else {
+            // Gastos "reales": sin las correcciones, que son ajustes para cuadrar con el banco.
+            val gastos = remember(movements) { movements.filter { AccountingEngine.esGastoReal(it) } }
+
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
@@ -154,60 +176,45 @@ fun ReportsScreen(
                 }
 
                 if (movements.isNotEmpty()) {
-                    // Gastos "reales": sin las correcciones, que son ajustes para cuadrar con el banco.
-                    val gastos = movements.filter { AccountingEngine.esGastoReal(it) }
-
-                    // Tarjeta 1: Ingresos por socio (solo aportes de categoría Ingreso)
+                    // Ingresos por persona (solo aportes de categoría Ingreso)
                     item {
                         ReportAportesCard(userProfile = userProfile, config = config, balance = balance, formatMoney = formatMoney)
                     }
 
-                    // Tarjeta 1b: Gastos por socio, partidos en no evitable / evitable
+                    // Gastos por persona, partidos en no evitable / evitable
                     item {
                         GastosAcumuladosCard(
                             userProfile = userProfile,
                             config = config,
-                            primario = AccountingEngine.gastosPorEvitabilidad(movements, config.primario.slotKey),
-                            secundario = AccountingEngine.gastosPorEvitabilidad(movements, config.secundario.slotKey),
+                            porPersona = config.todos.map { it.slotKey to AccountingEngine.gastosPorEvitabilidad(movements, it.slotKey) },
                             formatMoney = formatMoney
                         )
                     }
 
-                    // Tarjeta 2: Gastos Totales Combinados
+                    // Gastos Totales Combinados
                     item {
                         ReportCategoriasCard(
                             title = "Gastos Totales (Combinados)",
-                            sumPorCategoria = sumPorCategoria(gastos) { it.monto },
+                            sumPorCategoria = AccountingEngine.gastosPorCategoria(gastos) { it.monto },
                             formatMoney = formatMoney,
                             accentColor = MaterialTheme.colorScheme.primary,
                             onCategoriaClick = { onVerDetalle(null, it) }
                         )
                     }
 
-                    // Tarjeta 3: Gastos del slot primario
-                    item {
-                        ReportCategoriasCard(
-                            title = "Gastos de ${config.primario.nombre}",
-                            sumPorCategoria = sumPorCategoria(gastos) {
-                                AccountingEngine.porcionDelGasto(it, config.primario.slotKey)
-                            },
-                            formatMoney = formatMoney,
-                            accentColor = personaColor(config.primario.slotKey, userProfile),
-                            onCategoriaClick = { onVerDetalle(config.primario.slotKey, it) }
-                        )
-                    }
-
-                    // Tarjeta 4: Gastos del slot secundario
-                    item {
-                        ReportCategoriasCard(
-                            title = "Gastos de ${config.secundario.nombre}",
-                            sumPorCategoria = sumPorCategoria(gastos) {
-                                AccountingEngine.porcionDelGasto(it, config.secundario.slotKey)
-                            },
-                            formatMoney = formatMoney,
-                            accentColor = personaColor(config.secundario.slotKey, userProfile),
-                            onCategoriaClick = { onVerDetalle(config.secundario.slotKey, it) }
-                        )
+                    // Gastos de cada persona (su parte de cada gasto)
+                    config.todos.forEach { usuario ->
+                        item {
+                            ReportCategoriasCard(
+                                title = "Gastos de ${usuario.nombre}",
+                                sumPorCategoria = AccountingEngine.gastosPorCategoria(gastos) {
+                                    AccountingEngine.porcionDelGasto(it, usuario.slotKey)
+                                },
+                                formatMoney = formatMoney,
+                                accentColor = personaColor(usuario.slotKey, userProfile),
+                                onCategoriaClick = { onVerDetalle(usuario.slotKey, it) }
+                            )
+                        }
                     }
                 }
             }
@@ -216,17 +223,8 @@ fun ReportsScreen(
 }
 
 @Composable
-fun ReportAportesCard(userProfile: String, config: UsuariosConfig, balance: BalanceBreakdown, formatMoney: NumberFormat) {
-    val cardBg = MaterialTheme.colorScheme.surface
-    val cardBorder = MaterialTheme.colorScheme.outlineVariant
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = cardBg),
-        border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-    ) {
+private fun ReportAportesCard(userProfile: String, config: UsuariosConfig, balance: BalanceBreakdown, formatMoney: NumberFormat) {
+    AppCard(radio = 24.dp, elevacion = 1.dp) {
         Column(
             modifier = Modifier.padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -240,57 +238,39 @@ fun ReportAportesCard(userProfile: String, config: UsuariosConfig, balance: Bala
 
             // Solo la categoría Ingreso: los demás aportes (transferencias entre ustedes,
             // correcciones) no son plata nueva.
-            val totalAportes = balance.santiagoIngresos + balance.rocioIngresos
-            val sSantiagoPct = if (totalAportes > 0) (balance.santiagoIngresos / totalAportes).toFloat() else 0.5f
-            val sRocioPct = 1f - sSantiagoPct
+            val ingresos = config.todos.map { it to balance.de(it.slotKey).ingresos }
+            val totalAportes = ingresos.sumOf { it.second }
+            // La parte de cada uno sobre el total (en partes iguales si no hubo ingresos). La última
+            // es lo que falta para 1, así las barras siempre suman exactamente la barra entera.
+            val partes = ingresos.map { (_, monto) ->
+                if (totalAportes > 0) (monto / totalAportes).toFloat() else 1f / ingresos.size
+            }.let { p -> p.dropLast(1) + (1f - p.dropLast(1).sum()) }
 
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                // Colores de identidad estables (invariantes al usuario activo).
-                val santiagoColor = personaColor(config.primario.slotKey, userProfile)
-                val rocioColor = personaColor(config.secundario.slotKey, userProfile)
-
-                // Fila del slot primario
-                Column {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(config.primario.nombre, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        Text(formatMoney.format(balance.santiagoIngresos), fontSize = 13.sp, fontWeight = FontWeight.Bold, color = santiagoColor)
+                ingresos.forEachIndexed { i, (usuario, monto) ->
+                    // Color de identidad estable (invariante al usuario activo).
+                    val color = personaColor(usuario.slotKey, userProfile)
+                    val pct = partes[i]
+                    Column(modifier = if (i > 0) Modifier.padding(top = 8.dp) else Modifier) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(usuario.nombre, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            Text(formatMoney.format(monto), fontSize = 13.sp, fontWeight = FontWeight.Bold, color = color)
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        LinearProgressIndicator(
+                            progress = { pct },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(8.dp)
+                                .clip(CircleShape),
+                            color = color,
+                            trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f)
+                        )
                     }
-                    Spacer(modifier = Modifier.height(4.dp))
-                    LinearProgressIndicator(
-                        progress = { sSantiagoPct },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(8.dp)
-                            .clip(CircleShape),
-                        color = santiagoColor,
-                        trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f)
-                    )
-                }
-
-                // Fila del slot secundario
-                Column(modifier = Modifier.padding(top = 8.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(config.secundario.nombre, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        Text(formatMoney.format(balance.rocioIngresos), fontSize = 13.sp, fontWeight = FontWeight.Bold, color = rocioColor)
-                    }
-                    Spacer(modifier = Modifier.height(4.dp))
-                    LinearProgressIndicator(
-                        progress = { sRocioPct },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(8.dp)
-                            .clip(CircleShape),
-                        color = rocioColor,
-                        trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f)
-                    )
                 }
             }
 
@@ -312,28 +292,19 @@ fun ReportAportesCard(userProfile: String, config: UsuariosConfig, balance: Bala
 
 /**
  * Gastos acumulados del periodo por persona. Cada barra mide la parte de esa persona sobre el gasto
- * de los dos (igual que "Ingresos Acumulados") y se parte en dos tramos: el color de la persona es lo
+ * de todos (igual que "Ingresos Acumulados") y se parte en dos tramos: el color de la persona es lo
  * **no evitable** y el rojo lo **evitable**, con el monto de cada parcial debajo.
  */
 @Composable
-fun GastosAcumuladosCard(
+private fun GastosAcumuladosCard(
     userProfile: String,
     config: UsuariosConfig,
-    primario: AccountingEngine.GastosPorEvitabilidad,
-    secundario: AccountingEngine.GastosPorEvitabilidad,
+    porPersona: List<Pair<String, AccountingEngine.GastosPorEvitabilidad>>,
     formatMoney: NumberFormat
 ) {
-    val cardBg = MaterialTheme.colorScheme.surface
-    val cardBorder = MaterialTheme.colorScheme.outlineVariant
-    val total = primario.total + secundario.total
+    val total = porPersona.sumOf { it.second.total }
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = cardBg),
-        border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-    ) {
+    AppCard(radio = 24.dp, elevacion = 1.dp) {
         Column(
             modifier = Modifier.padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -346,20 +317,15 @@ fun GastosAcumuladosCard(
             )
 
             Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                GastoPersonaFila(
-                    nombre = config.primario.nombre,
-                    gastos = primario,
-                    total = total,
-                    color = personaColor(config.primario.slotKey, userProfile),
-                    formatMoney = formatMoney
-                )
-                GastoPersonaFila(
-                    nombre = config.secundario.nombre,
-                    gastos = secundario,
-                    total = total,
-                    color = personaColor(config.secundario.slotKey, userProfile),
-                    formatMoney = formatMoney
-                )
+                porPersona.forEach { (slotKey, gastos) ->
+                    GastoPersonaFila(
+                        nombre = config.nombreDe(slotKey),
+                        gastos = gastos,
+                        total = total,
+                        color = personaColor(slotKey, userProfile),
+                        formatMoney = formatMoney
+                    )
+                }
             }
 
             HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f))
@@ -376,7 +342,7 @@ fun GastosAcumuladosCard(
                 Column(horizontalAlignment = Alignment.End) {
                     Text("🍰 Evitable", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(
-                        formatMoney.format(primario.evitable + secundario.evitable),
+                        formatMoney.format(porPersona.sumOf { it.second.evitable }),
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Black,
                         color = MaterialTheme.colorScheme.error
@@ -445,46 +411,22 @@ private fun GastoPersonaFila(
 }
 
 /**
- * Suma los gastos por categoría aplicando [porcion] a cada movimiento, que es lo que decide **cuánto
- * de ese gasto** entra en esta tarjeta (todo, la mitad si es común, o nada si es de la otra persona).
- * Descarta solo las categorías que quedan exactamente en cero (la persona no participó del gasto):
- * un total negativo —un reembolso cargado como gasto— se sigue listando, como antes.
- */
-private fun sumPorCategoria(
-    gastos: List<Movement>,
-    porcion: (Movement) -> Double
-): List<Pair<String, Double>> =
-    gastos.groupBy { it.categoria }
-        .mapValues { (_, list) -> list.sumOf(porcion) }
-        .filterValues { it != 0.0 }
-        .toList()
-        .sortedByDescending { it.second }
-
-/**
  * Gastos de una tarjeta de Métricas agrupados por rubro (🍽 Comida, 🏠 Casa…): 7 filas en vez de
  * 15. Tocar un rubro de una sola categoría va directo a Inicio filtrado; uno de varias despliega sus
  * categorías, cada una con su salto a Inicio, más "Ver todo el rubro".
  */
 @Composable
-fun ReportCategoriasCard(
+private fun ReportCategoriasCard(
     title: String,
     sumPorCategoria: List<Pair<String, Double>>,
     formatMoney: NumberFormat,
     accentColor: Color,
     onCategoriaClick: (Set<String>) -> Unit = {}
 ) {
-    val cardBg = MaterialTheme.colorScheme.surface
-    val cardBorder = MaterialTheme.colorScheme.outlineVariant
     val rubros = remember(sumPorCategoria) { Categorias.agruparPorRubro(sumPorCategoria) }
     var abiertos by remember { mutableStateOf(setOf<String>()) }
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = cardBg),
-        border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-    ) {
+    AppCard(radio = 24.dp, elevacion = 1.dp) {
         Column(
             modifier = Modifier.padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
@@ -496,7 +438,7 @@ fun ReportCategoriasCard(
                 color = MaterialTheme.colorScheme.onSurface
             )
 
-            // Los montos ya vienen atribuidos por el llamador (ver [sumPorCategoria]).
+            // Los montos ya vienen atribuidos por el llamador (ver [AccountingEngine.gastosPorCategoria]).
             val totalGastos = sumPorCategoria.sumOf { it.second }
 
             if (totalGastos == 0.0) {
@@ -506,8 +448,7 @@ fun ReportCategoriasCard(
                         .padding(vertical = 16.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    val label = "No hay gastos registrados todavía"
-                    Text(label, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("No hay gastos registrados todavía", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             } else {
                 // Se muestran TODOS los rubros con gasto (antes se truncaba a las primeras 6
@@ -616,35 +557,22 @@ fun ReportCategoriasCard(
  * Suma tanto las cuotas ya pagadas como las impagas que vencen ese mes.
  */
 @Composable
-fun TarjetasPorMesCard(
+private fun TarjetasPorMesCard(
     mes: String,
     totales: Map<String, Double>,
     formatMoney: NumberFormat
 ) {
-    val cardBg = MaterialTheme.colorScheme.surface
-    val cardBorder = MaterialTheme.colorScheme.outlineVariant
     val accent = MaterialTheme.colorScheme.tertiary
     val total = totales.values.sum()
     val ordenadas = totales.entries.sortedByDescending { it.value }
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = cardBg),
-        border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-    ) {
+    AppCard(radio = 24.dp, elevacion = 1.dp) {
         Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Box(
-                    modifier = Modifier.size(32.dp).clip(CircleShape).background(accent.copy(alpha = 0.12f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(Icons.Default.CreditCard, contentDescription = null, tint = accent, modifier = Modifier.size(18.dp))
-                }
+                IconoEnCirculo(Icons.Default.CreditCard, accent, tamano = 32.dp, alphaFondo = 0.12f, tamanoIcono = 18.dp)
                 Column {
                     Text("Total en tarjetas", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurface)
-                    Text(formatMonthLabel(mes), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(Fechas.etiquetaDeMes(mes), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
 
@@ -676,5 +604,3 @@ fun TarjetasPorMesCard(
         }
     }
 }
-
-// Eliminar ReportHistoricoMensualCard ya que no se usa y se solicitó remover el gráfico

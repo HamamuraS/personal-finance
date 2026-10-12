@@ -9,7 +9,6 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
-import com.example.data.Usuario
 import com.example.data.UsuariosConfig
 
 /**
@@ -79,25 +78,29 @@ private val LightColorScheme = lightColorScheme(
 )
 
 /**
+ * Config de usuarios vigente, publicada por [MyApplicationTheme] para que [personaColor] pueda
+ * resolver el color de **cualquier** persona sin depender de que sean exactamente dos.
+ */
+val LocalUsuarios = staticCompositionLocalOf { UsuariosConfig.DEFAULT }
+
+/**
  * Tema de la app, con el color de marca **parametrizado por usuario**.
  *
- * Invariante que se conserva del diseño anterior: el **usuario activo siempre es `primary`** ("tu
- * interfaz con tu color") y el otro es `tertiary`. Antes esto se lograba con un `isRocio` que
- * intercambiaba dos colores fijos; ahora se construye el `ColorScheme` desde los colores
- * **configurados** de cada usuario (ver UserColorPalette.kt). Todo el resto de la UI que usa
- * `primary`/`tertiary` para "vos vs. el otro" sigue funcionando sin cambios, y `personaColor`
- * (UserColors.kt) deshace la inversión donde hace falta pintar a una persona concreta.
+ * Invariante: el **usuario activo siempre es `primary`** ("tu interfaz con tu color"). `tertiary` es
+ * el color del otro, que la UI usa como acento de "lo que no es tuyo" (transferencias, tarjetas).
+ * Para pintar a una persona concreta se usa [personaColor], que resuelve su propio color.
  */
 @Composable
 fun MyApplicationTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    activeUser: Usuario = UsuariosConfig.DEFAULT.primario,
-    otherUser: Usuario = UsuariosConfig.DEFAULT.secundario,
+    usuarios: UsuariosConfig = UsuariosConfig.DEFAULT,
+    currentUserKey: String = UsuariosConfig.DEFAULT.primario.slotKey,
     content: @Composable () -> Unit,
 ) {
     val base = if (darkTheme) DarkColorScheme else LightColorScheme
-    val mine = presetOf(activeUser.colorId).resolve(darkTheme)   // "lo tuyo" → primary
-    val yours = presetOf(otherUser.colorId).resolve(darkTheme)   // el otro   → tertiary
+    val activo = usuarios.byKey(currentUserKey) ?: usuarios.primario
+    val mine = presetOf(activo.colorId).resolve(darkTheme)                                // "lo tuyo" → primary
+    val yours = presetOf(usuarios.elOtro(currentUserKey).colorId).resolve(darkTheme)    // el otro   → tertiary
 
     val colorScheme = base.copy(
         primary = mine.brand,
@@ -106,7 +109,7 @@ fun MyApplicationTheme(
         onTertiary = yours.on,
     )
 
-    CompositionLocalProvider(LocalIsDarkTheme provides darkTheme) {
+    CompositionLocalProvider(LocalIsDarkTheme provides darkTheme, LocalUsuarios provides usuarios) {
         MaterialTheme(
             colorScheme = colorScheme,
             typography = Typography,

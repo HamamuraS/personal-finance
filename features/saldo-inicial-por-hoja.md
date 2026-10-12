@@ -95,6 +95,15 @@ Es diario y no mensual a propósito: los movimientos se cargan con atraso. Si el
 agrega un gasto con fecha 31 de agosto, la apertura de septiembre queda vieja; al día siguiente el
 trigger la corrige sola. Escribir una única vez el día 1 congelaría ese error para siempre.
 
+Desde la v8.3 del script, lo que entra por la app no espera al trigger: cuando `doPost` escribe,
+mueve o da de baja un movimiento con fecha de un mes ya cerrado, recalcula en el mismo request las
+aperturas de los meses siguientes (`recalcularAperturasPosteriores`). El caso que lo motivó: pagar
+una cuota atrasada la fecha en el mes de la cuota, y la app —que arma el saldo con la apertura
+escrita del mes— no la descontaba hasta la madrugada siguiente. Las filas de apertura en sí no
+disparan el recálculo. El trigger sigue haciendo falta para lo que se edita a mano en la planilla y
+como red si el recálculo del `doPost` falla (en ese caso la respuesta lo avisa en `message`, pero
+el movimiento queda guardado igual).
+
 `actualizarAperturas()` recalcula todas las aperturas encadenando valores recalculados (no los
 guardados), y además le escribe la suya al mes calendario actual aunque todavía no tenga movimientos,
 creando la hoja si hace falta. `desinstalarTriggerDeAperturas()` lo da de baja.

@@ -1,23 +1,56 @@
 package com.example.data
 
 import android.content.Context
-import com.squareup.moshi.Moshi
+import android.content.SharedPreferences
+import android.util.Log
+import com.squareup.moshi.JsonAdapter
 import com.squareup.moshi.Types
-import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
+
+/**
+ * Una lista guardada como JSON en una clave de SharedPreferences. Si el JSON guardado no se puede
+ * leer, se copia a `<clave>_ilegible` antes de devolver el valor por defecto: el próximo guardado
+ * pisa la clave, y sin la copia (sobre todo en la cola de pendientes) eso perdía datos sin rastro.
+ */
+private class JsonListPref<T>(
+    private val prefs: SharedPreferences,
+    private val key: String,
+    tipo: Class<T>,
+    private val porDefecto: () -> List<T> = { emptyList() }
+) {
+    private val adapter: JsonAdapter<List<T>> =
+        WebAppClient.moshi.adapter(Types.newParameterizedType(List::class.java, tipo))
+
+    fun get(): List<T> {
+        val json = prefs.getString(key, null) ?: return porDefecto()
+        return try {
+            adapter.fromJson(json) ?: porDefecto()
+        } catch (e: Exception) {
+            Log.e("PreferencesHelper", "No se pudo leer '$key'; se guarda una copia en '${key}_ilegible'", e)
+            prefs.edit().putString("${key}_ilegible", json).apply()
+            porDefecto()
+        }
+    }
+
+    /** [sincronico] = `commit()` en vez de `apply()`: para lo que no puede perderse si el proceso muere. */
+    fun save(lista: List<T>, sincronico: Boolean = false) {
+        try {
+            val editor = prefs.edit().putString(key, adapter.toJson(lista))
+            if (sincronico) editor.commit() else editor.apply()
+        } catch (e: Exception) {
+            Log.e("PreferencesHelper", "No se pudo guardar '$key'", e)
+        }
+    }
+}
 
 class PreferencesHelper(context: Context) {
     private val prefs = context.getSharedPreferences("ahorro_prefs", Context.MODE_PRIVATE)
-    private val moshi = Moshi.Builder().add(KotlinJsonAdapterFactory()).build()
-    
-    // Convertidores de JSON
-    private val movementType = Types.newParameterizedType(List::class.java, Movement::class.java)
-    private val listAdapter = moshi.adapter<List<Movement>>(movementType)
-    private val planType = Types.newParameterizedType(List::class.java, CuotaPlan::class.java)
-    private val planListAdapter = moshi.adapter<List<CuotaPlan>>(planType)
-    private val usuarioType = Types.newParameterizedType(List::class.java, Usuario::class.java)
-    private val usuarioListAdapter = moshi.adapter<List<Usuario>>(usuarioType)
-    private val pendingType = Types.newParameterizedType(List::class.java, PendingMovement::class.java)
-    private val pendingListAdapter = moshi.adapter<List<PendingMovement>>(pendingType)
+
+    private val localMovements = JsonListPref(prefs, KEY_LOCAL_MOVEMENTS, Movement::class.java, ::getMockMovements)
+    private val sheetsCache = JsonListPref(prefs, KEY_SHEETS_CACHE, Movement::class.java)
+    private val localPlans = JsonListPref(prefs, KEY_LOCAL_PLANS, CuotaPlan::class.java, ::getMockPlans)
+    private val plansCache = JsonListPref(prefs, KEY_PLANS_CACHE, CuotaPlan::class.java)
+    private val usersCache = JsonListPref(prefs, KEY_USERS_CACHE, Usuario::class.java)
+    private val pendingQueue = JsonListPref(prefs, KEY_PENDING_MOVEMENTS, PendingMovement::class.java)
 
     companion object {
         private const val KEY_USE_LOCAL_DEMO = "use_local_demo"
@@ -66,7 +99,7 @@ class PreferencesHelper(context: Context) {
     // Identidad activa en ESTE dispositivo. Guarda el slotKey del usuario ("Santiago"/"Rocío"):
     // mismo espacio de valores que antes, ahora interpretado como clave interna del slot.
     var currentUserProfile: String
-        get() = prefs.getString(KEY_USER_PROFILE, "Santiago") ?: "Santiago"
+        get() = prefs.getString(KEY_USER_PROFILE, null) ?: UsuariosConfig.DEFAULT.primario.slotKey
         set(value) = prefs.edit().putString(KEY_USER_PROFILE, value).apply()
 
     // ¿Ya eligió quién es en este dispositivo? Si no, la app muestra el picker "¿Quién sos?".
@@ -122,105 +155,32 @@ class PreferencesHelper(context: Context) {
         return transcurrido >= FETCH_TTL_MILLIS || transcurrido < 0
     }
 
-    // Guarda los movimientos para el modo local
-    fun saveLocalMovements(movements: List<Movement>) {
-        try {
-            val json = listAdapter.toJson(movements)
-            prefs.edit().putString(KEY_LOCAL_MOVEMENTS, json).apply()
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
+    // Movimientos del modo local (demo). Sin datos guardados arranca con los de ejemplo.
+    fun saveLocalMovements(movements: List<Movement>) = localMovements.save(movements)
+    fun getLocalMovements(): List<Movement> = localMovements.get()
 
-    // Obtiene los movimientos del modo local
-    fun getLocalMovements(): List<Movement> {
-        val json = prefs.getString(KEY_LOCAL_MOVEMENTS, null) ?: return getMockMovements()
-        return try {
-            listAdapter.fromJson(json) ?: getMockMovements()
-        } catch (e: Exception) {
-            getMockMovements()
-        }
-    }
-
-    // Guarda los movimientos cacheados que vienen de Google Sheets
-    fun saveSheetsCache(movements: List<Movement>) {
-        try {
-            val json = listAdapter.toJson(movements)
-            prefs.edit().putString(KEY_SHEETS_CACHE, json).apply()
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    // Obtiene los movimientos cacheados de Google Sheets
-    fun getSheetsCache(): List<Movement> {
-        val json = prefs.getString(KEY_SHEETS_CACHE, null) ?: return emptyList()
-        return try {
-            listAdapter.fromJson(json) ?: emptyList()
-        } catch (e: Exception) {
-            emptyList()
-        }
-    }
+    // Cache de los movimientos que vienen de la planilla. Los eliminados no se devuelven: el Web App
+    // nunca los manda, así que solo podrían ser restos de un cache escrito por una versión anterior.
+    fun saveSheetsCache(movements: List<Movement>) = sheetsCache.save(movements)
+    fun getSheetsCache(): List<Movement> = sheetsCache.get().filter { !it.eliminado }
 
     // --- Módulo de cuotas ---
 
     // Planes en modo local (demo). Persisten todos (pendientes y completos); el filtrado
     // pendientes/pagos lo hace el repositorio derivando "completo" de los movimientos.
-    fun saveLocalPlans(plans: List<CuotaPlan>) {
-        try {
-            prefs.edit().putString(KEY_LOCAL_PLANS, planListAdapter.toJson(plans)).apply()
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    fun getLocalPlans(): List<CuotaPlan> {
-        val json = prefs.getString(KEY_LOCAL_PLANS, null) ?: return getMockPlans()
-        return try {
-            planListAdapter.fromJson(json) ?: getMockPlans()
-        } catch (e: Exception) {
-            getMockPlans()
-        }
-    }
+    fun saveLocalPlans(plans: List<CuotaPlan>) = localPlans.save(plans)
+    fun getLocalPlans(): List<CuotaPlan> = localPlans.get()
 
     // Cache de los planes PENDIENTES traídos de la red (los pagos son on-demand, no se cachean).
-    fun savePlansCache(plans: List<CuotaPlan>) {
-        try {
-            prefs.edit().putString(KEY_PLANS_CACHE, planListAdapter.toJson(plans)).apply()
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    fun getPlansCache(): List<CuotaPlan> {
-        val json = prefs.getString(KEY_PLANS_CACHE, null) ?: return emptyList()
-        return try {
-            planListAdapter.fromJson(json) ?: emptyList()
-        } catch (e: Exception) {
-            emptyList()
-        }
-    }
+    fun savePlansCache(plans: List<CuotaPlan>) = plansCache.save(plans)
+    fun getPlansCache(): List<CuotaPlan> = plansCache.get()
 
     // --- Usuarios parametrizables ---
 
     // Cache de los dos usuarios (nombre + color). Sirve tanto para el arranque instantáneo desde la
     // red como para persistir las ediciones locales en modo demo. Vacío = todavía sin datos (DEFAULT).
-    fun saveUsersCache(users: List<Usuario>) {
-        try {
-            prefs.edit().putString(KEY_USERS_CACHE, usuarioListAdapter.toJson(users)).apply()
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    fun getUsersCache(): List<Usuario> {
-        val json = prefs.getString(KEY_USERS_CACHE, null) ?: return emptyList()
-        return try {
-            usuarioListAdapter.fromJson(json) ?: emptyList()
-        } catch (e: Exception) {
-            emptyList()
-        }
-    }
+    fun saveUsersCache(users: List<Usuario>) = usersCache.save(users)
+    fun getUsersCache(): List<Usuario> = usersCache.get()
 
     // --- Cola de movimientos pendientes de subir (ver [PendingMovement]) ---
     //
@@ -231,30 +191,12 @@ class PreferencesHelper(context: Context) {
     // uno solo para toda la clase, un alta nueva no puede pisar el vaciado que está haciendo el
     // worker (ni al revés), que era la forma de perder un movimiento ya dado por registrado.
 
-    fun getPendingMovements(): List<PendingMovement> {
-        synchronized(COLA_LOCK) {
-            val json = prefs.getString(KEY_PENDING_MOVEMENTS, null) ?: return emptyList()
-            return try {
-                pendingListAdapter.fromJson(json) ?: emptyList()
-            } catch (e: Exception) {
-                emptyList()
-            }
-        }
-    }
+    fun getPendingMovements(): List<PendingMovement> = synchronized(COLA_LOCK) { pendingQueue.get() }
 
-    private fun writePendingMovements(pendientes: List<PendingMovement>) {
-        try {
-            // commit() y no apply(): si el proceso muere justo después de encolar, un movimiento
-            // que el usuario ya dio por registrado no puede perderse en el buffer de escritura.
-            prefs.edit().putString(KEY_PENDING_MOVEMENTS, pendingListAdapter.toJson(pendientes)).commit()
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    fun savePendingMovements(pendientes: List<PendingMovement>) = synchronized(COLA_LOCK) {
-        writePendingMovements(pendientes)
-    }
+    // commit() y no apply(): si el proceso muere justo después de encolar, un movimiento que el
+    // usuario ya dio por registrado no puede perderse en el buffer de escritura.
+    private fun writePendingMovements(pendientes: List<PendingMovement>) =
+        pendingQueue.save(pendientes, sincronico = true)
 
     /** Alta (o reemplazo, si ya estaba) de un pendiente por id de movimiento. */
     fun upsertPendingMovement(pendiente: PendingMovement) = synchronized(COLA_LOCK) {
@@ -322,26 +264,28 @@ class PreferencesHelper(context: Context) {
             CuotaPlan(
                 fechaCreacion = "2026-07-05 10:00", descripcion = "Notebook Lenovo",
                 montoPorCuota = 150000.0, cantidadCuotas = 12, fechaPrimeraCuota = "2026-07",
-                propietario = "Santiago", categoria = "Utilería", tarjeta = "Visa Santiago"
+                propietario = UsuariosConfig.DEFAULT.primario.slotKey, categoria = "Utilería", tarjeta = "Visa Santiago"
             ),
             CuotaPlan(
                 fechaCreacion = "2026-06-18 19:30", descripcion = "Heladera no-frost",
                 montoPorCuota = 80000.0, cantidadCuotas = 6, fechaPrimeraCuota = "2026-06",
-                propietario = "Rocío", categoria = "Otros", tarjeta = "Naranja"
+                propietario = UsuariosConfig.DEFAULT.secundario.slotKey, categoria = "Otros", tarjeta = "Naranja"
             )
         )
     }
 
     // Genera datos iniciales hermosos para que la app no empiece vacía
     private fun getMockMovements(): List<Movement> {
+        val s = UsuariosConfig.DEFAULT.primario.slotKey
+        val r = UsuariosConfig.DEFAULT.secundario.slotKey
         return listOf(
-            Movement(fecha = "2026-05-01", monto = 5000000.0, tipo = "Aporte", categoria = "Ingreso", responsable = "Santiago", esComun = false, descripcion = "Aporte de sueldo regular"),
-            Movement(fecha = "2026-05-02", monto = 3000000.0, tipo = "Aporte", categoria = "Ingreso", responsable = "Rocío", esComun = false, descripcion = "Aporte de sueldo regular"),
-            Movement(fecha = "2026-05-05", monto = 1200000.0, tipo = "Gasto", categoria = "Alquiler", responsable = "Santiago", esComun = true, descripcion = "Pago de alquiler compartido"),
-            Movement(fecha = "2026-05-10", monto = 350000.0, tipo = "Gasto", categoria = "Supermercado", responsable = "Rocío", esComun = true, descripcion = "Compras semanales de víveres"),
-            Movement(fecha = "2026-05-12", monto = 500000.0, tipo = "Gasto", categoria = "Ropa", responsable = "Santiago", esComun = false, descripcion = "Zapatillas nuevas (Personal)"),
-            Movement(fecha = "2026-05-15", monto = 200000.0, tipo = "Gasto", categoria = "Regalos", responsable = "Rocío", esComun = false, descripcion = "Regalo cumpleaños amiga (Personal)"),
-            Movement(fecha = "2026-05-20", monto = 150000.0, tipo = "Transferencia", categoria = "Ajuste", responsable = "Santiago", esComun = false, descripcion = "Transferencia interna a Rocío")
+            Movement(fecha = "2026-05-01", monto = 5000000.0, tipo = TipoMovimiento.APORTE, categoria = Categorias.INGRESO, responsable = s, esComun = false, descripcion = "Aporte de sueldo regular"),
+            Movement(fecha = "2026-05-02", monto = 3000000.0, tipo = TipoMovimiento.APORTE, categoria = Categorias.INGRESO, responsable = r, esComun = false, descripcion = "Aporte de sueldo regular"),
+            Movement(fecha = "2026-05-05", monto = 1200000.0, tipo = TipoMovimiento.GASTO, categoria = "Alquiler", responsable = s, esComun = true, descripcion = "Pago de alquiler compartido"),
+            Movement(fecha = "2026-05-10", monto = 350000.0, tipo = TipoMovimiento.GASTO, categoria = "Supermercado", responsable = r, esComun = true, descripcion = "Compras semanales de víveres"),
+            Movement(fecha = "2026-05-12", monto = 500000.0, tipo = TipoMovimiento.GASTO, categoria = "Ropa", responsable = s, esComun = false, descripcion = "Zapatillas nuevas (Personal)"),
+            Movement(fecha = "2026-05-15", monto = 200000.0, tipo = TipoMovimiento.GASTO, categoria = "Regalos", responsable = r, esComun = false, descripcion = "Regalo cumpleaños amiga (Personal)"),
+            Movement(fecha = "2026-05-20", monto = 150000.0, tipo = TipoMovimiento.TRANSFERENCIA, categoria = "Ajuste", responsable = s, esComun = false, descripcion = "Transferencia interna a Rocío")
         )
     }
 }

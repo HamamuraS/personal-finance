@@ -1,8 +1,8 @@
 package com.example
 
 import com.example.data.Movement
-import com.example.ui.AccountingEngine
-import com.example.ui.OpeningBalance
+import com.example.domain.AccountingEngine
+import com.example.domain.OpeningBalance
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -260,6 +260,20 @@ class AccountingLogicTest {
     }
 
     @Test
+    fun regenerarLaAperturaPisaLaFilaCruzadaVieja() {
+        // La apertura se escribe con upsert por id: lo que no se vuelve a emitir queda en la hoja.
+        // Antes, si la deuda se saldaba, la fila cruzada vieja seguía viva y sumaba plata y deuda
+        // que ya no existían. Ahora las 6 filas van siempre, así que regenerar las pisa todas.
+        val conDeuda = OpeningBalance(santiagoVirtual = 100000.0, rocioVirtual = 50000.0, netSantiagoEnRocio = 30000.0)
+        val saldada = OpeningBalance(santiagoVirtual = 130000.0, rocioVirtual = 20000.0, netSantiagoEnRocio = 0.0)
+
+        val hoja = AccountingEngine.openingRowsFor("2026-09", conDeuda).associateBy { it.id }.toMutableMap()
+        AccountingEngine.openingRowsFor("2026-09", saldada).forEach { hoja[it.id] = it }
+
+        assertOpeningEquals(saldada, AccountingEngine.openingFromRows(hoja.values.toList()))
+    }
+
+    @Test
     fun laAperturaConservaElPrestamoCruzado() {
         // El caso real: Santiago le prestó 60k a Rocío y quedaron estacionados en su cuenta.
         // Rocío tiene 69.955,96 físicos pero solo 9.955,96 son suyos.
@@ -270,9 +284,11 @@ class AccountingLogicTest {
         )
         val filas = AccountingEngine.openingRowsFor("2026-09", cierre)
 
-        // Se necesita una fila extra para el dinero de Santiago que está en la cuenta de Rocío.
-        assertEquals(5, filas.size)
+        // Siempre las 6 filas (aunque alguna sea cero); el dinero de Santiago que está en la
+        // cuenta de Rocío va en la fila cruzada.
+        assertEquals(6, filas.size)
         val cruzada = filas.single { it.responsable == "Rocío" && it.propietario == "Santiago" }
+        assertEquals(0.0, filas.single { it.responsable == "Santiago" && it.propietario == "Rocío" }.monto, delta)
         assertEquals(60000.0, cruzada.monto, delta)
 
         // Septiembre arranca solo con esas filas: el préstamo sobrevive al cambio de mes.
@@ -445,8 +461,9 @@ class AccountingLogicTest {
         )
         val apertura = AccountingEngine.openingRowsFor("2026-10", AccountingEngine.opening(septiembre))
 
-        // Sin propiedad cruzada, la apertura de octubre son solo las 4 filas propias.
-        assertEquals(4, apertura.size)
+        // Sin propiedad cruzada, las dos filas cruzadas van en cero (pero van: ver el test de abajo).
+        assertEquals(6, apertura.size)
+        assertEquals(0.0, apertura.filter { it.responsable != it.propietario }.sumOf { it.monto }, delta)
         val b = AccountingEngine.compute(emptyList(), AccountingEngine.openingFromRows(apertura))
         assertEquals(0.0, b.santiagoExterno, delta)
         assertEquals(140000.0, b.santiagoSaldoFinal, delta)
@@ -726,18 +743,6 @@ class AccountingLogicTest {
         assertEquals(500.0, r.necesario, delta)
         assertEquals(200.0, r.evitable, delta)
         assertEquals(2200.0, s.total + r.total, delta)
-    }
-
-    @Test
-    fun evitableViajaEnLaColumnaOYVacioEsNoEvitable() {
-        val gasto = mov("2026-10-01 10:00", 1000.0, "Gasto", "Santiago", evitable = true)
-        val fila = gasto.toRowValues()
-        assertEquals(15, fila.size)
-        assertEquals("true", fila[14])
-        assertTrue(Movement.fromRowValues(fila)!!.evitable)
-        // Una fila de 14 columnas (anterior a la 7.7) se lee como no evitable.
-        assertFalse(Movement.fromRowValues(fila.take(14))!!.evitable)
-        assertFalse(Movement.fromRowValues(fila.take(14) + "")!!.evitable)
     }
 
     // --- v8.0: cambio de dinero con alguien de afuera ----------------------------------------

@@ -1,7 +1,7 @@
 package com.example
 
 import com.example.data.Movement
-import com.example.ui.AccountingEngine
+import com.example.domain.AccountingEngine
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue

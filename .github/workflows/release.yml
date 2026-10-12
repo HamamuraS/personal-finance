@@ -51,7 +51,6 @@ jobs:
             exit 1
           fi
           {
-            echo "GEMINI_API_KEY=MY_GEMINI_API_KEY"
             echo "SCRIPT_URL=$SCRIPT_URL"
             echo "DRIVE_FOLDER_ID=$DRIVE_FOLDER_ID"
             echo "MENSAJE_DEL_DIA=${MENSAJE_DEL_DIA:-true}"

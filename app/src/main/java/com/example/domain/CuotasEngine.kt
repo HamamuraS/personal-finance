@@ -1,7 +1,8 @@
-package com.example.ui
+package com.example.domain
 
 import com.example.data.CuotaPlan
 import com.example.data.Movement
+import com.example.data.TipoMovimiento
 
 /** Una cuota concreta de un plan, con su estado derivado de los movimientos. */
 data class CuotaProgramada(
@@ -11,6 +12,17 @@ data class CuotaProgramada(
     val pagada: Boolean,
     val movimientoId: String? = null  // id del Movement que la pagó (si existe)
 )
+
+/** Estado de una cuota visto desde un mes ("yyyy-MM"), en el orden en que la UI lo resuelve. */
+enum class EstadoCuota { PAGADA, ATRASADA, VENCE_ESTE_MES, FUTURA }
+
+/** ¿Cómo está esta cuota mirada desde [mesActual]? Pagada gana siempre; si no, según el vencimiento. */
+fun CuotaProgramada.estadoEn(mesActual: String): EstadoCuota = when {
+    pagada -> EstadoCuota.PAGADA
+    mesVencimiento < mesActual -> EstadoCuota.ATRASADA
+    mesVencimiento > mesActual -> EstadoCuota.FUTURA
+    else -> EstadoCuota.VENCE_ESTE_MES
+}
 
 /** Una cuota impaga que toca (o ya venció) para un mes dado, con su plan de origen. */
 data class CuotaRecordatorio(
@@ -43,6 +55,34 @@ object CuotasEngine {
      * veces la misma cuota se vuelve imposible.
      */
     fun idDePago(planId: String, numero: Int): String = "cuota-$planId-$numero"
+
+    /**
+     * El gasto que paga la cuota [numero] de [plan]: personal, desde la cuenta del dueño
+     * (`responsable == propietario`, sin propiedad cruzada), con id determinístico ([idDePago]) y
+     * la evitabilidad **copiada** del plan (no se deriva: editar el plan no reescribe los pagos).
+     * [monto] permite ajustar el importe (p. ej. redondeo de la última cuota).
+     */
+    fun movimientoDePago(
+        plan: CuotaPlan,
+        numero: Int,
+        fecha: String,
+        metodoPago: String,
+        monto: Double = plan.montoPorCuota
+    ): Movement = Movement(
+        id = idDePago(plan.id, numero),
+        fecha = fecha,
+        monto = monto,
+        tipo = TipoMovimiento.GASTO,
+        categoria = plan.categoria,
+        responsable = plan.propietario,
+        esComun = false,
+        propietario = plan.propietario,
+        descripcion = "Cuota $numero/${plan.cantidadCuotas} — ${plan.descripcion}",
+        metodoPago = metodoPago,
+        planId = plan.id,
+        cuotaNumero = numero,
+        evitable = plan.evitable
+    )
 
     /**
      * Números de cuota pagados de [plan]: los que tienen movimiento vivo **unidos** a los del
@@ -202,6 +242,22 @@ object CuotasEngine {
                     .map { plan to it }
             }
             .toList()
+
+    /**
+     * Cuotas impagas del resumen [mes] de los planes de [propietario], agrupadas por tarjeta y
+     * ordenadas por nombre de tarjeta. Los planes sin tarjeta no entran: es el "Pagar la tarjeta".
+     */
+    fun tarjetasAPagar(
+        mes: String,
+        planes: List<CuotaPlan>,
+        movimientos: List<Movement>,
+        propietario: String
+    ): List<Pair<String, List<Pair<CuotaPlan, CuotaProgramada>>>> =
+        cuotasImpagasDelMes(mes, planes.filter { it.propietario.equals(propietario, ignoreCase = true) }, movimientos)
+            .filter { it.first.tarjeta.isNotBlank() }
+            .groupBy { it.first.tarjeta }
+            .toList()
+            .sortedBy { it.first }
 
     /** Deuda pendiente total: suma de todas las cuotas impagas de todos los planes (contexto). */
     fun compromisoFuturoTotal(planes: List<CuotaPlan>, movimientos: List<Movement>): Double {

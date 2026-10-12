@@ -1,64 +1,93 @@
 package com.example.ui.components
 
-import androidx.compose.animation.*
+import android.os.Build
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import android.os.Build
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.CuotaPlan
 import com.example.data.Movement
 import com.example.data.Usuario
 import com.example.data.notifications.CuotasNotifier
+import com.example.domain.CuotasEngine
 import com.example.ui.AhorroViewModel
-import com.example.ui.CuotasEngine
+import com.example.ui.components.common.AppCard
+import com.example.ui.components.common.FlowRow
+import com.example.ui.theme.LocalIsDarkTheme
 import com.example.ui.theme.USER_COLOR_PRESETS
 import com.example.ui.theme.presetOf
+import com.example.util.Fechas
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalPermissionsApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     viewModel: AhorroViewModel
 ) {
     val scrollState = rememberScrollState()
 
-    val useLocalDemoState = viewModel.useLocalDemo.collectAsState()
-    val currentUserProfileState = viewModel.currentUserProfile.collectAsState()
-    val usuariosState = viewModel.usuarios.collectAsState()
-    val isDarkModeState = viewModel.isDarkMode.collectAsState()
-    val isLoadingState = viewModel.isLoading.collectAsState()
-    val errorMessageState = viewModel.errorMessage.collectAsState()
-    val plansState = viewModel.plans.collectAsState()
-    val allMovementsState = viewModel.allMovements.collectAsState()
-    val selectedMonthState = viewModel.selectedMonth.collectAsState()
-    val tieneSaldoInicialState = viewModel.tieneSaldoInicial.collectAsState()
-
-    var demoToggle by remember { mutableStateOf(useLocalDemoState.value) }
-
-    LaunchedEffect(useLocalDemoState.value) {
-        demoToggle = useLocalDemoState.value
-    }
+    val useLocalDemo by viewModel.useLocalDemo.collectAsState()
+    val currentUserProfile by viewModel.currentUserProfile.collectAsState()
+    val config by viewModel.usuarios.collectAsState()
+    val isDarkMode by viewModel.isDarkMode.collectAsState()
+    val isLoading by viewModel.isLoading.collectAsState()
+    val errorMessage by viewModel.errorMessage.collectAsState()
+    val plans by viewModel.plans.collectAsState()
+    val allMovements by viewModel.allMovements.collectAsState()
+    val selectedMonth by viewModel.selectedMonth.collectAsState()
+    val tieneSaldoInicial by viewModel.tieneSaldoInicial.collectAsState()
 
     Scaffold(
         topBar = {
@@ -79,121 +108,40 @@ fun SettingsScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
-            val isDark = com.example.ui.theme.LocalIsDarkTheme.current
-            val cardBg = MaterialTheme.colorScheme.surface
-            val cardBorder = MaterialTheme.colorScheme.outlineVariant
-
             // Tarjeta de Perfil (self): "Sos {nombre}", editar nombre, elegir color, cerrar sesión.
-            val config = usuariosState.value
-            val me = config.byKey(currentUserProfileState.value) ?: config.primario
-            val otherColorId = config.elOtro(me.slotKey).colorId
+            val me = config.byKey(currentUserProfile) ?: config.primario
             PerfilCard(
                 me = me,
-                otherColorId = otherColorId,
-                isDark = isDark,
-                cardBg = cardBg,
-                cardBorder = cardBorder,
+                coloresDeLosDemas = config.otros(me.slotKey).map { it.colorId }.toSet(),
                 onNombreChange = { viewModel.updateMiNombre(it) },
                 onColorChange = { viewModel.updateMiColor(it) },
                 onLogout = { viewModel.logout() }
             )
 
-            // Tarjeta de Modo Oscuro / Claro
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.cardColors(containerColor = cardBg),
-                border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder),
-                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Modo Oscuro",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = "Cambiar entre paleta oscura y clara",
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Switch(
-                            checked = isDarkModeState.value,
-                            onCheckedChange = {
-                                viewModel.setIsDarkMode(it)
-                            },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = MaterialTheme.colorScheme.primary,
-                                checkedTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
-                            )
-                        )
-                    }
-                }
-            }
+            TarjetaConSwitch(
+                titulo = "Modo Oscuro",
+                descripcion = "Cambiar entre paleta oscura y clara",
+                activado = isDarkMode,
+                onCambio = { viewModel.setIsDarkMode(it) }
+            )
 
-            // Tarjeta de Modo de Operación (Demo vs Hojas)
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.cardColors(containerColor = cardBg),
-                border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder),
-                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Modo Local (Demo)",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = "Usa la memoria interna sin conexión de forma totalmente funcional.",
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Switch(
-                            checked = demoToggle,
-                            onCheckedChange = {
-                                demoToggle = it
-                                viewModel.setUseLocalDemo(it)
-                            },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = MaterialTheme.colorScheme.primary,
-                                checkedTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
-                            )
-                        )
-                    }
-                }
-            }
+            TarjetaConSwitch(
+                titulo = "Modo Local (Demo)",
+                descripcion = "Usa la memoria interna sin conexión de forma totalmente funcional.",
+                activado = useLocalDemo,
+                onCambio = { viewModel.setUseLocalDemo(it) }
+            )
 
             // Tarjeta de Saldo inicial del mes (arrastre materializado)
             SaldoInicialCard(
-                mes = selectedMonthState.value,
-                tieneSaldoInicial = tieneSaldoInicialState.value,
-                isLoading = isLoadingState.value,
-                cardBg = cardBg,
-                cardBorder = cardBorder,
+                mes = selectedMonth,
+                tieneSaldoInicial = tieneSaldoInicial,
+                isLoading = isLoading,
                 onRecalcular = { onDone -> viewModel.recalcularSaldoInicial(onDone) }
             )
 
-            // Un error de red igual tiene que ser visible: antes vivía dentro de la tarjeta de
-            // sincronización, que ya no existe.
-            errorMessageState.value?.let { msg ->
+            // Un error de red igual tiene que ser visible.
+            errorMessage?.let { msg ->
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -212,20 +160,15 @@ fun SettingsScreen(
 
             // Tarjeta de prueba de Notificaciones de Cuotas (ver features/notificaciones-cuotas.md)
             CuotasNotificationTestCard(
-                cardBg = cardBg,
-                cardBorder = cardBorder,
-                plans = plansState.value,
-                allMovements = allMovementsState.value,
-                currentUserProfile = currentUserProfileState.value
+                plans = plans,
+                allMovements = allMovements,
+                currentUserProfile = currentUserProfile
             )
 
             // Información sobre reglas
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.cardColors(containerColor = cardBg.copy(alpha = 0.85f)),
-                border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder),
-                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+            AppCard(
+                radio = 24.dp,
+                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f)
             ) {
                 Row(
                     modifier = Modifier.padding(14.dp),
@@ -253,6 +196,47 @@ fun SettingsScreen(
     }
 }
 
+/** Tarjeta de Ajustes con un título, una descripción y un switch a la derecha. */
+@Composable
+private fun TarjetaConSwitch(
+    titulo: String,
+    descripcion: String,
+    activado: Boolean,
+    onCambio: (Boolean) -> Unit
+) {
+    AppCard(radio = 24.dp, elevacion = 1.dp) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = titulo,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = descripcion,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = activado,
+                    onCheckedChange = onCambio,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = MaterialTheme.colorScheme.primary,
+                        checkedTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
+                    )
+                )
+            }
+        }
+    }
+}
+
 /**
  * Saldo inicial del mes. Cuando el mes tiene sus filas de apertura escritas, su cálculo deja de
  * depender de las hojas anteriores (y esas hojas se pueden archivar). Recalcular vuelve a derivar
@@ -263,19 +247,11 @@ private fun SaldoInicialCard(
     mes: String,
     tieneSaldoInicial: Boolean,
     isLoading: Boolean,
-    cardBg: Color,
-    cardBorder: Color,
     onRecalcular: ((Boolean, String) -> Unit) -> Unit
 ) {
     var mensaje by remember { mutableStateOf<String?>(null) }
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = cardBg),
-        border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-    ) {
+    AppCard(radio = 24.dp, elevacion = 1.dp) {
         Column(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -339,8 +315,6 @@ private fun SaldoInicialCard(
 @OptIn(ExperimentalPermissionsApi::class)
 @Composable
 private fun CuotasNotificationTestCard(
-    cardBg: Color,
-    cardBorder: Color,
     plans: List<CuotaPlan>,
     allMovements: List<Movement>,
     currentUserProfile: String
@@ -351,20 +325,12 @@ private fun CuotasNotificationTestCard(
     } else null
     val permisoConcedido = notifPermissionState == null || notifPermissionState.status.isGranted
 
-    val mesActual = remember {
-        java.text.SimpleDateFormat("yyyy-MM", java.util.Locale.US).format(java.util.Date())
-    }
+    val mesActual = Fechas.mesActual()
     val misPlanes = remember(plans, currentUserProfile) {
         plans.filter { it.propietario.equals(currentUserProfile, ignoreCase = true) }
     }
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = cardBg),
-        border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-    ) {
+    AppCard(radio = 24.dp, elevacion = 1.dp) {
         Column(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -423,34 +389,25 @@ private fun CuotasNotificationTestCard(
 }
 
 /**
- * Tarjeta de perfil propio (reemplaza al viejo selector "¿Quién está usando la app?"): muestra
- * quién sos, deja editar tu nombre, elegir tu color (grilla de presets, deshabilitando el que usa
- * el otro para no perder la distinción visual) y cerrar sesión.
+ * Tarjeta de perfil propio: muestra quién sos, deja editar tu nombre, elegir tu color (grilla de
+ * presets, deshabilitando los que ya usan los demás para no perder la distinción visual) y cerrar
+ * sesión.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PerfilCard(
     me: Usuario,
-    otherColorId: String,
-    isDark: Boolean,
-    cardBg: Color,
-    cardBorder: Color,
+    coloresDeLosDemas: Set<String>,
     onNombreChange: (String) -> Unit,
     onColorChange: (String) -> Unit,
     onLogout: () -> Unit
 ) {
+    val isDark = LocalIsDarkTheme.current
     // El input se re-sincroniza si el nombre cambia desde afuera (p. ej. tras guardar / refrescar).
     var nombreInput by remember(me.nombre) { mutableStateOf(me.nombre) }
     val nombreCambiado = nombreInput.isNotBlank() && nombreInput.trim() != me.nombre
-    val miColor = presetOf(me.colorId).resolve(isDark).brand
+    val miColor = presetOf(me.colorId).resolve(isDark)
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = cardBg),
-        border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-    ) {
+    AppCard(radio = 24.dp, elevacion = 1.dp) {
         Column(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -461,12 +418,12 @@ private fun PerfilCard(
                     modifier = Modifier
                         .size(44.dp)
                         .clip(CircleShape)
-                        .background(miColor),
+                        .background(miColor.brand),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
                         text = me.nombre.take(1).uppercase(),
-                        color = presetOf(me.colorId).resolve(isDark).on,
+                        color = miColor.on,
                         fontWeight = FontWeight.Black,
                         fontSize = 20.sp
                     )
@@ -521,7 +478,7 @@ private fun PerfilCard(
                 }
             }
 
-            // Elegir color (grilla de presets; el que usa el otro queda deshabilitado)
+            // Elegir color (grilla de presets; los que usan los demás quedan deshabilitados)
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = "Tu color",
@@ -536,13 +493,14 @@ private fun PerfilCard(
                 ) {
                     USER_COLOR_PRESETS.forEach { preset ->
                         val selected = preset.id == me.colorId
-                        // El color del otro no se puede elegir (mantiene la distinción visual).
-                        val disabled = !selected && preset.id == otherColorId
+                        // El color de otro usuario no se puede elegir (mantiene la distinción visual).
+                        val disabled = !selected && preset.id in coloresDeLosDemas
+                        val resuelto = preset.resolve(isDark)
                         ColorSwatch(
-                            fill = preset.resolve(isDark).brand,
+                            fill = resuelto.brand,
                             // El "on" del propio preset: los rellenos del tema oscuro son pasteles
                             // y un tilde blanco encima no se veía.
-                            onFill = preset.resolve(isDark).on,
+                            onFill = resuelto.on,
                             selected = selected,
                             disabled = disabled,
                             onClick = { if (!disabled && !selected) onColorChange(preset.id) }

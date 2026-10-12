@@ -12,6 +12,7 @@ import com.example.data.ImageInfo
 import com.example.data.PendingMovement
 import com.example.data.PreferencesHelper
 import com.example.data.notifications.MovementNotifier
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
@@ -41,10 +42,9 @@ class MovementUploadWorker(
         const val MAX_REINTENTOS = 4
 
         /**
-         * Serializa el drenado dentro del proceso. El alta contra el Apps Script es un `append`
-         * (el upsert por id es otra acción), así que dos drenados en paralelo escriben la MISMA
-         * fila dos veces. El trabajo único de WorkManager ya evita que se solapen dos corridas de
-         * este worker, pero no cubre a quien llame a [drenar] por fuera.
+         * Serializa el drenado dentro del proceso: dos drenados en paralelo subirían la misma
+         * versión dos veces y se pisarían al sacarla de la cola. El trabajo único de WorkManager ya
+         * evita que se solapen dos corridas de este worker; esto cubre a quien llame a [drenar] por fuera.
          */
         private val drenadoLock = Mutex()
 
@@ -63,19 +63,13 @@ class MovementUploadWorker(
 
             for (pendiente in pendientes.sortedBy { it.encoladoEn }) {
                 val ok = try {
-                    repo.saveMovement(
-                        webAppUrl = prefs.scriptUrl,
-                        movement = pendiente.movement,
-                        imageInfo = leerTicket(pendiente.ticketPath),
-                        folderId = prefs.folderId,
-                        // PUT y no POST: el alta tiene que ser IDEMPOTENTE porque esta cola
-                        // reintenta sola. `POST` es un append ciego, así que si la planilla llegó
-                        // a escribir la fila pero la respuesta se perdió (timeout, red cortada),
-                        // el reintento la apendeaba de nuevo y quedaban dos filas con el mismo id
-                        // — lo que después reventaba el listado de Inicio, que usa el id como key.
-                        // `PUT` busca por id y reemplaza; si no existe, appendea igual.
-                        action = "PUT"
-                    )
+                    // El alta es IDEMPOTENTE (upsert por id, ver [AhorroRepository.saveMovement])
+                    // porque esta cola reintenta sola: si la planilla llegó a escribir la fila pero la
+                    // respuesta se perdió (timeout, red cortada), el reintento la pisa en vez de
+                    // duplicarla — dos filas con el mismo id reventaban el listado de Inicio.
+                    repo.saveMovement(pendiente.movement, imageInfo = leerTicket(pendiente.ticketPath))
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     registrarFallo(prefs, pendiente, e.localizedMessage ?: e.javaClass.simpleName)
                     fallados++
@@ -97,13 +91,15 @@ class MovementUploadWorker(
             fallados
         }
 
-        /** Suma un intento al pendiente sin sacarlo de la cola (read-modify-write por id). */
+        /**
+         * Suma un intento al pendiente sin sacarlo de la cola. Es un update condicional y atómico:
+         * leer la cola y después hacer un upsert dejaba una ventana en la que, si el usuario borraba
+         * el pendiente, el upsert lo volvía a encolar.
+         */
         private fun registrarFallo(prefs: PreferencesHelper, pendiente: PendingMovement, error: String) {
-            val actual = prefs.getPendingMovements()
-                .firstOrNull { it.movement.id == pendiente.movement.id } ?: return
-            prefs.upsertPendingMovement(
-                actual.copy(intentos = actual.intentos + 1, ultimoError = error)
-            )
+            prefs.updatePendingMovement(pendiente.movement.id) {
+                it.copy(intentos = it.intentos + 1, ultimoError = error)
+            }
         }
 
         /** Relee el JPEG comprimido del disco y lo pasa a base64 para el Apps Script. */
@@ -149,7 +145,7 @@ class MovementUploadWorker(
         if (fallados == 0) {
             // Releer la planilla deja el cache (y la ventana de frescura) al día, así que al volver
             // a abrir la app el movimiento ya está sin necesidad de otro fetch.
-            runCatching { AhorroRepository(prefs).fetchMovements(prefs.scriptUrl) }
+            AhorroRepository(prefs).fetchMovements()
             return Result.success()
         }
 

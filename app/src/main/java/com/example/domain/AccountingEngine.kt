@@ -1,7 +1,12 @@
-package com.example.ui
+package com.example.domain
 
 import com.example.data.Categorias
+import com.example.data.MetodoPago
 import com.example.data.Movement
+import com.example.data.PROPIETARIO_AMBOS
+import com.example.data.TipoMovimiento
+import com.example.data.UsuariosConfig
+import com.example.data.mes
 
 /**
  * Resultado del cálculo contable de un periodo.
@@ -53,6 +58,34 @@ data class BalanceBreakdown(
     val santiagoGastosPersonalesReales: Double = 0.0,
     val rocioGastosPersonalesReales: Double = 0.0,
     val gastosComunesReales: Double = 0.0
+) {
+    /**
+     * Los números de una persona, por su slotKey. Es la forma de leer el balance sin hablar de
+     * `santiago*`/`rocio*`: las pantallas recorren los usuarios y piden el saldo de cada uno.
+     * Cualquier clave que no sea la del slot primario se lee como el secundario (son dos slots).
+     */
+    fun de(slotKey: String): SaldoPersona =
+        if (slotKey.equals(UsuariosConfig.DEFAULT.primario.slotKey, ignoreCase = true)) SaldoPersona(
+            saldoFinal = santiagoSaldoFinal, enMano = santiagoEnMano, efectivo = santiagoEfectivo,
+            virtual = santiagoVirtual, externo = santiagoExterno, ingresos = santiagoIngresos,
+            gastosPersonalesReales = santiagoGastosPersonalesReales
+        ) else SaldoPersona(
+            saldoFinal = rocioSaldoFinal, enMano = rocioEnMano, efectivo = rocioEfectivo,
+            virtual = rocioVirtual, externo = rocioExterno, ingresos = rocioIngresos,
+            gastosPersonalesReales = rocioGastosPersonalesReales
+        )
+}
+
+/** Vista de una persona de un [BalanceBreakdown] (ver [BalanceBreakdown.de]). */
+data class SaldoPersona(
+    val saldoFinal: Double,
+    val enMano: Double,
+    val efectivo: Double,
+    val virtual: Double,
+    /** Posición cruzada con signo: + = tiene plata en la cuenta del otro, - = el otro en la suya. */
+    val externo: Double,
+    val ingresos: Double,
+    val gastosPersonalesReales: Double
 )
 
 /**
@@ -97,17 +130,19 @@ data class OpeningBalance(
  */
 object AccountingEngine {
 
-    private const val SANTIAGO = "Santiago"
-    private const val ROCIO = "Rocío"
-    private const val AMBOS = "Ambos"
-    private const val EFECTIVO = "Efectivo"
-    private const val VIRTUAL = "Billetera Virtual"
+    // Las dos claves de slot que entiende el motor (propiedad cruzada binaria). Son las del
+    // [UsuariosConfig.DEFAULT]: los datos guardan estas claves y renombrar un usuario no las cambia.
+    private val SANTIAGO = UsuariosConfig.DEFAULT.primario.slotKey
+    private val ROCIO = UsuariosConfig.DEFAULT.secundario.slotKey
+    private const val AMBOS = PROPIETARIO_AMBOS
+    private const val EFECTIVO = MetodoPago.EFECTIVO
+    private const val VIRTUAL = MetodoPago.VIRTUAL
 
     /**
      * Tipo reservado de las filas de apertura: materializan el arrastre del mes anterior dentro de
      * la propia hoja del mes. No son un flujo (no suman a aportes/gastos del periodo), son *stock*.
      */
-    const val TIPO_APERTURA = "Apertura"
+    const val TIPO_APERTURA = TipoMovimiento.APERTURA
 
     /** Categoría reservada de las filas de apertura. Nunca es elegible por el usuario. */
     const val CATEGORIA_APERTURA = "Saldo inicial"
@@ -124,7 +159,7 @@ object AccountingEngine {
      *
      * En la UI se carga como un submodo de "Transferencia"; en la planilla es un tipo propio.
      */
-    const val TIPO_CONDONACION = "Condonación"
+    const val TIPO_CONDONACION = TipoMovimiento.CONDONACION
 
     /** ¿[m] es una condonación? Tolera la forma sin tilde por si se carga a mano en la planilla. */
     fun isCondonacion(m: Movement): Boolean =
@@ -144,7 +179,7 @@ object AccountingEngine {
      * significado de una fila no puede depender del estado al replayar. Corregir un movimiento
      * anterior podría dar vuelta el signo y convertir un perdón en un pago que mueve plata física.
      */
-    const val TIPO_DEVOLUCION = "Devolución"
+    const val TIPO_DEVOLUCION = TipoMovimiento.DEVOLUCION
 
     /** ¿[m] es una devolución? Tolera la forma sin tilde. */
     fun isDevolucion(m: Movement): Boolean =
@@ -155,7 +190,7 @@ object AccountingEngine {
      * transferencia, o al revés. `metodoPago` es **lo que entrega el responsable**. Nadie gana ni
      * pierde y nadie le debe nada a nadie: no toca la propiedad cruzada ni los flujos del periodo.
      */
-    const val TIPO_CAMBIO = "Cambio"
+    const val TIPO_CAMBIO = TipoMovimiento.CAMBIO
 
     /**
      * Tipo del **cambio propio** (v8.0): canje de efectivo por transferencia con alguien de afuera
@@ -166,7 +201,7 @@ object AccountingEngine {
      * la 7.7 tienen propietario = responsable, así que reinterpretar ese campo como "con un tercero"
      * cambiaba en silencio el significado de filas ya escritas.
      */
-    const val TIPO_CAMBIO_PROPIO = "Cambio propio"
+    const val TIPO_CAMBIO_PROPIO = TipoMovimiento.CAMBIO_PROPIO
 
     /** ¿[m] es un cambio de dinero, con el otro o propio? (para la UI: ícono, signo, filtro). */
     fun isCambio(m: Movement): Boolean =
@@ -201,11 +236,11 @@ object AccountingEngine {
      * ajustes para que la app cuadre con el banco y no un consumo.
      */
     fun esGastoReal(m: Movement): Boolean =
-        m.tipo.equals("Gasto", ignoreCase = true) && !Categorias.esCorreccion(m.categoria)
+        m.tipo.equals(TipoMovimiento.GASTO, ignoreCase = true) && !Categorias.esCorreccion(m.categoria)
 
     /** ¿[m] es un ingreso (aporte de categoría Ingreso, o "Sueldo" en filas viejas)? */
     fun esIngreso(m: Movement): Boolean =
-        m.tipo.equals("Aporte", ignoreCase = true) && Categorias.esIngreso(m.categoria)
+        m.tipo.equals(TipoMovimiento.APORTE, ignoreCase = true) && Categorias.esIngreso(m.categoria)
 
     fun isOpeningRow(m: Movement): Boolean = m.tipo.equals(TIPO_APERTURA, ignoreCase = true)
 
@@ -280,13 +315,17 @@ object AccountingEngine {
         val sVirtDeRocio = if (net < 0) -net else 0.0
         val rVirtDeSantiago = if (net > 0) net else 0.0
 
-        return listOfNotNull(
+        // Las 6 filas van SIEMPRE, aunque la propiedad cruzada sea cero. Escribir solo las no nulas
+        // dejaba viva en la planilla la fila cruzada de una escritura anterior (el upsert por id no
+        // borra lo que ya no se emite): si la deuda se saldaba o cambiaba de lado, esa fila vieja
+        // seguía sumando y la apertura quedaba con plata y deuda que ya no existían.
+        return listOf(
             openingRow(month, SANTIAGO, SANTIAGO, EFECTIVO, o.santiagoEfectivo),
             openingRow(month, SANTIAGO, SANTIAGO, VIRTUAL, o.santiagoVirtual - sVirtDeRocio),
-            if (sVirtDeRocio != 0.0) openingRow(month, SANTIAGO, ROCIO, VIRTUAL, sVirtDeRocio) else null,
+            openingRow(month, SANTIAGO, ROCIO, VIRTUAL, sVirtDeRocio),
             openingRow(month, ROCIO, ROCIO, EFECTIVO, o.rocioEfectivo),
             openingRow(month, ROCIO, ROCIO, VIRTUAL, o.rocioVirtual - rVirtDeSantiago),
-            if (rVirtDeSantiago != 0.0) openingRow(month, ROCIO, SANTIAGO, VIRTUAL, rVirtDeSantiago) else null
+            openingRow(month, ROCIO, SANTIAGO, VIRTUAL, rVirtDeSantiago)
         )
     }
 
@@ -383,7 +422,7 @@ object AccountingEngine {
             o.santiagoEfectivo, o.santiagoVirtual, o.rocioEfectivo, o.rocioVirtual, o.netSantiagoEnRocio
         ).all { kotlin.math.abs(it) < 0.005 }
 
-    private fun monthOf(m: Movement): String = if (m.fecha.length >= 7) m.fecha.substring(0, 7) else ""
+    private fun monthOf(m: Movement): String = m.mes
 
     fun compute(list: List<Movement>, opening: OpeningBalance = OpeningBalance()): BalanceBreakdown {
         // El saldo de devolución en las transferencias depende del estado acumulado, así que
@@ -426,7 +465,7 @@ object AccountingEngine {
             val propS = prop == SANTIAGO
             val propR = prop == ROCIO
             val propAmbos = prop == AMBOS
-            val efec = m.metodoPago.equals("Efectivo", ignoreCase = true)
+            val efec = m.metodoPago.equals(EFECTIVO, ignoreCase = true)
 
             when (m.tipo.lowercase()) {
                 "aporte" -> {
@@ -662,6 +701,19 @@ object AccountingEngine {
         }
         return GastosPorEvitabilidad(necesario, evitable)
     }
+
+    /**
+     * Suma los gastos por categoría aplicando [porcion] a cada movimiento, que es lo que decide
+     * **cuánto de ese gasto** cuenta (todo, la mitad si es común, o nada si es de la otra persona).
+     * Descarta solo las categorías que quedan exactamente en cero (la persona no participó del gasto):
+     * un total negativo —un reembolso cargado como gasto— se sigue listando. De mayor a menor.
+     */
+    fun gastosPorCategoria(gastos: List<Movement>, porcion: (Movement) -> Double): List<Pair<String, Double>> =
+        gastos.groupBy { it.categoria }
+            .mapValues { (_, list) -> list.sumOf(porcion) }
+            .filterValues { it != 0.0 }
+            .toList()
+            .sortedByDescending { it.second }
 
     /**
      * ¿[m] "es de" [slotKey]? Criterio de pertenencia patrimonial para filtrar listados. Los
